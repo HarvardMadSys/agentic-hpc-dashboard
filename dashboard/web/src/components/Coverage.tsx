@@ -84,18 +84,9 @@ export function QuantCells({ q }: { q: Quant | null | undefined }) {
   );
 }
 
-export const QUANT_HEAD = (
-  <>
-    <th className="num">median</th>
-    <th className="num">p90</th>
-    <th className="num">p99</th>
-    <th className="num">max</th>
-    <th className="num">coverage</th>
-  </>
-);
-
-/** The same headers, sorting their table (roadmap note 27); `quantVal` reads
- * a row's value for one. A metric that was never measured sorts last. */
+/** The headers of the cells above (median, p90, p99, max, coverage), sorting
+ * their table (roadmap note 27); `quantVal` reads a row's value for one. A
+ * metric that was never measured sorts last. */
 export function QuantHead({ s }: { s: Sorter<string> }) {
   return (
     <>

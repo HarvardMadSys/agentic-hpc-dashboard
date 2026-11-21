@@ -1,17 +1,22 @@
 # The bench
 
-Tools to measure the dashboard, and to show a change kept every answer it serves. Each
-tool's docstring lists its options; this page is how they fit together, and what to watch
-for. Run them from `dashboard/`, with the project's venv (`uv sync`).
+Tools to measure the dashboard, and to show a change kept the answers it serves. Each
+tool's docstring shows its usage and `--help` lists every option (not `stallwatch.py`'s: its
+first argument is the file it writes, `--help` included); this page is how they fit together,
+and what to watch for. Run them from `dashboard/`, with the project's venv (`uv sync`).
 
 | tool | what it does |
 |---|---|
 | `amplify.py` | writes a synthetic collector feed at fleet density, cloned from the demo generator's |
-| `golden.py` | dumps every response the page reads; compares two dumps |
+| `golden.py` | dumps the main responses of a 24 h window (panels, a filtered view, sessions, the inspector, live, users, collectors, events, export); compares two dumps |
 | `run.py` | times the real service: cold start, window builds, the inspector, the page under live load |
-| `hotpaths.py` | drives one heavy path in this process, under `cProfile` |
+| `hotpaths.py` | drives the heavy paths named in `--what` in this process, each under `cProfile` |
 | `stallwatch.py` | serves, and writes every thread's stack whenever the event loop stalls |
-| `svc.py` | the service as a subprocess, configured by `RC_DASH_*` alone; used by `run.py` and `golden.py` |
+| `svc.py` | the service as a subprocess, configured by the `RC_DASH_*` it sets and, if there is one, `dashboard.config.json`; used by `run.py` and `golden.py` |
+
+**Move `dashboard.config.json` aside first.** The service reads it whatever the bench sets, and
+a `password_hash` in it signs the bench out: every request is a 401, and the bench waits out
+its 30-minute timeout.
 
 ## A change, measured
 
@@ -38,14 +43,14 @@ ln -s "$PWD/.venv" /tmp/base/dashboard/.venv
 
 `golden.py` runs the service from the tree it is in, so each dump runs its own tree's code;
 `git worktree remove --force /tmp/base` drops the base tree after.
-`compare` prints `IDENTICAL` or every difference; a speed-up that changes a number the page
-shows is a regression. A key that says when or how fast something ran, rather than what the
+`compare` prints `IDENTICAL`, or the differences, up to 60, and how many it found; a speed-up
+that changes a number the page shows is a regression. A key that says when or how fast something ran, rather than what the
 feed holds, is left out of both (`VOLATILE`); if two dumps of one tree ever differ, the key
 that differs belongs there.
 
 **3. The time.** `run.py FEED` times the service as a deployment runs it, from outside; it
 reads the page's own files too, so build `web/dist` first (`cd web && npm ci && npm run build`).
-`hotpaths.py FEED --what scan,hours,merge,filter` times one path in this process. Then:
+`hotpaths.py FEED --what scan,hours,merge,filter` times those paths in this process. Then:
 
 - **Run A, B, A, B.** The same code on the same feed reduced a 24 h window's hours in 14.2 s,
   and on the same box later in 17.1 s; only runs taken side by side compare.
@@ -58,9 +63,9 @@ reads the page's own files too, so build `web/dist` first (`cd web && npm ci && 
   built is the same count however loaded the machine is.
 
 **4. Stalls.** `stallwatch.py OUT.txt [--after 0.5]` serves as `python -m rc_dashboard serve`
-does, configured only by `RC_DASH_*`, so give it the feed's roots and `RC_DASH_OPEN=1` (the
-service refuses to serve without a password otherwise). Its first argument is the file it
-writes to.
+does, configured by `RC_DASH_*` and `dashboard.config.json`, so give it the feed's roots and
+`RC_DASH_OPEN=1` (the service refuses to serve without a password otherwise). Its first
+argument is the file it writes to.
 
 ## What the feed is not
 

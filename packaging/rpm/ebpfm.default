@@ -10,8 +10,10 @@
 # `systemctl daemon-reload` is NOT required (EnvironmentFile is read at start),
 # but you must restart the service: `systemctl restart ebpfm`.
 #
-# NOTE: EBPFM_OUTPUT_DIR is owned by the unit (the package substitutes its path)
-# and intentionally cannot be overridden here — setting it has no effect.
+# NOTE: EBPFM_OUTPUT_DIR set here overrides the unit's (/scratch/ebpfm): systemd's
+# EnvironmentFile= wins over its Environment=. Off /scratch, also drop the unit's
+# RequiresMountsFor=/scratch with an override, and give `ebpfm status`/`tail` the
+# same EBPFM_OUTPUT_DIR: they read their own environment, not this file.
 
 # --- attribution (load-bearing — do not change the value) ------------------
 # EBPFM_MIN_UID=0 is deliberate: it defines what actor3="human" MEANS. Raising
@@ -32,9 +34,10 @@ EBPFM_MIN_UID=0
 #EBPFM_GROUP=
 
 # --- output / cadence ------------------------------------------------------
-# Where additional (node-tier) output lands. The eBPF tier's own output dir is
-# fixed by the unit (defaults to /scratch/ebpfm — large, root-writable, unlike
-# the small root disk); this is only consulted if you also run the node tier.
+# The eBPF tier's output dir is the unit's /scratch/ebpfm (large, root-writable,
+# unlike the small root disk) unless EBPFM_OUTPUT_DIR is set here (the NOTE above). The unit runs the eBPF tier only,
+# so nothing reads the node tier's setting from this file: `ebpfm start`, run
+# as a user, takes EBPFM_NODE_OUTPUT_DIR from its own environment.
 #EBPFM_NODE_OUTPUT_DIR=/scratch/ebpfm-login
 
 # Compress sealed day-files to <file>.jsonl.gz (default on). Each day's streams

@@ -424,9 +424,6 @@ details.ins-limits > summary .eyebrow {
   text-overflow: ellipsis;
   min-width: 0;
 }
-.pt-arg.boiler {
-  color: var(--muted);
-}
 .pt-count {
   font-family: 'IBM Plex Mono', monospace;
   font-weight: 600;

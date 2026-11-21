@@ -27,7 +27,6 @@ What a demo overrides, whatever the shell or the config file says (run.sh
 exports the cluster's feed roots, and a demo must never read them):
 
     feeds.ebpf.roots, feeds.ebpf_node.roots   the demo's own feed
-    feeds.sacct/sacctmgr/domains/user_actor   a path in the demo dir that does not exist
     cache.dir                                 the demo's own, so no real saved build is evicted
     clock.as_of                               "" -- the wall clock: the feed is live
     live.retention_min, backfill_hours        the history written, so every window is filled
@@ -88,17 +87,11 @@ def options(args):
 def configure(cfg, opts):
     """Point the service at the demo's feed and nothing else (see the module doc)."""
     feed = Feed(opts["dir"])
-    missing = os.path.join(feed.base, "not-in-a-demo")
     days, mins = opts["days"], opts["days"] * 1440
     for key, val in (
             ("feeds.ebpf.roots", [feed.ebpf]),
             ("feeds.ebpf.days", days + 1),
             ("feeds.ebpf_node.roots", [feed.node]),
-            ("feeds.sacct.dir", missing),
-            ("feeds.sacct.jobs_csv", None),
-            ("feeds.sacctmgr.dir", missing),
-            ("feeds.domains.path", os.path.join(missing, "map_user.csv")),
-            ("feeds.user_actor.path", os.path.join(missing, "user.csv")),
             ("cache.dir", feed.cache),
             ("clock.as_of", ""),
             ("live.retention_min", mins),

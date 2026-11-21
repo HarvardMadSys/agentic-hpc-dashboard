@@ -954,69 +954,6 @@ export function HGroupBars({
   );
 }
 
-/* --------------------------------------------------------------- stackRow */
-
-export interface StackSeg {
-  k: string;
-  v: number;
-  c: string;
-}
-
-/** One 100%-stacked row, 2px surface gaps, selective in-bar labels.
- *
- * Not zoomable, on purpose: each segment is a share of the row, and a
- * magnified segment would no longer read as a share of anything. */
-export function StackRow({
-  segs,
-  W: natW = 560,
-  H = 30,
-}: {
-  segs: StackSeg[];
-  W?: number;
-  H?: number;
-}) {
-  const [fitRef, W] = useFit(natW);
-  const tot = segs.reduce((a, d) => a + (d.v || 0), 0);
-  if (!(tot > 0)) return null;
-  let x = 0;
-  const out: ReactNode[] = [];
-  segs.forEach((d, i) => {
-    const w = (W * (d.v || 0)) / tot;
-    if (w <= 0) return;
-    const pctv = (100 * d.v) / tot;
-    out.push(
-      <rect
-        key={'r' + d.k + i}
-        x={x}
-        y={0}
-        width={Math.max(0, w - 2)}
-        height={H}
-        rx={1.5}
-        fill={d.c}
-        data-tip={`${d.k}: ${fmt(d.v)} (${pctv.toFixed(1)}%)`}
-      />,
-    );
-    if (w > 44)
-      out.push(
-        <text
-          key={'t' + d.k + i}
-          x={x + (w - 2) / 2}
-          y={H / 2 + 3.5}
-          textAnchor="middle"
-          style={{ fontSize: '12px', fontFamily: "'IBM Plex Mono',monospace", fill: 'var(--surface)' }}
-        >
-          {pctv.toFixed(w > 62 ? 1 : 0)}%
-        </text>,
-      );
-    x += w;
-  });
-  return (
-    <Svg w={W} h={H} fit={fitRef}>
-      {out}
-    </Svg>
-  );
-}
-
 /* ------------------------------------------------------------------ lines */
 
 export interface LinePt {

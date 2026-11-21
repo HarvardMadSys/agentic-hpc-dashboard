@@ -1,6 +1,6 @@
 #!/bin/bash
 # install-sender.sh SHA DIR: run on a source node by ship-sender.sh (as `bash -s` over
-# ssh), after it copied the release's fleet/fleet_stream.py to DIR/.incoming-SHA. DIR
+# ssh), after it copied the release's hpc/fleet/fleet_stream.py to DIR/.incoming-SHA. DIR
 # (site.env's SENDER_DIR) is the one thing the deployment keeps on the nodes: the stream
 # key's forced command runs DIR/current/fleet_stream.py send there. Installs the file as
 # DIR/SHA/fleet_stream.py, moves DIR/current to it, keeps the release it replaced for a

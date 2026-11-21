@@ -146,7 +146,7 @@
 
     "//7": "Node tier (unprivileged): node_snapshot.py is a vendored copy of",
     "//8": "collect/common/snapshot.py, so log/login is schema-compatible and works",
-    "//9": "as a stand-in before `ebpfm --node` is deployed anywhere.",
+    "//9": "as a stand-in where the collector's node tier is not deployed.",
     "ebpf_node": {
       "roots": ["/n/netscratch/juncheng_lab/juncheng/rc_measurement/ebpfm/node/logs",
                 "/n/netscratch/juncheng_lab/juncheng/rc_measurement/login/logs"],
@@ -156,23 +156,7 @@
       "//11": "CPU rate only exists as a delta between two consecutive snapshots.",
       "max_age_s": 900,
       "required": false
-    },
-
-    "//12": "collect/slurm_query.bash writes ONE FILE PER DAY into DEST_DIR, named",
-    "//13": "SlurmData_<start>_<stop>-orig.csv. Point `dir` at DEST_DIR, not at a file.",
-    "//14": "NOTE: sacct -D --starttime/--endtime overlap at midnight, so a job spanning",
-    "//15": "two days appears in BOTH day-files; the reducer dedups on JobID.",
-    "sacct": {
-      "dir": "/n/netscratch/juncheng_lab/juncheng/rc_measurement/rawdata",
-      "pattern": "SlurmData_*.csv",
-      "max_days": 0,
-      "jobs_csv": null,
-      "required": false
-    },
-
-    "sacctmgr":   { "dir": ".", "pattern": "sacctmgr_*.jsonl", "required": false },
-    "domains":    { "path": "dataclean/mapping/map_user.csv",  "required": false },
-    "user_actor": { "path": "dataclean/user.csv",              "required": false }
+    }
   },
 
   "//16": "RETENTION vs WINDOW. retention_min is what the process HOLDS and the",

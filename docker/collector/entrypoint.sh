@@ -5,8 +5,9 @@
 # `systemd-run --slice=system.slice` to escape the login-node user-slice CPU cap.
 # Inside a container there is no host systemd to talk to and no capped user
 # slice to escape, so that path is both unavailable and unnecessary. We instead
-# run the tracer in the FOREGROUND as PID 1's child, which is exactly what a
-# container runtime wants to supervise and what makes `docker stop` deliver the
+# exec the tracer in the FOREGROUND as the container's main process (PID 1,
+# unless the container runs an init), which is exactly what a runtime wants to
+# supervise and what makes `docker stop` deliver the
 # SIGTERM the collector turns into its `truncated` flush.
 #
 # Everything else in ebpfm.sh (check, features, bootstrap, the node tier) is

@@ -9,9 +9,11 @@
 import type { Cls, IoProcess, IoSort, Resources, SlurmClass, SlurmPanel, ToolMix, Trajectories } from '../api/types';
 import { Basis, Panel } from '../components/Panel';
 import { ShareCell } from '../components/ShareCell';
+import { SplitBar } from '../components/SplitBar';
+import type { SplitPart } from '../components/SplitBar';
 import { SortTh } from '../components/SortTh';
 import { Term } from '../components/Term';
-import { CLS_COL, CLS_LBL } from '../lib/classes';
+import { CLS, CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt, mb } from '../lib/format';
 import { GLOSS } from '../lib/glossary';
 import { useNodeWords } from '../lib/nodes';
@@ -20,6 +22,7 @@ import { pick, winLabel } from '../lib/panels';
 import { countedIn, noShare, shareOf, wholeOf } from '../lib/shares';
 import { useSort } from '../lib/useSort';
 import { Fragment, memo } from 'react';
+import type { CSSProperties } from 'react';
 import type { Panels } from '../lib/panels';
 import { coveredBy } from '../lib/iocmds';
 import { IoNum } from '../components/IoCmds';
@@ -133,6 +136,46 @@ export const OverviewTab = memo(function OverviewTab({
     sort.sort(units.filter((u) => (u.group ?? 'node') === g), (u, k) => (k === 'unit' ? u.k : shareIn(u, k))),
   );
 
+  // The class with each unit's largest share, out of every class the unit
+  // counted -- a class the chips hide and `unlabeled` too -- so turning the
+  // leader off marks no other class in its place. None while the whole is not
+  // known, or nothing was counted; every class at the top when they tie.
+  const leads = new Map(units.map((u): [UnitRow, string[]] => {
+    const w = wholes.get(u)!;
+    if (w.unknown.length || !w.tot) return [u, []];
+    let top = 0;
+    let who: string[] = [];
+    for (const c of u.all) {
+      const v = u.get(c) ?? 0;
+      if (v > top) [top, who] = [v, [c]];
+      else if (v === top && top > 0) who.push(c);
+    }
+    return [u, who];
+  }));
+
+  // A unit's whole, split by class, in the classes' own order: every class it
+  // counted, so the bar is the same whole whatever the chips show. A class the
+  // chips hide is a neutral part, not a gap and not handed to the others.
+  const ORDER: string[] = [...CLS, 'unlabeled'];
+  const partsOf = (u: UnitRow): SplitPart[] =>
+    [...u.all]
+      .sort((a, b) => (ORDER.indexOf(a) + 1 || 99) - (ORDER.indexOf(b) + 1 || 99))
+      .map((c) => {
+        const v = u.get(c) ?? 0;
+        const shown = have.includes(c as Cls) || c === 'unlabeled';
+        return {
+          k: c,
+          lbl: CLS_LBL[c] ?? c,
+          v,
+          amt: u.fmt ? u.fmt(v) : fint(v),
+          c: CLS_COL[c] ?? 'var(--sg)',
+          muted: !shown,
+          note: !shown
+            ? 'hidden by the class filter: still part of the whole'
+            : c === 'unlabeled' ? 'counted, but in no class of its own' : undefined,
+        };
+      });
+
   return (
     <div className="grid wide">
       <Panel
@@ -162,13 +205,17 @@ export const OverviewTab = memo(function OverviewTab({
           />
         }
       >
-        {/* A table, not a stacked bar per measure: each class keeps its own
-            track, so the IDE's 0.3% of the processes is still there to read. */}
+        {/* Each unit's whole as one stacked bar, so the split reads at a
+            glance and the lead can be followed down the table; and each class's
+            share and amount written out in its own column beside it, so a part
+            too thin to see on the bar -- the IDE's 0.3% of the processes -- is
+            still there to read, and to sort by. */}
         <div className="scroller">
-          <table className="roomy shares">
+          <table className="roomy shares who" style={{ '--ncls': have.length } as CSSProperties}>
             <thead>
               <tr>
                 <SortTh s={sort} k="unit" first="asc">each class's share of</SortTh>
+                <th className="split" aria-label="the whole, split by class" />
                 {have.map((c) => (
                   <SortTh key={c} s={sort} k={c} className="cls" style={{ color: CLS_COL[c] }}>
                     {CLS_LBL[c] ?? c}
@@ -185,7 +232,7 @@ export const OverviewTab = memo(function OverviewTab({
                   <Fragment key={u.k}>
                   {head && (
                     <tr className="grp">
-                      <td colSpan={have.length + 1} data-tip={GROUPS[g][1]}>
+                      <td colSpan={have.length + 2} data-tip={GROUPS[g][1]}>
                         {GROUPS[g][0]}
                         {g === 'slurm' && <span className="nm"> · requests, not use: GPU use on the compute nodes is not measured</span>}
                       </td>
@@ -193,17 +240,35 @@ export const OverviewTab = memo(function OverviewTab({
                   )}
                   <tr>
                     <td><Term tip={[u.tip, why].filter(Boolean).join('\n\n') || undefined}>{u.k}</Term></td>
+                    <td className="split">
+                      {why == null && wholes.get(u)!.tot ? (
+                        <SplitBar parts={partsOf(u)} what={u.k} />
+                      ) : (
+                        <div className="split-bar none" data-tip={why ?? undefined}>
+                          <span>{why ? why.split(',')[0] : 'nothing counted'}</span>
+                        </div>
+                      )}
+                    </td>
                     {have.map((c) => {
                       const v = u.get(c);
                       const pct = shareIn(u, c);
+                      const lead = leads.get(u)!.includes(c);
                       return (
-                        <td key={c} data-tip={[u.cellTip?.(c), v != null ? why : null].filter(Boolean).join('\n') || undefined}>
+                        <td
+                          key={c}
+                          className={lead ? 'clsv lead' : 'clsv'}
+                          data-tip={[
+                            lead ? `the largest share of ${u.k}` : null,
+                            u.cellTip?.(c),
+                            v != null ? why : null,
+                          ].filter(Boolean).join('\n') || undefined}
+                        >
                           {u.io && v ? (
                             <IoNum q={{ title: `${u.k} · ${CLS_LBL[c] ?? c}`, sort: u.io, class: [c], ...coveredBy(io) }}>
-                              <ShareCell pct={pct} sub={u.fmt ? u.fmt(v) : fint(v)} c={CLS_COL[c]} />
+                              <ShareCell pct={pct} sub={u.fmt ? u.fmt(v) : fint(v)} c={CLS_COL[c]} bar={false} />
                             </IoNum>
                           ) : (
-                            <ShareCell pct={pct} sub={u.fmt ? u.fmt(v) : fint(v)} c={CLS_COL[c]} />
+                            <ShareCell pct={pct} sub={u.fmt ? u.fmt(v) : fint(v)} c={CLS_COL[c]} bar={false} />
                           )}
                         </td>
                       );

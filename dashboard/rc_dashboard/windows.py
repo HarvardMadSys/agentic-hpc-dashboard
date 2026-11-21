@@ -42,10 +42,13 @@ set of records, so a different set of reducers, not a mask over the default
 view's numbers -- a quantile, a dedup index or a trajectory chain cannot be
 un-mixed after the fact. So the registry keys a view by `(minutes, filter)`, and
 a filtered view is built, live-fed, saved, resumed and evicted exactly as a
-window is (`ViewFilter`). The unfiltered key is the bare minutes, so the
-default view, its saved copy and the prewarm are what they were before filters
-existed; a filtered view is evicted before any unfiltered one, and never pushes
-out the default window.
+window is (`ViewFilter`) -- save that it is also built again, and never
+resumed, once the hour still open as it was built has closed: it joined that
+hour's exits' own disk bytes within itself, and the hours now hold the figures
+worked out over every record (`WindowRegistry._own_figures`). The unfiltered
+key is the bare minutes, so the default view, its saved copy and the prewarm
+are what they were before filters existed; a filtered view is evicted before
+any unfiltered one, and never pushes out the default window.
 
 And one thing is reused rather than recomputed: every build's reducer state is
 saved with how far into each day-file it read (`snapshots`), so a restart or a
@@ -118,6 +121,12 @@ _PLAIN = re.compile(r"^[A-Za-z0-9._@+-]+$")
 
 def _newest(a, b):
     return b if a is None else a if b is None else max(a, b)
+
+
+def _hour_label(h):
+    """Epoch hour `h` as the local time it begins at, and its zone: the
+    service's, which a reader of its status may not share."""
+    return time.strftime("%Y-%m-%d %H:00 %Z", time.localtime(h * hourmod.HOUR))
 
 
 # How much of what a build read just before where it stopped in a plain
@@ -261,6 +270,16 @@ class ViewFilter:
     `vscode`, ...), and `none` asks for the records it did not tag -- a person's
     own shell, and the editors it does not recognise.
 
+    One figure is not the records' own: a process's disk bytes less what its
+    reaped children carried (reducers/own_io.py), where the child may be one the
+    filter leaves out -- a Codex a Claude started, under `agent_type=claude_code`.
+    The build gives each exit of a closed hour the figure the hours worked out
+    over every record (`WindowRegistry._own_figures`), loading those of the
+    records the filter keeps (`holds`); the hour still open, and the live feed,
+    are joined over what the filter keeps, until that hour closes: the view is
+    then built again (`WindowRegistry.refresh`), and a saved build of it is
+    not resumed (`WindowRegistry._resume`).
+
     Records with no user and no agent type -- the per-host `residency_totals`
     ticks -- cannot be attributed to anyone, so a filtered view does not hold
     them, and `NOT_NARROWED` says what that leaves out rather than letting an
@@ -338,6 +357,13 @@ class ViewFilter:
             return False
         return True
 
+    def holds(self, part):
+        """Whether the records of `part`, a user and an agent type token
+        (`hours.own_part`), are ones `match` keeps: the own figures a build of
+        this view loads (`hours.OwnFigures`)."""
+        user, token = part
+        return (not self._u or user in self._u) and (not self._t or token in self._t)
+
     def slug(self):
         """A short stable name for the saved file: same filter, same name."""
         return hashlib.sha1(json.dumps(self.key).encode()).hexdigest()[:12]
@@ -382,6 +408,11 @@ class PanelView:
         self.installed_at = None        # epoch these reducers went live: build OR resume
         self.covers_from = None
         self.covers_to = None
+        # A filtered view's, with hours kept: the hour still open as its build
+        # read, from which it joins its exits' own disk bytes within itself
+        # (`WindowRegistry._own_figures`); built again once it has closed
+        # (`WindowRegistry.refresh`). None for any other view.
+        self.own_open_hour = None
         self.consumed_through = None    # newest ts the build ingested
         # Where the build read each day-file to: path -> (st_dev, st_ino, the
         # offset just past the last whole line it read). A live record whose
@@ -408,9 +439,13 @@ class PanelView:
         # And the panels (`payloads`): `restored` says, while the view shows
         # panels saved by an earlier view of its window, which ones; `panels_saved_at`
         # is when its own were last written down; `panels_note` why saved
-        # panels were not shown, or why its own could not be saved.
+        # panels were not shown, or why its own could not be saved. `own_io`,
+        # of a filtered view, where its exits' own disk bytes came from, and
+        # from which hour it joins them within itself until that hour closes
+        # and it is built again (`WindowRegistry._own_figures`, `refresh`).
         self.cache = {"source": None, "note": None, "saved_at": None,
-                      "restored": None, "panels_saved_at": None, "panels_note": None}
+                      "restored": None, "panels_saved_at": None, "panels_note": None,
+                      "own_io": None}
 
     # ------------------------------------------------------------------ feed
     def feed(self, rec, at=None, unread=False):
@@ -937,16 +972,32 @@ class WindowRegistry:
         m0 = time.monotonic()           # and this times the build
         view.state = "building"
         view.error = None
+        roots = self.roots_fn()
+        # A filtered view's exits take their own disk bytes from the hours,
+        # which are reduced first if need be, before live records are held
+        # for the build: a reduction can take as long as an unfiltered build's.
+        own = self._own_figures(view, roots, t0)
+        # And the hour still open as it reads (`hours.closed_end`): from it on,
+        # it joins its exits within itself, over what its filter keeps (every
+        # exit, if the hours could not be reduced). Saved with the build, whose
+        # copy is resumed only while that hour is still open (`_resume`); held,
+        # the view is built again once it has closed (`refresh`). None for an
+        # unfiltered view, whose joins read every record, and with no hours kept.
+        # Taken before the scan, as the figures are: an hour that closes while
+        # a long scan runs is saved as the open one, and the next tick builds
+        # the view again -- a second scan, expected, that takes its figures.
+        open_hour = None
+        if view.flt and self.hours is not None:
+            open_hour = own.h_hi if own is not None else self.hours.closed_end(t0, roots)
         # Buffer live records from here, so the seam between "the scan reached
         # EOF" and "the fresh reducers are installed" replays rather than drops.
         with self.lock:
             view._replay = collections.deque()
-        roots = self.roots_fn()
         view.cache["note"] = None
         # Only a view with nothing in memory resumes. A drift re-build exists to
         # move the window's start forward, which a saved copy -- older still --
         # cannot do.
-        resumed = None if view.reducers else self._resume(view, roots, t0)
+        resumed = None if view.reducers else self._resume(view, roots, t0, open_hour)
         if resumed:
             saved, reducers, plan, total = resumed
             since = saved["covers_from"]
@@ -977,6 +1028,8 @@ class WindowRegistry:
                                       where=view.flt.where, stats=scanned):
             if keep is not None and not keep(rec):
                 continue
+            if own is not None:
+                own(rec)
             ts = rec.get("_ts_epoch")
             if ts is not None and (newest is None or ts > newest):
                 newest = ts
@@ -1013,6 +1066,11 @@ class WindowRegistry:
         meta["files"] = [{k: e[k] for k in ("path", "dev", "ino", "head_n", "head",
                                             "end")}
                          for e in plan if "ino" in e]
+        if open_hour is not None:
+            # The hour still open as this build read. A resumed one's saved
+            # part was open in no earlier hour (`_resume`), so this read's is
+            # the whole's.
+            meta["own_open_hour"] = open_hour
         # How far this read went in each file: the live feed's records up to
         # there are its own (`PanelView.feed`).
         seam = PanelView.seam_of(meta["files"], "end")
@@ -1036,6 +1094,7 @@ class WindowRegistry:
             for k in ("covers_from", "covers_to", "built_at", "consumed_through",
                       "live_through", "live_records"):
                 setattr(view, k, meta[k])
+            view.own_open_hour = open_hour
             view.seam = seam
             view.live_skipped = {"already_read": 0, "before_window": 0}
             view.cache["source"] = "snapshot" if saved else "scan"
@@ -1049,6 +1108,17 @@ class WindowRegistry:
                         "{:,}".format(n)))
             elif unsaved:
                 view.cache["note"] = unsaved
+            if own is not None:
+                view.cache["own_io"] = (
+                    "the exits of the window's %d closed hour(s) took their own disk bytes "
+                    "as the hours worked them out over every record (%d exit(s)%s%s); those of "
+                    "the hour still open, from %s, and what the view is fed live, are joined "
+                    "within it, over what its filter keeps, until that hour has closed and "
+                    "the view is built again"
+                    % (own.h_hi - own.h_lo, own.given,
+                       " read since the saved build" if saved else "",
+                       "; %d more, of hours with none saved, joined within it" % own.left
+                       if own.left else "", _hour_label(own.h_hi)))
             pending, view._replay = view._replay, None
             view.replay(pending, held, checked)
         # The panels, a reducer per hold; the view says it is ready once they are in,
@@ -1068,6 +1138,47 @@ class WindowRegistry:
             except Exception as e:      # a cache that cannot be written is no cache
                 view.cache["note"] = "not saved: %s" % e
         self._save_panels(view)
+
+    def _own_figures(self, view, roots, t0):
+        """For a filtered view, what puts each exit's own disk bytes on the
+        records its build reads (`hours.OwnFigures`), with the closed hours of
+        its window reduced first, as an unfiltered build of it would.
+
+        A filtered read never parses a record its filter leaves out
+        (`ViewFilter`), so its joins never take such a child off its parent: a
+        Claude whose figure holds a Codex it started kept the Codex's bytes
+        under `agent_type=claude_code`. The hour chain reads every record, and
+        works each exit's figure out once (reducers/own_io.py, `Ledger`); every
+        exit of a closed hour takes it. One of the hour still open, or fed live,
+        is joined within the view, as before, and so is every exit when there
+        is no hour store or the hours cannot be reduced: the view says which
+        (`cache.own_io`). With an hour store, that lasts until the hour still
+        open has closed: a held view is then built again (`refresh`), and a
+        saved build is not resumed (`_resume`). None for an unfiltered view,
+        whose joins read every record."""
+        view.cache["own_io"] = None
+        if not view.flt:
+            return None
+        if self.hours is None:
+            view.cache["own_io"] = ("each exit's own disk bytes joined within the view, from "
+                                    "what its filter keeps: no hours are kept "
+                                    "(panels.merge_reduce)")
+            return None
+        m0 = time.monotonic()
+        prog = view.progress = {"pct": 0, "records": 0, "bytes": 0, "total_bytes": 0,
+                                "files": 0, "elapsed_s": 0.0, "mode": "hours"}
+
+        def step(i, n, records=0, bytes=0):
+            prog.update(records=prog["records"] + records, bytes=prog["bytes"] + bytes,
+                        total_bytes=prog["bytes"] + bytes, pct=min(99, int(100 * i / max(1, n))),
+                        elapsed_s=round(time.monotonic() - m0, 1))
+        own, got = hourmod.own_figures(self.hours, roots, t0 - view.window_s, t0,
+                                       view.flt.holds, step)
+        if own is None:
+            view.cache["own_io"] = ("each exit's own disk bytes joined within the view, from "
+                                    "what its filter keeps: %s; built again once the hour "
+                                    "still open has closed" % got)
+        return own
 
     # ---------------------------------------------------------- saved panels
     def _show_saved(self, view):
@@ -1126,13 +1237,22 @@ class WindowRegistry:
                 "%Y-%m-%d %H:%M:%S", time.localtime(out["saved_at"]))
             view.cache["panels_note"] = None
 
-    def _resume(self, view, roots, t0):
+    def _resume(self, view, roots, t0, open_hour=None):
         """The saved reduction for this window and what is left to read, or None.
 
         Returns `(meta, reducers, plan, total_bytes)`. Says on the view why a
         snapshot was not used, so "it re-read the whole window" is never a
         guess. Anything unreadable is discarded: a cache that cannot be read is
         a cache to rebuild, never a reason to fail the window.
+
+        `open_hour`, for a filtered view with hours kept, is the hour still open
+        as this build reads (`hours.HourStore.closed_end`). A filtered build
+        joins the exits of the hour still open within itself, over what its
+        filter keeps (`_own_figures`); a build made once that hour has closed
+        gives them the figures the hours worked out over every record instead,
+        and a resumed copy, which reads on from where it stopped, never would.
+        So a copy is refused once the hour it was open in has closed: a parent
+        whose child the filter leaves out would keep the child's bytes.
         """
         if self.store is None:
             return None
@@ -1145,6 +1265,16 @@ class WindowRegistry:
                         "budget" % (label(max(1, age // 60)), label(max(1, budget // 60))))
             if age < -60:
                 return "saved build is dated in the future"
+            if open_hour is not None:
+                was = meta.get("own_open_hour")
+                if was is None:
+                    return ("the saved build does not say which hour it joined its exits' "
+                            "own disk bytes within itself from")
+                if was < open_hour:
+                    return ("the saved build joined its exits' own disk bytes within itself, "
+                            "over what its filter keeps, from %s on; that hour has closed "
+                            "since, and a build takes the figures the hours worked out over "
+                            "every record there" % _hour_label(was))
             return None
         try:
             meta, state, why = self.store.load(view.minutes, roots, check,
@@ -1304,17 +1434,32 @@ class WindowRegistry:
 
         Takes no clock: drift is now a property of what the views have ingested,
         not of how long ago they were built.
+
+        And re-scan a filtered view once the hour still open as it was built
+        has closed (`PanelView.own_open_hour`). It joined that hour's exits, and
+        every record fed live since, within itself, over what its filter keeps:
+        a parent whose child the filter leaves out kept the child's bytes. A
+        build now gives them the figures the hours worked out over every record
+        (`_own_figures`), a tick after the hour closes rather than at its drift
+        budget: about one filtered scan an hour for each filtered view held.
         """
         budget_pct = max(1, int(self.cfg.get("panels.max_drift_pct", 25))) / 100.0
-        if self.hours is not None and self.hours.behind(time.time(), self.roots_fn()):
-            self._enqueue(HOURS_JOB)    # reduce the hours closed since, behind the builds
         with self.lock:
             held = list(self.views.items())
+        closed = None
+        if self.hours is not None:
+            now, roots = time.time(), self.roots_fn()
+            if self.hours.behind(now, roots):
+                self._enqueue(HOURS_JOB)    # reduce the hours closed since, behind the builds
+            if any(v.own_open_hour is not None for _k, v in held):
+                closed = self.hours.closed_end(now, roots)
         for key, view in held:
             if view.state != "ready":
                 continue
             drift = view.drift_s() or 0
-            if drift > view.window_s * budget_pct:
+            if drift > view.window_s * budget_pct or (
+                    closed is not None and view.own_open_hour is not None
+                    and view.own_open_hour < closed):
                 self._enqueue(key)
             else:
                 view.materialize_stepwise(self.lock)

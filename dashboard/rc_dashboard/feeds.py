@@ -10,7 +10,6 @@ collect/healthcheck.py (check_target / last_timestamp), not imported: that modul
 is a CLI with module-level BASE and _default_nodes() side effects, and the
 dashboard must not take a dependency on collect/.
 """
-import glob
 import json
 import os
 import time
@@ -19,26 +18,16 @@ from datetime import datetime
 from . import gz
 from .normalize import epoch_of
 from .feedfile import dated_dirs, feed_files, host_of
-from .feedfile import _STREAM_SUFFIXES  # noqa: F401  (moved with host_of; importable as before)
 
 TS_FORMAT = "%Y-%m-%d %H:%M:%S"     # every collector stamps records this way
 
+# The two tiers the collector writes, both `<root>/<YYYY-MM-DD>/<host>...` day-files.
 TIER = {
     "ebpf": ("eBPF / proc-trace", "ebpfm exit/residency/tcp/submit", "event + 60 s"),
     "ebpf_node": ("eBPF node tier", "node_snapshot: load, memory, NFS, per-user cgroup", "300 s"),
-    "sacct": ("sacct (slurmdbd export)", "settled accounting record per job", "on demand"),
-    "sacctmgr": ("sacctmgr", "accounts, QOS, admin levels, federation", "daily"),
-    "domains": ("mapping", "user -> science domain", "static"),
-    "user_actor": ("dataclean", "user-level actor label (dense)", "static"),
 }
-ENV_OF = {
-    "ebpf": "RC_DASH_EBPF_ROOTS", "ebpf_node": "RC_DASH_NODE_ROOTS",
-    "sacct": "RC_DASH_SACCT_DIR", "sacctmgr": "RC_DASH_SACCTMGR_DIR",
-    "domains": "RC_DASH_DOMAINS_CSV", "user_actor": "RC_DASH_USER_CSV",
-}
-CLI_OF = {
-    "ebpf": "--ebpf-root", "ebpf_node": "--node-root", "sacct": "--sacct-dir",
-}
+ENV_OF = {"ebpf": "RC_DASH_EBPF_ROOTS", "ebpf_node": "RC_DASH_NODE_ROOTS"}
+CLI_OF = {"ebpf": "--ebpf-root", "ebpf_node": "--node-root"}
 FEEDS = tuple(TIER)
 
 
@@ -110,7 +99,7 @@ def _blank(name, cfg):
             "n_files": 0, "bytes": 0, "days": [], "hosts": [], "files": [],
             "newest_file": None, "newest_mtime": None, "newest_record_ts": None,
             "lag_s": None, "lag": None, "max_age_s": cfg.get("feeds.%s.max_age_s" % name),
-            "rows": 0, "schema_versions": {}, "degraded": [], "notice": None,
+            "rows": 0, "schema_versions": {}, "notice": None,
             "backfill": None}
 
 
@@ -176,56 +165,6 @@ def resolve_dated(name, cfg):
     return rep
 
 
-def resolve_globbed(name, cfg):
-    """A directory of files matching a glob -- sacct day-files, sacctmgr dumps."""
-    rep = _blank(name, cfg)
-    d = cfg.get("feeds.%s.dir" % name)
-    pat = cfg.get("feeds.%s.pattern" % name, "*")
-    rep["configured"] = [os.path.join(d, pat)] if d else []
-    rep["origin"] = cfg.origin("feeds.%s.dir" % name)
-    if not d or not os.path.isdir(d):
-        rep["missing"] = rep["configured"]
-        return rep
-    rep["resolved"] = [d]
-    rep["exists"] = True
-    files = sorted(glob.glob(os.path.join(d, pat)))
-    maxd = int(cfg.get("feeds.%s.max_days" % name, 0) or 0)
-    if maxd > 0:
-        files = files[-maxd:]
-    for p in files:
-        try:
-            st = os.stat(p)
-        except OSError:
-            continue
-        rep["files"].append({"path": p, "size": st.st_size, "mtime": st.st_mtime})
-        rep["bytes"] += st.st_size
-    rep["n_files"] = len(rep["files"])
-    if not rep["files"]:
-        rep["status"] = "empty"
-        return rep
-    newest = max(rep["files"], key=lambda f: f["mtime"])
-    rep["newest_file"] = newest["path"]
-    rep["newest_mtime"] = datetime.fromtimestamp(newest["mtime"]).strftime(TS_FORMAT)
-    rep["status"] = "ok"
-    return rep
-
-
-def resolve_file(name, cfg):
-    rep = _blank(name, cfg)
-    p = cfg.get("feeds.%s.path" % name)
-    rep["configured"] = [p] if p else []
-    rep["origin"] = cfg.origin("feeds.%s.path" % name)
-    if p and os.path.isfile(p):
-        st = os.stat(p)
-        rep.update(exists=True, resolved=[p], status="ok", n_files=1, bytes=st.st_size,
-                   newest_file=p,
-                   newest_mtime=datetime.fromtimestamp(st.st_mtime).strftime(TS_FORMAT))
-        rep["files"] = [{"path": p, "size": st.st_size, "mtime": st.st_mtime}]
-    else:
-        rep["missing"] = rep["configured"]
-    return rep
-
-
 _NOTICE = {
     "missing": ("No %s feed. Looked in %d location(s); none exist. "
                 "Set %s (or %s) to the collector's output root."),
@@ -245,9 +184,6 @@ def _notice(rep):
         return _NOTICE["empty"] % (rep["name"], ", ".join(rep["resolved"]))
     if rep["status"] == "stale":
         return _NOTICE["stale"] % (rep["name"], rep["lag"], fmt_age(rep["max_age_s"]))
-    if rep["status"] == "degraded":
-        return "The %s feed is missing column(s): %s." % (rep["name"],
-                                                          ", ".join(rep["degraded"]))
     return None
 
 
@@ -256,12 +192,7 @@ def resolve(cfg):
     out = {}
     for name in FEEDS:
         try:
-            if name in ("ebpf", "ebpf_node"):
-                rep = resolve_dated(name, cfg)
-            elif name in ("sacct", "sacctmgr"):
-                rep = resolve_globbed(name, cfg)
-            else:
-                rep = resolve_file(name, cfg)
+            rep = resolve_dated(name, cfg)
         except Exception as e:                       # a feed must never break the page
             rep = _blank(name, cfg)
             rep["status"] = "missing"
@@ -276,7 +207,7 @@ def resolve(cfg):
 def panel_meta(rep):
     """The block every panel carries so one renderer handles every empty state."""
     return {"_feed": rep["name"], "_status": rep["status"],
-            "_present": rep["status"] in ("ok", "stale", "degraded"),
+            "_present": rep["status"] in ("ok", "stale"),
             "_paths": rep["configured"], "_notice": rep["notice"],
             "_env": rep["env"], "_cli": rep["cli"]}
 

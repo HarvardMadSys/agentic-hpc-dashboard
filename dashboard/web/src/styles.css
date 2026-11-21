@@ -1227,34 +1227,6 @@ details.more > summary:hover {
   }
 }
 
-/* Overview: one measure per row, each class's value named, then the split */
-.unit-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 16px;
-  margin: 10px 0 4px;
-  font-size: 13.5px;
-}
-.unit-row .unit-k {
-  min-width: 110px;
-  font-weight: 600;
-  color: var(--ink);
-}
-.unit-row .unit-v {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--ink-2);
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 12.5px;
-}
-.unit-row .unit-v i {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-}
-
 /* the tool-mix table: an inline bar per share, the value beside it */
 table.mix th,
 table.mix td {
@@ -2279,11 +2251,6 @@ table.users tr.u-open > td {
 .u-detail table {
   width: auto;
 }
-.u-cols {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-  gap: 12px 32px;
-}
 .u-cmd {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 12.5px;
@@ -2409,6 +2376,10 @@ table.shares tr.grp td .nm {
   height: 100%;
   border-radius: 2px;
 }
+/* no share -- not known, which is not 0% -- is a hatched track, not an empty one */
+.share-track.none {
+  background: repeating-linear-gradient(135deg, var(--rule) 0 2px, transparent 2px 5px);
+}
 .share-cell b {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 13.5px;
@@ -2423,6 +2394,117 @@ table.shares tr.grp td .nm {
   font-family: 'IBM Plex Mono', monospace;
   margin-top: 2px;
 }
+/* Who uses what: each unit's whole as one stacked bar (SplitBar.tsx), and each
+   class's share and amount in its own column beside it (OverviewTab.tsx) */
+table.shares.who td {
+  vertical-align: middle;
+}
+table.shares.who th.split,
+table.shares.who td.split {
+  width: auto;
+  min-width: 220px;
+  padding-right: 28px;
+}
+table.shares.who th.cls,
+table.shares.who td.clsv {
+  width: 1%;
+  padding-right: 22px;
+}
+.split-bar {
+  display: flex;
+  gap: 2px;
+  height: 16px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.split-bar .seg {
+  display: block;
+  flex: 1 1 0;
+  /* a part above zero is never thinner than this: there to see and hover */
+  min-width: 3px;
+}
+/* a counted class the chips hide: part of the whole, drawn as no class */
+.split-bar .seg.muted {
+  background: repeating-linear-gradient(135deg, var(--edge) 0 2px, var(--surface-2) 2px 5px);
+}
+/* no known whole, no split: the reason where the bar would be */
+.split-bar.none {
+  align-items: center;
+  padding: 0 8px;
+  background: repeating-linear-gradient(135deg, var(--rule) 0 2px, transparent 2px 5px);
+}
+.split-bar.none span {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--surface);
+  padding: 0 4px;
+}
+/* the class columns hold the numbers alone: the share, its amount under it */
+table.shares.who .share-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+table.shares.who .share-cell b {
+  text-align: left;
+}
+table.shares.who .share-sub {
+  margin-top: 1px;
+  white-space: nowrap;
+}
+table.shares.who td.lead .share-cell b {
+  font-weight: 700;
+}
+/* a byte count opens the commands behind it: its button takes the whole cell */
+table.shares.who .ionum {
+  display: block;
+  width: 100%;
+  text-align: inherit;
+}
+/* on a phone a unit takes three lines: its name, its bar across the width, and
+   its classes' numbers side by side under the bar */
+@media (max-width: 600px) {
+  table.shares.who,
+  table.shares.who thead,
+  table.shares.who tbody {
+    display: block;
+  }
+  table.shares.who tr {
+    display: grid;
+    grid-template-columns: repeat(var(--ncls, 3), minmax(0, 1fr));
+    column-gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  table.shares.who tr > * {
+    display: block;
+    width: auto;
+    min-width: 0;
+    padding: 0;
+    border-bottom: 0;
+    box-shadow: none;
+  }
+  table.shares.who tr > :first-child,
+  table.shares.who td.split {
+    grid-column: 1 / -1;
+  }
+  table.shares.who th.split {
+    display: none;
+  }
+  table.shares.who td.split {
+    padding: 7px 0 8px;
+  }
+  table.shares.who thead th:first-child {
+    padding-bottom: 6px;
+  }
+  table.shares.who tr.grp {
+    padding-top: 16px;
+  }
+}
+
 /* the label column holds still, so one class column sits beside it rather
    than across the panel */
 table.shares th:first-child,
@@ -2515,8 +2597,8 @@ th.sorted .sort-arrow {
   color: var(--ink-2);
 }
 
-/* Live's two rows of plates: what is happening now, and the window. Each row
- * says which it is, because the same word means different spans in each. */
+/* A labeled row of plates: Internal's, and Live's headline row, which names
+ * the window its plates were built over. */
 .rowlabel {
   font-size: 11.5px;
   text-transform: uppercase;

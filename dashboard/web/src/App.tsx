@@ -20,7 +20,7 @@ import { IoCmdsDrawer } from './components/IoCmds';
 import { StatusPill } from './components/Panel';
 import { SectionList, useSections } from './components/SectionNav';
 import { useScrollEdges } from './lib/scrollEdges';
-import { WindowPicker } from './components/WindowPicker';
+import { WindowPicker, offeredWindows } from './components/WindowPicker';
 import { TooltipLayer } from './components/Tooltip';
 import { ago, fint, lagStr } from './lib/format';
 import { whoQuery } from './lib/filters';
@@ -133,7 +133,6 @@ function headline(feeds: Record<string, FeedReport> | null): {
     (f) => f.lag_s != null && f.max_age_s != null && f.lag_s > f.max_age_s,
   );
   const bad = pool.find((f) => f.status === 'missing') ||
-    pool.find((f) => f.status === 'degraded') ||
     pool.find((f) => f.status === 'stale') ||
     pool.find((f) => f.status === 'empty');
   // The freshest lag among live-cadence feeds is the number a user wants.
@@ -152,7 +151,6 @@ function headline(feeds: Record<string, FeedReport> | null): {
 const DATA_WORDS: Record<FeedStatus, [string, string]> = {
   ok: ['live', ''],
   stale: ['data delayed', 'a feed is older than its own max age: the numbers are not current'],
-  degraded: ['partial data', 'a feed is reporting, but not all of it'],
   empty: ['no data yet', 'the collector is running but has written nothing in this window'],
   missing: ['collector not found', 'a required feed has no files where it is expected'],
 };
@@ -241,6 +239,9 @@ export default function App() {
   // websocket's `windows` frame supersedes it with live build progress.
   const windowsRest = useWindows();
   const windows = live.windows ?? windowsRest.data;
+  // The service's floor (5 minutes): `/api/windows` says it, the websocket's
+  // `windows` frame that supersedes it does not.
+  const minWin = windowsRest.data?.min_minutes ?? windows?.min_minutes ?? null;
   // The window the SERVICE resolved, which is what every panel was built over --
   // not the one in the URL, which may have been clamped.
   const resolvedWin = live.live?.window;
@@ -577,7 +578,7 @@ export default function App() {
       run: () => goSec(s.id),
     })),
     ...(showControls
-      ? (windows?.presets ?? []).map((p) => ({
+      ? offeredWindows(windows?.presets, minWin).map((p) => ({
           id: `win:${p.minutes}`,
           group: 'Window',
           label: `Last ${p.label}`,
@@ -928,6 +929,7 @@ export default function App() {
                 value={url.win}
                 onChange={(w) => setUrl({ win: w })}
                 windows={windows}
+                minMinutes={minWin}
                 resolved={resolvedWin}
                 status={winStatus}
                 backfill={live.live?.backfill}

@@ -27,7 +27,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -43,7 +42,7 @@ from rc_dashboard import app as appmod              # noqa: E402
 from rc_dashboard import anonymize, gz, jsonout     # noqa: E402
 from rc_dashboard import tail                       # noqa: E402
 from rc_dashboard.aggregator import Aggregator      # noqa: E402
-from test_ingest import DAY, NONE, FeedCase, exit_rec, line, totals_rec   # noqa: E402
+from test_ingest import NONE, FeedCase, exit_rec, line, totals_rec   # noqa: E402
 
 
 def old_json(obj):
