@@ -330,6 +330,15 @@ class TrendTest(Case):
         (w,) = store.trend(7, "week", mon + datetime.timedelta(days=6))["buckets"]
         self.assertEqual((w["complete_days"], w["partial"], w["today"]), (6, True, True))
 
+    def test_a_write_from_another_process_is_seen(self):
+        # the `rollup` command writes the table through a store of its own
+        path = os.path.join(self.tmp, "t", rollup.FILE)
+        served, other = rollup.RollupStore(path), rollup.RollupStore(path)
+        mon = datetime.date(2026, 11, 2)
+        self.assertEqual(served.trend(3, "day", mon)["buckets"][-1]["data_days"], 0)
+        other.write([self.snap(mon, ["alice"])])
+        self.assertEqual(served.trend(3, "day", mon)["buckets"][-1]["data_days"], 1)
+
     def test_a_table_of_another_format_is_refused(self):
         path = os.path.join(self.tmp, "t", rollup.FILE)
         rollup.RollupStore(path)

@@ -322,7 +322,12 @@ class RollupStore:
     # ---------------------------------------------------------------- trend
     def trend(self, days, by, today):
         """`days` local days up to `today` (a datetime.date), in buckets of `by`."""
-        key = (days, by, today, self.version)
+        # Keyed on the table itself, not only on this process's writes: the
+        # `rollup` command writes it from a process of its own. Every write
+        # stamps `written_at` on the days it writes.
+        with self._connect() as db:
+            stamp = db.execute("SELECT COUNT(*), MAX(written_at) FROM day").fetchone()
+        key = (days, by, today, self.version, stamp)
         hit = self._cache.get(key)
         if hit is not None:
             return hit
