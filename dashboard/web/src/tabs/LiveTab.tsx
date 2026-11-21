@@ -6,7 +6,7 @@
  */
 import { Fragment, memo, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse, Trajectories } from '../api/types';
+import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse, ToolMix, Trajectories } from '../api/types';
 import type { LiveState } from '../api/useLive';
 import { Fluid, Lines } from '../charts/primitives';
 import type { LinePt, LineSeries } from '../charts/primitives';
@@ -20,13 +20,13 @@ import { pcol } from '../lib/purposes';
 import { ActiveUsers } from './LiveUsers';
 import { ByUser, distinct } from '../components/ByUser';
 import { WindowPlates } from '../components/WindowPlates';
-import { human } from '../components/WindowPicker';
 import { WindowCharts } from './LiveCharts';
 import { DayByDay } from './DayByDay';
 import { Attention } from './Attention';
 import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
 import { useNodeWords } from '../lib/nodes';
+import { pick } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 
 /* ------------------------------------------------------------- helpers */
@@ -160,9 +160,6 @@ export const LiveTab = memo(function LiveTab({
   openUserTraj,
   userCols,
   whoUses,
-  presets,
-  minWin,
-  setWin,
 }: {
   live: LiveState;
   /** the window's reduced panels: the headline plates and every time series */
@@ -182,15 +179,6 @@ export const LiveTab = memo(function LiveTab({
   /** "Who uses what", the old Overview tab's table: each class's share of the
    *  window in every unit, drawn under the rate chart (App.tsx) */
   whoUses?: ReactNode;
-  /** the service's window presets (`/api/windows`), offered over the headline
-   *  plates after its floor */
-  presets?: { minutes: number; label: string }[];
-  /** the shortest window the service builds (`min_minutes`, 5): offered first
-   *  when the presets start above it, and not at all until the service says it */
-  minWin?: number | null;
-  /** set the page's window: the headline row's span picker is the page's
-   *  window picker too, since the window plates are built over that window */
-  setWin?: (minutes: number) => void;
 }) {
   const nodes = useNodeWords();
   const L = live.live;
@@ -305,38 +293,18 @@ export const LiveTab = memo(function LiveTab({
   // The service's own name for the span, so the chart title, the plate and the
   // picker cannot disagree about what is on screen.
   const windowLbl = L?.window?.label ?? `${fint(windowMin)} min`;
-  // The service's floor (5 minutes), then every span it offers; a custom
-  // window the presets do not hold is offered too, lit, so the control never
-  // contradicts the window the rest of the tab is built over. Every one is the
-  // page's window: the plates, Who uses what and every chart are built over it.
-  const offered = [
-    ...(minWin && !(presets ?? []).some((p) => p.minutes <= minWin) ? [{ minutes: minWin, label: human(minWin) }] : []),
-    ...(presets ?? []),
-  ];
-  const spanOpts: { k: string; lbl: string; tip?: string }[] = [
-    ...offered.map((p) => ({ k: String(p.minutes), lbl: p.label, tip: `the last ${p.label}: sets the page's window` })),
-    ...(windowMin && !offered.some((p) => p.minutes === windowMin)
-      ? [{ k: String(windowMin), lbl: windowLbl, tip: `the last ${windowLbl}: the page's window` }]
-      : []),
-  ];
+  // The plates' span, read off their own panel's envelope and not off the
+  // picker: while a window builds the two differ, and the label must say what
+  // the plates under it counted (web/README.md, "The window control").
+  const platesWin = pick<ToolMix>(P, 'tool_mix', 'ebpfm')._window?.label;
 
   return (
     <>
       {attention}
-      {/* One row of headline plates over the time range the reader picks,
-          which is the page's window: Who uses what, the rate chart and the
-          rest of the tab count the same span. */}
-      <div className="rowhead">
-        <Segmented
-          label="time range"
-          value={String(windowMin)}
-          onChange={(k) => {
-            const m = Number(k);
-            if (setWin && Number.isFinite(m) && m !== windowMin) setWin(m);
-          }}
-          options={spanOpts}
-        />
-      </div>
+      {/* One row of headline plates over the page's window, which the window
+          control at the top picks for the whole tab: Who uses what, the rate
+          chart and every chart below count the same span. */}
+      <div className="rowlabel">{platesWin ? <>last <b>{platesWin}</b></> : 'the window'}</div>
       <WindowPlates P={P} cls={cls} traj={traj} />
 
       <div className="grid wide">
