@@ -2120,10 +2120,6 @@ body.noscroll {
 .plate.link:hover {
   border-color: var(--edge);
 }
-.plate-go {
-  color: var(--ink);
-  white-space: nowrap;
-}
 
 /* Live: active users */
 .u-ctl {
@@ -2456,8 +2452,8 @@ th.sorted .sort-arrow {
   color: var(--ink-2);
 }
 
-/* Live's two rows of plates: what is happening now, and the window. Each row
- * says which it is, because the same word means different spans in each. */
+/* Live's row of plates says which span it counts: the same word ("sessions",
+ * "users") means a different span elsewhere on the page. */
 .rowlabel {
   font-size: 11.5px;
   text-transform: uppercase;
@@ -2469,9 +2465,6 @@ th.sorted .sort-arrow {
 .rowlabel b {
   color: var(--ink-2);
   font-weight: 600;
-}
-.plates + .rowlabel {
-  margin-top: -4px;
 }
 
 /* the picker over the extra time series on Live: one chart at a time */
