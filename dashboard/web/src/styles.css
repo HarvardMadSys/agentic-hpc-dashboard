@@ -2458,11 +2458,25 @@ table.shares.who .share-sub {
 table.shares.who td.lead .share-cell b {
   font-weight: 700;
 }
-/* a byte count opens the commands behind it: its button takes the whole cell */
+/* a byte count opens the commands behind it: its button takes the whole cell,
+   and only the amount is underlined, so the share above it reads plainly */
 table.shares.who .ionum {
   display: block;
   width: 100%;
   text-align: inherit;
+  text-decoration: none;
+}
+table.shares.who .ionum .share-sub {
+  text-decoration: underline dotted var(--edge);
+  text-underline-offset: 3px;
+}
+table.shares.who .ionum:hover .share-sub {
+  color: var(--crimson-ink);
+  text-decoration-color: currentColor;
+}
+/* a class's name over its numbers: a phone's alone (below) */
+table.shares.who .clsv-k {
+  display: none;
 }
 /* on a phone a unit takes three lines: its name, its bar across the width, and
    its classes' numbers side by side under the bar */
@@ -2476,7 +2490,7 @@ table.shares.who .ionum {
     display: grid;
     grid-template-columns: repeat(var(--ncls, 3), minmax(0, 1fr));
     column-gap: 10px;
-    padding: 9px 0;
+    padding: 12px 0;
     border-bottom: 1px solid var(--rule);
   }
   table.shares.who tr > * {
@@ -2486,6 +2500,39 @@ table.shares.who .ionum {
     padding: 0;
     border-bottom: 0;
     box-shadow: none;
+    /* the row-hover shade lights each cell on its own, which in this grid
+       paints patches, and on a touch screen sticks after a tap */
+    background: none;
+  }
+  /* the class cells' own width (1%) and padding are more specific than the
+     line above: without this each cell is ~22px wide, its numbers spill out
+     of it, and a tap on a byte count only lands on that sliver */
+  table.shares.who th.cls,
+  table.shares.who td.clsv {
+    width: auto;
+    padding-right: 0;
+  }
+  /* each number under its class's name and swatch, so it reads without the
+     header row, which is scrolled away by the second unit */
+  table.shares.who .clsv-k {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 3px;
+    font-size: 11.5px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  table.shares.who .clsv-k i {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+  }
+  table.shares.who .share-cell b {
+    font-size: 15px;
   }
   table.shares.who tr > :first-child,
   table.shares.who td.split {
@@ -2495,7 +2542,10 @@ table.shares.who .ionum {
     display: none;
   }
   table.shares.who td.split {
-    padding: 7px 0 8px;
+    padding: 6px 0 10px;
+  }
+  table.shares.who .split-bar {
+    height: 12px;
   }
   table.shares.who thead th:first-child {
     padding-bottom: 6px;
