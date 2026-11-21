@@ -329,12 +329,17 @@ export function More({ label, children }: { label: string; children: React.React
   );
 }
 
-export function Legend({ items }: { items: { k: string; c: string; dashed?: boolean; solid?: boolean }[] }) {
+export function Legend({
+  items,
+}: {
+  /** `tip`: what an entry stands for, where its words alone do not say */
+  items: { k: string; c: string; dashed?: boolean; solid?: boolean; tip?: string }[];
+}) {
   if (!items.length) return null;
   return (
     <div className="legend">
       {items.map((i) => (
-        <span key={i.k + i.c}>
+        <span key={i.k + i.c} data-tip={i.tip}>
           {i.dashed
             ? <i className="dash" style={{ borderTopColor: i.c }} />
             : <i className={i.solid ? 'solid' : undefined} style={{ background: i.c }} />}
