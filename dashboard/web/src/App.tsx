@@ -200,6 +200,9 @@ export default function App() {
   const setPortrait = useCallback((u: string | null) => setUrl({ portrait: u }, true), [setUrl]);
   const setRank = useCallback((r: TrajRank) => setUrl({ rank: r }), [setUrl]);
   const select = useCallback((sid: string | null) => setUrl({ traj: sid, tfrom: null }, true), [setUrl]);
+  // the Live tab's headline span picker sets the page's window, as the picker
+  // in the controls strip does
+  const setWin = useCallback((w: number) => setUrl({ win: w }), [setUrl]);
   const setTfrom = useCallback((t: number | null) => setUrl({ tfrom: t }, true), [setUrl]);
   const setTorder = useCallback((o: TrajOrder) => setUrl({ torder: o }), [setUrl]);
   const clearUser = useCallback(() => setUrl({ tuser: null }), [setUrl]);
@@ -476,6 +479,8 @@ export default function App() {
             openUserTraj={openUserTraj}
             userCols={userCols}
             whoUses={whoUses}
+            presets={windows?.presets}
+            setWin={setWin}
           />
         );
       case 'users':

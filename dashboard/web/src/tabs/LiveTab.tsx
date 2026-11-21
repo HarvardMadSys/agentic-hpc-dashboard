@@ -174,6 +174,27 @@ function hostByClass(h: LiveHost): Partial<Record<string, number>> | null {
   return Object.keys(out).length ? out : null;
 }
 
+/** What the headline row counts: right now, or the page's window. */
+type Span = 'now' | 'window';
+const SPAN_KEY = 'live.span';
+
+/* A per-reader convenience: storage can be absent or refuse (a private
+ * window), and the row then opens on "right now". */
+function readSpan(): Span {
+  try {
+    return localStorage.getItem(SPAN_KEY) === 'window' ? 'window' : 'now';
+  } catch {
+    return 'now';
+  }
+}
+function writeSpan(s: Span) {
+  try {
+    localStorage.setItem(SPAN_KEY, s);
+  } catch {
+    /* not kept; the pick still holds for this page */
+  }
+}
+
 /* --------------------------------------------------------------- the tab */
 
 // It reads the live frame, so it is drawn with each one; it is not drawn for renders of App that change nothing it shows.
@@ -189,6 +210,8 @@ export const LiveTab = memo(function LiveTab({
   openUserTraj,
   userCols,
   whoUses,
+  presets,
+  setWin,
 }: {
   live: LiveState;
   /** the window's reduced panels: the "last 24h" plates and every time series */
@@ -208,8 +231,19 @@ export const LiveTab = memo(function LiveTab({
   /** "Who uses what", the old Overview tab's table: each class's share of the
    *  window in every unit, drawn under the rate chart (App.tsx) */
   whoUses?: ReactNode;
+  /** the service's window presets (`/api/windows`), offered beside "right now"
+   *  over the headline plates */
+  presets?: { minutes: number; label: string }[];
+  /** set the page's window: the headline row's span picker is the page's
+   *  window picker too, since the window plates are built over that window */
+  setWin?: (minutes: number) => void;
 }) {
   const nodes = useNodeWords();
+  const [span, setSpan] = useState<Span>(readSpan);
+  const pickSpan = (s: Span) => {
+    setSpan(s);
+    writeSpan(s);
+  };
   const L = live.live;
   const rate = L?.rate ?? NO_BINS;
   const now = L?.now ?? {};
@@ -344,77 +378,102 @@ export const LiveTab = memo(function LiveTab({
   // The service's own name for the span, so the chart title, the plate and the
   // picker cannot disagree about what is on screen.
   const windowLbl = L?.window?.label ?? `${fint(windowMin)} min`;
+  // "right now", then every span the service offers; a custom window the
+  // presets do not hold is offered too, lit, so the control never contradicts
+  // the window the rest of the tab is built over.
+  const offered = presets ?? [];
+  const spanOpts: { k: string; lbl: string; tip?: string }[] = [
+    { k: 'now', lbl: 'right now', tip: 'the last full minute, the last 10 minutes, and who is active' },
+    ...offered.map((p) => ({ k: String(p.minutes), lbl: p.label, tip: `the last ${p.label}: sets the page's window` })),
+    ...(windowMin && !offered.some((p) => p.minutes === windowMin)
+      ? [{ k: String(windowMin), lbl: windowLbl, tip: `the last ${windowLbl}: the page's window` }]
+      : []),
+  ];
+  const spanKey = span === 'now' ? 'now' : String(windowMin);
 
   return (
     <>
       {attention}
-      {/* Two rows, each saying which span it counts: the same word ("sessions",
-          "users") means a different span in each (roadmap note 1). */}
-      <div className="rowlabel">right now</div>
-      <div className="plates three">
-        <Plate
-          k="processes exited / min"
-          total={perMinAll}
-          by={perMin}
-          tip={
-            GLOSS.exited + '\n\n' +
-            'counted over the last minute that has fully elapsed: the minute in progress is ' +
-            'still filling, so counting it would always read low.'
-          }
-          note={
-            <>
-              in the last full minute
-              {perMinAll != null && perMin.agent != null
-                ? ` · ${pc((100 * perMin.agent) / (perMinAll || 1))} agent`
-                : ''}
-            </>
-          }
-        />
-        <Plate
-          k="sessions · last 10 min"
-          total={rootsTot}
-          by={roots}
-          tip={
-            `sessions on the ${nodes.many} in the last 10 minutes. an agent or IDE session counts while its ` +
-            "process tree is running; a person's own shell reports no running tree, so a human session " +
-            '(its login session, else its terminal) counts while a process in it ended in that time.'
-          }
-          note={
-            <>
-              {procsTot != null ? `${fint(procsTot)} processes running` : 'running processes not reported'}
-              {nowNum(now, ['rss_gb']) != null ? ` · ${fmt(nowNum(now, ['rss_gb']))} GB of memory` : ''}
-              {/* Read off the live agent-session roots' own launch argv
-                  (reducers/live.py), the way the window's agent-sessions plate
-                  reads them, not the collector's `autonomous`, which never saw
-                  --permission-mode bypassPermissions. Absent when no root was
-                  seen, so "none seen" never reads as "none bypassed". */}
-              {launchNow ? ` · ${launchNow}` : ''}
-            </>
-          }
-        />
-        <Plate
-          k={`active users · ${windowLbl === 'in window' ? 'in the window' : 'last ' + windowLbl}`}
-          total={U?.total ?? null}
-          by={usersBy}
-          tip={
-            'distinct accounts that ran something in the window or have an agent or IDE session running now. ' +
-            'one person in several classes is one user; the class row counts the users in each.'
-          }
-          onClick={scrollToUsers}
-          linkTip="see who, and what each one is running"
-          note={
-            <>
-              {U ? `${fint(U.with_live_agent)} with an agent running now · ` : ''}
-              <span className="plate-go">see who {'→'}</span>
-            </>
-          }
+      {/* One row of headline plates, and which span it counts is the reader's
+          pick: "right now" (the last minute, the last 10) or one of the
+          window's spans. The same word ("sessions", "users") means a different
+          span in each, so each plate still names its own (roadmap note 1). */}
+      <div className="rowhead">
+        <Segmented
+          label="time range"
+          value={spanKey}
+          onChange={(k) => {
+            if (k === 'now') return pickSpan('now');
+            pickSpan('window');
+            const m = Number(k);
+            if (setWin && Number.isFinite(m) && m !== windowMin) setWin(m);
+          }}
+          options={spanOpts}
         />
       </div>
-
-      <div className="rowlabel">
-        {windowLbl === 'in window' ? 'the window' : <>last <b>{windowLbl}</b></>}
-      </div>
-      <WindowPlates P={P} cls={cls} traj={traj} />
+      {span === 'now' ? (
+        <div className="plates three">
+          <Plate
+            k="processes exited / min"
+            total={perMinAll}
+            by={perMin}
+            tip={
+              GLOSS.exited + '\n\n' +
+              'counted over the last minute that has fully elapsed: the minute in progress is ' +
+              'still filling, so counting it would always read low.'
+            }
+            note={
+              <>
+                in the last full minute
+                {perMinAll != null && perMin.agent != null
+                  ? ` · ${pc((100 * perMin.agent) / (perMinAll || 1))} agent`
+                  : ''}
+              </>
+            }
+          />
+          <Plate
+            k="sessions · last 10 min"
+            total={rootsTot}
+            by={roots}
+            tip={
+              `sessions on the ${nodes.many} in the last 10 minutes. an agent or IDE session counts while its ` +
+              "process tree is running; a person's own shell reports no running tree, so a human session " +
+              '(its login session, else its terminal) counts while a process in it ended in that time.'
+            }
+            note={
+              <>
+                {procsTot != null ? `${fint(procsTot)} processes running` : 'running processes not reported'}
+                {nowNum(now, ['rss_gb']) != null ? ` · ${fmt(nowNum(now, ['rss_gb']))} GB of memory` : ''}
+                {/* Read off the live agent-session roots' own launch argv
+                    (reducers/live.py), the way the window's agent-sessions plate
+                    reads them, not the collector's `autonomous`, which never saw
+                    --permission-mode bypassPermissions. Absent when no root was
+                    seen, so "none seen" never reads as "none bypassed". */}
+                {launchNow ? ` · ${launchNow}` : ''}
+              </>
+            }
+          />
+          <Plate
+            k={`active users · ${windowLbl === 'in window' ? 'in the window' : 'last ' + windowLbl}`}
+            total={U?.total ?? null}
+            by={usersBy}
+            tip={
+              'distinct accounts that ran something in the window or have an agent or IDE session running now. ' +
+              'one person in several classes is one user; the class row counts the users in each.'
+            }
+            onClick={scrollToUsers}
+            linkTip="see who, and what each one is running"
+            note={
+              <>
+                {U ? `${fint(U.with_live_agent)} with an agent running now · ` : ''}
+                <span className="plate-go">see who {'→'}</span>
+              </>
+            }
+          />
+        </div>
+      ) : (
+        <WindowPlates P={P} cls={cls} traj={traj} />
+      )}
 
       <div className="grid wide">
         <Panel
