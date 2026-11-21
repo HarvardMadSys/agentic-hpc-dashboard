@@ -12,13 +12,12 @@ import { Fluid, Lines } from '../charts/primitives';
 import type { LinePt, LineSeries } from '../charts/primitives';
 import { clockLabel, fullClock, tickTarget, timeTicks } from '../charts/scale';
 import { Basis, EmptyState, Legend, NoRows, Panel } from '../components/Panel';
-import { Plate } from '../components/Plate';
 import { AGENT_TYPE_LBL, CLS, CLS_COL, CLS_LBL } from '../lib/classes';
 import { Segmented } from '../components/ClassFilter';
 import type { Who } from '../lib/filters';
-import { DASH, dur, fint, fmt, pc } from '../lib/format';
+import { DASH, dur, fint, fmt } from '../lib/format';
 import { pcol } from '../lib/purposes';
-import { ActiveUsers, scrollToUsers } from './LiveUsers';
+import { ActiveUsers } from './LiveUsers';
 import { ByUser, distinct } from '../components/ByUser';
 import { WindowPlates } from '../components/WindowPlates';
 import { WindowCharts } from './LiveCharts';
@@ -26,8 +25,6 @@ import { DayByDay } from './DayByDay';
 import { Attention } from './Attention';
 import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
-import { GLOSS } from '../lib/glossary';
-import { riskLine } from '../lib/sandbox';
 import { useNodeWords } from '../lib/nodes';
 import type { Panels } from '../lib/panels';
 
@@ -58,32 +55,8 @@ function latest(rate: LiveResponse['rate'], c: string): number | null {
   return null;
 }
 
-function nowNum(now: LiveResponse['now'], keys: string[]): number | null {
-  for (const k of keys) {
-    const v = now?.[k];
-    if (typeof v === 'number') return v;
-  }
-  return null;
-}
-
-/** Per-class value out of `now`, trying `<key>_<cls>` then `<key>.<cls>` maps. */
-function nowByClass(now: LiveResponse['now'], key: string): Partial<Record<string, number | null>> {
-  const out: Partial<Record<string, number | null>> = {};
-  const nested = now?.[key] as unknown;
-  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
-    for (const c of CLS) {
-      const v = (nested as Record<string, unknown>)[c];
-      if (typeof v === 'number') out[c] = v;
-    }
-    if (Object.keys(out).length) return out;
-  }
-  for (const c of CLS) {
-    const flat = c.replace('-', '_');
-    const v = nowNum(now, [`${key}_${flat}`, `${key}_${c}`]);
-    if (v != null) out[c] = v;
-  }
-  return out;
-}
+/** The shortest window the service builds (windows.py MIN_WINDOW_MIN). */
+const MIN_SPAN = 5;
 
 /* `roots` is the count of live agent and IDE session trees on the host: the
  * word a reader meets is "sessions" (roadmap note 14). */
@@ -174,27 +147,6 @@ function hostByClass(h: LiveHost): Partial<Record<string, number>> | null {
   return Object.keys(out).length ? out : null;
 }
 
-/** What the headline row counts: right now, or the page's window. */
-type Span = 'now' | 'window';
-const SPAN_KEY = 'live.span';
-
-/* A per-reader convenience: storage can be absent or refuse (a private
- * window), and the row then opens on "right now". */
-function readSpan(): Span {
-  try {
-    return localStorage.getItem(SPAN_KEY) === 'window' ? 'window' : 'now';
-  } catch {
-    return 'now';
-  }
-}
-function writeSpan(s: Span) {
-  try {
-    localStorage.setItem(SPAN_KEY, s);
-  } catch {
-    /* not kept; the pick still holds for this page */
-  }
-}
-
 /* --------------------------------------------------------------- the tab */
 
 // It reads the live frame, so it is drawn with each one; it is not drawn for renders of App that change nothing it shows.
@@ -214,7 +166,7 @@ export const LiveTab = memo(function LiveTab({
   setWin,
 }: {
   live: LiveState;
-  /** the window's reduced panels: the "last 24h" plates and every time series */
+  /** the window's reduced panels: the headline plates and every time series */
   P: Panels;
   traj: Trajectories | null;
   cls: Cls[];
@@ -231,7 +183,7 @@ export const LiveTab = memo(function LiveTab({
   /** "Who uses what", the old Overview tab's table: each class's share of the
    *  window in every unit, drawn under the rate chart (App.tsx) */
   whoUses?: ReactNode;
-  /** the service's window presets (`/api/windows`), offered beside "right now"
+  /** the service's window presets (`/api/windows`), offered with 5 minutes
    *  over the headline plates */
   presets?: { minutes: number; label: string }[];
   /** set the page's window: the headline row's span picker is the page's
@@ -239,14 +191,8 @@ export const LiveTab = memo(function LiveTab({
   setWin?: (minutes: number) => void;
 }) {
   const nodes = useNodeWords();
-  const [span, setSpan] = useState<Span>(readSpan);
-  const pickSpan = (s: Span) => {
-    setSpan(s);
-    writeSpan(s);
-  };
   const L = live.live;
   const rate = L?.rate ?? NO_BINS;
-  const now = L?.now ?? {};
 
   /* The live feed report, for the staleness line on the rate panel. */
   const liveFeed: FeedReport | null = useMemo(() => {
@@ -293,30 +239,9 @@ export const LiveTab = memo(function LiveTab({
    * Fewer where the chart is drawn narrow (`tickTarget`), so none overprint. */
   const xticks = (W: number) => (a: number, b: number) => timeTicks(a, b, tickTarget(W, 10));
 
-  // The last full minute as the service counted it, not each class's newest
-  // bin with a value: that is the minute still filling, or for a quiet class
-  // one from hours ago.
-  const perMin = nowByClass(now, 'exits_per_min_by_class');
-  const perMinAll = CLS.reduce<number | null>((a, c) => {
-    const v = perMin[c];
-    return v == null ? a : (a ?? 0) + v;
-  }, null);
-
-  const roots = nowByClass(now, 'roots');
-  const rootsTot = nowNum(now, ['agent_roots', 'roots_total', 'roots']) ??
-    (Object.keys(roots).length
-      ? CLS.reduce((a, c) => a + (roots[c] ?? 0), 0)
-      : null);
-  const procs = nowByClass(now, 'procs');
-  const procsTot = nowNum(now, ['procs_total', 'agent_procs', 'procs']) ??
-    (Object.keys(procs).length ? CLS.reduce((a, c) => a + (procs[c] ?? 0), 0) : null);
-  const launchNow = nowNum(now, ['live_agent_sessions']) != null
-    ? riskLine(now.live_sessions_by_approval as unknown as Partial<Record<string, number>> | undefined)
-    : undefined;
   // One row per account, from the live reducer's roster: a person who runs
   // an agent, a shell, and an IDE is one user, not three.
   const U = L?.users;
-  const usersBy = Object.fromEntries(CLS.filter((c) => U?.by_class[c] != null).map((c) => [c, U!.by_class[c]!]));
 
   // sortable by any column (roadmap note 27); by host until then
   const hostSort = useSort<string>('host', 'asc');
@@ -378,102 +303,39 @@ export const LiveTab = memo(function LiveTab({
   // The service's own name for the span, so the chart title, the plate and the
   // picker cannot disagree about what is on screen.
   const windowLbl = L?.window?.label ?? `${fint(windowMin)} min`;
-  // "right now", then every span the service offers; a custom window the
-  // presets do not hold is offered too, lit, so the control never contradicts
-  // the window the rest of the tab is built over.
-  const offered = presets ?? [];
+  // The service's floor (5 minutes), then every span it offers; a custom
+  // window the presets do not hold is offered too, lit, so the control never
+  // contradicts the window the rest of the tab is built over. Every one is the
+  // page's window: the plates, Who uses what and every chart are built over it.
+  const offered = [
+    ...((presets ?? []).some((p) => p.minutes <= MIN_SPAN) ? [] : [{ minutes: MIN_SPAN, label: '5m' }]),
+    ...(presets ?? []),
+  ];
   const spanOpts: { k: string; lbl: string; tip?: string }[] = [
-    { k: 'now', lbl: 'right now', tip: 'the last full minute, the last 10 minutes, and who is active' },
     ...offered.map((p) => ({ k: String(p.minutes), lbl: p.label, tip: `the last ${p.label}: sets the page's window` })),
     ...(windowMin && !offered.some((p) => p.minutes === windowMin)
       ? [{ k: String(windowMin), lbl: windowLbl, tip: `the last ${windowLbl}: the page's window` }]
       : []),
   ];
-  const spanKey = span === 'now' ? 'now' : String(windowMin);
 
   return (
     <>
       {attention}
-      {/* One row of headline plates, and which span it counts is the reader's
-          pick: "right now" (the last minute, the last 10) or one of the
-          window's spans. The same word ("sessions", "users") means a different
-          span in each, so each plate still names its own (roadmap note 1). */}
+      {/* One row of headline plates over the time range the reader picks,
+          which is the page's window: Who uses what, the rate chart and the
+          rest of the tab count the same span. */}
       <div className="rowhead">
         <Segmented
           label="time range"
-          value={spanKey}
+          value={String(windowMin)}
           onChange={(k) => {
-            if (k === 'now') return pickSpan('now');
-            pickSpan('window');
             const m = Number(k);
             if (setWin && Number.isFinite(m) && m !== windowMin) setWin(m);
           }}
           options={spanOpts}
         />
       </div>
-      {span === 'now' ? (
-        <div className="plates three">
-          <Plate
-            k="processes exited / min"
-            total={perMinAll}
-            by={perMin}
-            tip={
-              GLOSS.exited + '\n\n' +
-              'counted over the last minute that has fully elapsed: the minute in progress is ' +
-              'still filling, so counting it would always read low.'
-            }
-            note={
-              <>
-                in the last full minute
-                {perMinAll != null && perMin.agent != null
-                  ? ` · ${pc((100 * perMin.agent) / (perMinAll || 1))} agent`
-                  : ''}
-              </>
-            }
-          />
-          <Plate
-            k="sessions · last 10 min"
-            total={rootsTot}
-            by={roots}
-            tip={
-              `sessions on the ${nodes.many} in the last 10 minutes. an agent or IDE session counts while its ` +
-              "process tree is running; a person's own shell reports no running tree, so a human session " +
-              '(its login session, else its terminal) counts while a process in it ended in that time.'
-            }
-            note={
-              <>
-                {procsTot != null ? `${fint(procsTot)} processes running` : 'running processes not reported'}
-                {nowNum(now, ['rss_gb']) != null ? ` · ${fmt(nowNum(now, ['rss_gb']))} GB of memory` : ''}
-                {/* Read off the live agent-session roots' own launch argv
-                    (reducers/live.py), the way the window's agent-sessions plate
-                    reads them, not the collector's `autonomous`, which never saw
-                    --permission-mode bypassPermissions. Absent when no root was
-                    seen, so "none seen" never reads as "none bypassed". */}
-                {launchNow ? ` · ${launchNow}` : ''}
-              </>
-            }
-          />
-          <Plate
-            k={`active users · ${windowLbl === 'in window' ? 'in the window' : 'last ' + windowLbl}`}
-            total={U?.total ?? null}
-            by={usersBy}
-            tip={
-              'distinct accounts that ran something in the window or have an agent or IDE session running now. ' +
-              'one person in several classes is one user; the class row counts the users in each.'
-            }
-            onClick={scrollToUsers}
-            linkTip="see who, and what each one is running"
-            note={
-              <>
-                {U ? `${fint(U.with_live_agent)} with an agent running now · ` : ''}
-                <span className="plate-go">see who {'→'}</span>
-              </>
-            }
-          />
-        </div>
-      ) : (
-        <WindowPlates P={P} cls={cls} traj={traj} />
-      )}
+      <WindowPlates P={P} cls={cls} traj={traj} />
 
       <div className="grid wide">
         <Panel
