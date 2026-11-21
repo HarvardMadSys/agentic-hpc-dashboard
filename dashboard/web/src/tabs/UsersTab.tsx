@@ -693,7 +693,7 @@ function Launch({ row, fleet }: { row: UserRow; fleet: UsersFleet | null | undef
       />
       <Shares
         title="tool calls sandboxed"
-        tip="whether each session's tool calls ran sandboxed, read from each process's namespaces (/proc/<pid>/ns), as the Internal tab counts them"
+        tip="whether each session's tool calls ran sandboxed, read from each process's namespaces (/proc/<pid>/ns), as the Security tab counts them"
         order={SESSION_ORDER}
         known={SESSION_KNOWN}
         counts={row.sandbox}

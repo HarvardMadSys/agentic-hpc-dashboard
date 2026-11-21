@@ -195,7 +195,7 @@ def defaults():
         # The login-node health panel's lines (reducers.resources.NodeReducer):
         # a local filesystem at or past either is flagged full.
         "node": {"disk_full_pct": 90, "inode_full_pct": 90},
-        # A cluster without Slurm turns this off and the Slurm tab goes away;
+        # A cluster without Slurm turns this off and the HPC tab goes away;
         # nothing else depends on it (the tool mix keeps its two scheduler
         # kinds, which simply stay empty there).
         "slurm": {"enabled": True},
@@ -362,6 +362,18 @@ def defaults():
         "reducers": {
             "tool_mix": {"head_n": 12, "dedup_sessions_max": 200000},
             "io": {"top_n": 20},
+            # Abnormal activity at the scheduler (reducers/slurm.py, ABNORMAL,
+            # which a test holds equal): a session breaks a rule when its own
+            # count reaches the threshold. Fast polling: its longest stretch of
+            # queue checks at most `poll_gap_s` apart lasts `poll_min_s` or more
+            # (polling every 2-3 min while a job runs is how an agent waits, and
+            # breaks nothing). Then the most queue checks, or jobs submitted, in
+            # any 60 s; submissions the scheduler refused; scancel calls; srun or
+            # salloc runs that failed. Each a count of 1 or more (seconds for the
+            # two polling bounds), or the service refuses to start.
+            "slurm": {"abnormal": {"poll_gap_s": 30, "poll_min_s": 1800, "query_burst": 30,
+                                   "submit_burst": 20, "refused": 3, "cancels": 10,
+                                   "failed_runs": 5}},
             # Each process's own disk bytes (reducers/own_io.py): the parents
             # one join holds for their own exit, the one given to least
             # recently dropped first (an agent runtime, or what started one,
@@ -917,6 +929,17 @@ def load(args=None, config_path=None):
     elif type(cap) is not int or cap < 1:
         raise SystemExit("%s: %r is not a count of parents, 1 or more (set by %s)" % (
             key, cap, origins.get(key, "default")))
+
+    # What makes a session's Slurm activity abnormal (reducers/slurm.py): each a
+    # count of 1 or more, or the service refuses to start -- 0 would flag every
+    # session, and a string would compare with nothing.
+    for name in ("poll_gap_s", "poll_min_s", "query_burst", "submit_burst", "refused",
+                 "cancels", "failed_runs"):
+        key = "reducers.slurm.abnormal." + name
+        val = _get(tree, key, None)
+        if type(val) is not int or val < 1:
+            raise SystemExit("%s: %r is not a count, 1 or more (set by %s)" % (
+                key, val, origins.get(key, "default")))
 
     # The history store (history.py): a switch, a directory, a worker count and
     # a day bound, or the service refuses to start rather than guess.

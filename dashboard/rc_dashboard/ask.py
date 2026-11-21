@@ -220,8 +220,8 @@ Answer with one JSON object and nothing else -- no prose, no code fence:
    "evidence": "<the numbers behind it, from the snapshot>",
    "users": ["<alias the suggestion concerns>", ...],
    "panel": "<where on the dashboard: Live, Active users, Login nodes right now,
-             Who uses what, Agents, Sessions, Resources, Risks, Slurm,
-             or Internal>"}]}
+             Who uses what, Agents, Sessions, Security, Resources, Risks,
+             HPC, or Internal>"}]}
 At most 8 suggestions. `risk_who` names who ran each flagged command and
 pattern, counted over the first runs the dashboard lists for it ("listed" of
 "n"), and the paths a flagged command's runs named: name the users in "users",
@@ -253,8 +253,11 @@ PANEL_TABS = {
     "resources": ("resources", "Resources"), "io_process": ("resources", "Resources · I/O"),
     "risk": ("risk", "Risks"), "risks": ("risk", "Risks"), "risk & warning": ("risk", "Risks"),
     "risk_who": ("risk", "Risks"),
-    "slurm": ("slurm", "Slurm"),
-    "sandbox": ("internal", "Internal · Sandbox"), "internal": ("internal", "Internal"),
+    # the Slurm tab is HPC, an entry of its own: its old name still places one
+    "slurm": ("slurm", "HPC"), "hpc": ("slurm", "HPC"),
+    # the sandbox panels were Internal's, and are Security's confinement half now
+    "security": ("security", "Security"),
+    "sandbox": ("security", "Security · Sandbox"), "internal": ("internal", "Internal"),
 }
 
 

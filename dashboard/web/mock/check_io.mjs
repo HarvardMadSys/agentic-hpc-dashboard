@@ -37,7 +37,7 @@ const tool = (name, rd, wr) => ({
 /** The per-tool panel's markup, drawn over `by_tool`. */
 async function panel(byTool) {
   const P = { ...FIX, io_process: { ...FIX.io_process, by_tool: byTool } };
-  const html = await ui.render('tabs/RiskIoTab.tsx', 'RiskIoTab', { P, cls: ALL, part: 'io', plates: false });
+  const html = await ui.render('tabs/RiskIoTab.tsx', 'RiskIoTab', { P, cls: ALL, part: 'io' });
   const at = html.indexOf('id="sec-reads-by-tool"');
   assert.ok(at >= 0, 'the per-tool panel keeps the anchor its citations land on');
   return html.slice(at, html.indexOf('</section>', at));

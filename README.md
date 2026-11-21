@@ -89,7 +89,9 @@ Every record and field: [`collector/README.md`](collector/README.md#what-it-coll
 | **Users** | a portrait of each user from how they use coding agents |
 | **Agents** | every agent and its subagents; where each one's processes ran and wrote (its blast radius); the mix of tools they ran; the commands that failed |
 | **Sessions** | every session, ranked; an inspector that reads one as tasks, phases and its process tree |
-| **Login nodes** | node health and the worst processes (*Resources*); dangerous commands, and credentials on command lines, counted but never shown (*Risks*); how each class uses the scheduler (*Slurm*) |
+| **Security** | how agents were launched (a bypass flag, auto mode), whether their tool calls ran sandboxed, credentials on their command lines, and where they wrote outside their start folder: each a check of its own, with what it found |
+| **Login nodes** | node health and the worst processes (*Resources*); dangerous commands, and credentials on command lines, counted but never shown (*Risks*) |
+| **HPC** | the Slurm scheduler: abnormal activity first -- polling the queue fast, bursts of queue checks or submissions, refusals, cancels and failed runs that came again and again, each a rule with a threshold the site sets -- then each session at the scheduler, how each class uses it, its refusals and the latest submissions |
 | **Ask LLM** | questions about the window on screen, answered by an agent that cites the panels it read; off unless a site turns it on |
 | **Feeds** | each collector and feed: where it was looked for, its status, how fresh it is; and every resolved setting |
 

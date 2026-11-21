@@ -96,7 +96,7 @@ export function Attention({ P, cls, feeds }: { P: Panels; cls: Cls[]; feeds: Fee
       flags.push({
         key: `risk:${sc.id}`, kind: 'risk',
         what: sc.kind === 'credentials'
-          ? `${sc.title}: ${plural(by.agent, 'agent command line')}`
+          ? `${sc.title}: ${plural(by.agent, 'match', 'matches')} on agent command lines`
           : `${sc.title}: agents ran ${plural(by.agent, 'such command')}`,
         note: sc.kind === 'credentials' ? `${top.join(' · ')} · the values are never shown` : top.join(' · '),
         by, to: at('risk', slug(sc.title)), where: `Risks › ${sc.title}`,
@@ -121,7 +121,7 @@ export function Attention({ P, cls, feeds }: { P: Panels; cls: Cls[]; feeds: Fee
         key: 'slurm:polling', kind: 'slurm',
         what: `${plural(a.polling_sessions, 'agent session')} polled the queue`,
         note: `${fmt(a.polling_h)} h of polling: a queue check at least every 3 minutes for 10 minutes or more`,
-        by: split('polling_sessions'), to: at('slurm', 'sec-sessions-at-the-scheduler'), where: 'Slurm › Sessions at the scheduler',
+        by: split('polling_sessions'), to: at('slurm', 'sec-sessions-at-the-scheduler'), where: 'HPC › Sessions at the scheduler',
       });
     }
     if (a && a.rejected > 0) {
@@ -131,7 +131,7 @@ export function Attention({ P, cls, feeds }: { P: Panels; cls: Cls[]; feeds: Fee
         what: `${plural(a.rejected, 'agent submission')} refused by the scheduler`,
         note: `${pc(a.rejected_pct)} of agent submissions${why ? ` · most: ${why}` : ''}`,
         by: split('rejected'), to: at('slurm', 'sec-submissions-the-scheduler-refused'),
-        where: 'Slurm › Submissions the scheduler refused',
+        where: 'HPC › Submissions the scheduler refused',
       });
     }
   }
