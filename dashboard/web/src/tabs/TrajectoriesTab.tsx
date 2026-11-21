@@ -1,4 +1,8 @@
-/* Trajectories.
+/* Trajectories: the list of every session in the window, and the inspector beside it.
+ *
+ * It was the Sessions tab, and is the Agents tab's last part now (App.tsx), its key `trajectories` an
+ * alias that opens it there; a user's own sessions are listed, and open, in their portrait on the Users
+ * tab, which opens this list narrowed to them (`tuser`) for every one of them.
  *
  * The rank switcher only REORDERS: the events column and the cpu column are
  * both always present, because ranking by one and showing only that one is how
@@ -14,22 +18,11 @@
  * rows, and still say how much one user dominates, in the sessions plate's
  * note: the busiest sessions are often one user's campaign, not a pattern.
  *
- * Every row opens the inspector (TrajectoryInspector.tsx): the session as the
- * process tree its summary compresses. Which session is open lives in the URL
- * (`?traj=`), so an inspection is a link like every other view here.
- *
- * In the tool-sequence table a ribbon zooms along the sequence, and a ribbon
- * run or a tool token opens the inspector AT that run: the row carries when
- * each run began (`purpose_t`, `tool_t`), and the inspector goes to the
- * process that run's first record came from.
- *
- * An agent that ran past midnight is a row to a day, and the inspector of either
- * lists the whole session's tasks. A task or phase picked there that the other
- * day's row holds opens that row (`jumpTo`), with where to go in it (`pending`),
- * which that row's new inspector goes to once it has read itself. It opens it
- * whenever the window holds it, by that row's own last record against the
- * window's start, whether or not the table ranks it. Where the window does not
- * hold that row, it opens nothing, and the pick is made on the open row.
+ * Every row opens the inspector (TrajectoryInspector.tsx, hosted by
+ * OpenSession.tsx): the session as the process tree its summary compresses.
+ * Which session is open lives in the URL (`?traj=`), so an inspection is a
+ * link like every other view here. A task or phase picked in it that the
+ * other day's row of the session holds opens that row (OpenSession.tsx).
  *
  * Every row's commands are read, an agent's and a person's or an editor's alike, and its row says what kind of session it was, a
  * chip beside where it was driven from (components/CategoryChip.tsx): the use that
@@ -46,10 +39,10 @@
  * ribbon and says so under it; people and IDEs keep today's row exactly, with no
  * note, because no phase was ever on offer for them.
  */
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useLayoutEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import type { Async } from '../api/hooks';
-import type { Cls, PhaseDay, TrajOrder, TrajRank, TrajRow, TrajSummary, Trajectories } from '../api/types';
+import type { Cls, TrajOrder, TrajRank, TrajRow, TrajSummary, Trajectories } from '../api/types';
 import { TRAJ_RANKS } from '../api/types';
 import { Ribbon } from '../charts/primitives';
 import { Panel } from '../components/Panel';
@@ -60,17 +53,15 @@ import { Plate } from '../components/Plate';
 import { AGENT_TYPE_LBL, CLS_COL } from '../lib/classes';
 import { sessionName } from '../lib/sessions';
 import { DASH, ago, dur, fint, mb, pc } from '../lib/format';
-import { serverNow } from '../lib/clock';
 import { useClockPinned, useNow } from '../lib/useNow';
 import { bandAxis, calls, driverOf, edgeLabel, isBlock, phasesUnread, runningUnread, sequenceLine } from '../lib/phases';
 import { pcol, plbl } from '../lib/purposes';
-import { dayInWindow, taskSequence, windowStart } from '../lib/tasks';
+import { taskSequence } from '../lib/tasks';
 import { surfaceSplit } from '../lib/surfaces';
 import { absent, winLabel } from '../lib/panels';
 import { SurfaceChip } from '../components/SurfaceChip';
 import { CategoryChip } from '../components/CategoryChip';
-import { TrajectoryInspector } from './TrajectoryInspector';
-import type { DayJump, RunJump } from './TrajectoryInspector';
+import { OpenSession } from './OpenSession';
 import './trajectories.css';
 
 const RANK_LBL: Record<TrajRank, string> = {
@@ -318,6 +309,7 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
   tuser = null,
   clearUser = () => {},
   routine = null,
+  landing = false,
 }: {
   traj: Async<Trajectories>;
   rank: TrajRank;
@@ -333,11 +325,13 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
   /** which end of a session the inspector lists first and draws in full */
   torder?: TrajOrder;
   setTorder?: (o: TrajOrder) => void;
-  /** open on this user's sessions (from Active users' "trajectories →") */
+  /** narrowed to this user's sessions (a portrait's "every session" on the Users tab, or a link to the old Sessions tab) */
   tuser?: string | null;
   clearUser?: () => void;
   /** the site's routine commands, which the inspector can hide */
   routine?: string[] | null;
+  /** the page is about to go to the inspector itself (App.tsx `land`), so it does not scroll itself as it opens */
+  landing?: boolean;
 }) {
   const t = traj.data;
   // Not answered yet is waiting, not a missing feed -- a busy service, or a
@@ -352,44 +346,14 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
     .filter((r): r is TrajRow => !!r)
     .filter((r) => !r.actor3 || cls.includes(r.actor3 as Cls));
 
-  // A run picked in the tool-sequence table, for the inspector to go to. It
-  // names its session, so an inspector opened some other way never takes it.
-  const [jump, setJump] = useState<{ sid: string; j: RunJump } | null>(null);
-  // A task or phase picked in the inspector that the other day's row of the same session holds: that row is opened, and it is handed
-  // where to go in it (`pendingJump`), which it does once it has read itself. The inspector is keyed on its session, so the other row
-  // is a new inspector, and this is what outlives the old. It is for its own row and lasts only while that row is the open one, so
-  // going back to the first and forward again does not make the jump twice.
-  const [pending, setPending] = useState<DayJump | null>(null);
-  useEffect(() => {
-    if (pending && pending.sid !== sel) setPending(null);
-  }, [pending, sel]);
   const listRef = useRef<HTMLDivElement>(null);
-  // Opening a session drops a jump made for another. The rows (memoized) are
-  // handed it through `openRow`, which keeps one identity.
-  const open = (sid: string | null) => {
-    setJump(null);
-    setPending(null);
-    select(sid);
-  };
   // The list's rows (memoized) are handed one function for good, which opens
-  // through the `open` of the latest render.
-  const latestOpen = useRef(open);
+  // through the `select` of the latest render.
+  const latestSelect = useRef(select);
   useLayoutEffect(() => {
-    latestOpen.current = open;
+    latestSelect.current = select;
   });
-  const openRow = useCallback((sid: string) => latestOpen.current(sid), []);
-  // A day row is in the window when its last record is at or after the window's start (`dayInWindow`), whether or not the table ranks
-  // it among the rows it lists: on a busy day most of a session's day rows are not listed, and each opens all the same. One the window does
-  // not hold opens as the panel that says it is not in this window. So there is no jump to it, which the inspector is told, and it makes
-  // the pick on the row it has, as a pick of that row's own day is made.
-  const jumpTo = (day: PhaseDay, t0: number, t1: number, what?: string): boolean => {
-    if (!dayInWindow(day, windowStart(t?.window?.minutes, serverNow()))) return false;
-    const { sid } = day;
-    setJump(null);
-    setPending({ sid, t0, t1, what });
-    select(sid);
-    return true;
-  };
+  const openRow = useCallback((sid: string) => latestSelect.current(sid), []);
   const shownList = tuser ? listed.filter((r) => (r.user ?? (r.users ?? [])[0]) === tuser) : listed;
   // the rows drawn, in their order: a row that moves slides there (`useFlip`)
   const drawn = tuser && shownList.length ? shownList : listed;
@@ -513,20 +477,18 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
 
         <div>
           {sel ? (
-            <TrajectoryInspector
-              key={sel}
-              sid={sel}
+            <OpenSession
+              sel={sel}
               row={rows[sel] ?? null}
               win={win}
-              from={tfrom}
-              setFrom={setTfrom}
-              order={torder}
-              setOrder={setTorder}
-              onClose={() => open(null)}
-              jump={jump?.sid === sel ? jump.j : null}
-              onJump={jumpTo}
-              pendingJump={pending?.sid === sel ? pending : null}
+              windowMin={t?.window?.minutes}
+              select={select}
+              tfrom={tfrom}
+              setTfrom={setTfrom}
+              torder={torder}
+              setTorder={setTorder}
               routine={routine}
+              scrollOnOpen={!landing}
             />
           ) : (
             <div className="tj-empty">

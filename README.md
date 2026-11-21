@@ -74,10 +74,9 @@ remote-IDE servers), or **human** (a person at a terminal). Every signal in plai
 | tab | shows |
 |---|---|
 | **Live** | what needs attention now; processes exited per minute, by class; each class's share of the nodes' CPU, memory, disk and network and of what was asked of Slurm; day by day; each login node's responsiveness; who is active |
-| **Users** | a portrait of each user from how they use coding agents |
-| **Agents** | every agent and its subagents; where each one's processes ran and wrote (its blast radius); the mix of tools they ran; the commands that failed |
-| **Sessions** | every session, ranked; an inspector that reads one as tasks, phases and its process tree |
-| **Security** | how agents were launched (a bypass flag, auto mode), whether their tool calls ran sandboxed, credentials on their command lines, and where they wrote outside their start folder |
+| **Users** | a portrait of each user from how they use coding agents, and their sessions, each opening its process tree under the portrait |
+| **Agents** | every agent and its subagents; where each one's processes ran and wrote (its blast radius); the mix of tools they ran; the commands that failed; then every session, ranked, and an inspector that reads one as tasks, phases and its process tree |
+| **Security** | how agents were launched (a bypass flag, auto mode), whether their tool calls ran sandboxed, credentials on their command lines, and where they wrote outside their start folder: each a check of its own, with what it found |
 | **Login nodes** | node health and the worst processes (*Resources*); dangerous commands, and credentials on command lines, counted but never shown (*Risks*) |
 | **HPC** | the Slurm scheduler: abnormal use first (polling the queue fast, bursts of checks or submissions, refusals, cancels and failed runs again and again, each a rule with a threshold the site sets), then each session's and each class's use of it, its refusals and the latest submissions |
 | **Ask LLM** | questions about the window on screen, answered by an agent that cites the panels it read; off unless a site turns it on |

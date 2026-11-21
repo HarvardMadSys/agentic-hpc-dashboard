@@ -65,11 +65,13 @@ npm run check:procexit # a run's box says how it ended as the process table does
 npm run check:security # a security check with no panel behind it says "not checked", never none; every link lands
 npm run check:hpc    # abnormal Slurm activity is worded from the service's thresholds, and never none of a panel not judged
 npm run check:io     # the per-tool disk chart keeps the heaviest on each counter, a 0 as 0, one scale
+npm run check:tabs   # sessions are the Agents tab's last part, a user's open under their portrait, and every link to one lands
 npm run preview      # serve dist/ locally (no API)
 ```
 
-On 2026-11-20 the app's chunk was 287 kB (95 kB gzipped), React's runtime a chunk of its own
-(219 kB, 68 kB), the CSS 89 kB (17 kB), and each tab a chunk loaded on demand (4 to 62 kB).
+On 2026-11-21 the app's chunk was 199 kB (64 kB gzipped), React's runtime a chunk of its own
+(219 kB, 68 kB), the CSS 97 kB (19 kB), and each tab a chunk loaded on demand (0.5 to 70 kB), the
+session inspector (`OpenSession-*`) one the Agents and Users tabs share.
 Assets use a relative `base` (`./`), so `dist/` works at `/` or under a sub-path; the API is
 addressed at `/api` and the socket at `/ws`, overridden at build time by `VITE_API_BASE` /
 `VITE_WS_URL`. The rail's foot shows the bundle's stamp from `virtual:build-info`
@@ -180,9 +182,10 @@ word shows on hover (its `?`): what is measured, and what the measurement cannot
 | **fake data** | the demo's made-up records | synthetic data |
 
 When a word changes, the tab's URL key, the API field and the filter key keep the old name
-(`?tab=trajectories` is Sessions, `risk` Risks, `slurm` HPC), so links, citations and exports
-keep working; a panel whose title changed keeps its old anchor (`id=`), which `src/lib/cites.ts`
-points at.
+(`risk` is Risks, `slurm` HPC), so links, citations and exports keep working; a panel whose
+title changed keeps its old anchor (`id=`), which `src/lib/cites.ts` points at. Sessions are the
+Agents tab's last part, and a link to the old Sessions tab (`?tab=trajectories`, with its `traj`,
+`tuser`, `rank` and `torder`) opens the Agents tab there.
 
 ## The window control
 
@@ -230,7 +233,7 @@ about how a number is counted lives, also shows when the control is reached with
 | `[` | folds or unfolds the rail, outside a field |
 | ↑ ↓ (or Tab, Shift+Tab), Enter, Esc | in **go to**: move, go, close (focus returns where it was) |
 | ← →, Enter or Space, + −, 0 or Esc | on the inspector's chart and its purpose ribbon: step, open what is under the cursor, zoom, reset |
-| ↑ ↓ | in the Agents tab's list: the previous or next agent |
+| ↑ ↓ | in the Agents tab's list of agents: the previous or next agent |
 | Esc | closes the rail's drawer below 900px |
 
 ## Tabs
@@ -240,9 +243,9 @@ How each figure is computed is in [`docs/figures`](../../docs/figures/README.md)
 | tab | source | holds |
 |---|---|---|
 | **Live** | `WS /ws`, `GET /api/live`, `/api/panels?window_min=` with its `node` and `trend` | *Needs attention* (`src/tabs/Attention.tsx`): what the service already flags, each linking to its panel, and every source it could not check named, never read as an all-clear; the window's plates; the per-minute rate; *Who uses what* (`src/tabs/OverviewTab.tsx`; `?tab=overview` lands on it); *Day by day* over retention, not narrowed by the filter, which it says (`src/tabs/DayByDay.tsx`); *Over the window*; *Login node response* (`src/tabs/NodeResponse.tsx`); *More over time*; *Active users* (`src/tabs/LiveUsers.tsx`); the login nodes right now |
-| **Users** | `/api/users`, `/api/user?name=` | every user with an agent session in the window (`src/tabs/UsersTab.tsx`), as a table or as **figures** (`src/components/PortraitFigure.tsx`), each opening the user's **portrait** (`?portrait=`): how they leverage agents, the numbers and rules behind it, and every session, each a link to its process tree. The service holds every threshold (`rc_dashboard/portraits.py`); the page words what it counted (`src/lib/portraits.ts`) |
+| **Users** | `/api/users`, `/api/user?name=` | every user with an agent session in the window (`src/tabs/UsersTab.tsx`), as a table or as **figures** (`src/components/PortraitFigure.tsx`), each opening the user's **portrait** (`?portrait=`): how they leverage agents, the numbers and rules behind it, and every session, each opening its process tree under the portrait (`?traj=`), whose *all their sessions →* opens the Agents tab's list narrowed to them (`?tuser=`). The service holds every threshold (`rc_dashboard/portraits.py`); the page words what it counted (`src/lib/portraits.ts`) |
 | **Agents** (`?tab=cascades` and `?tab=sessions` open it too) | `cascades`, `tool_mix` | every agent tree, by user or as one list (`src/tabs/AgentsTab.tsx`), agents with **subagents** kept apart from **hosted** sessions; per agent, **Workspace & blast radius**, alone or with its subagents: where its processes ran and the bytes they moved (measured), the paths its command lines named (inferred, drawn dashed), writes and deletes outside its start folder; depth and fan-out; **Tool mix** and **Top tools** (`src/tabs/ToolPanels.tsx`); *Commands that failed* (`src/tabs/ExitsPanel.tsx`) |
-| **Sessions** (`?tab=trajectories`) | `/api/trajectories?rank=&window_min=` | sessions ranked by a switcher that only reorders, each row a band of its phases and a line naming its tasks ([below](#sessions-tasks-phases-and-processes)); a row opens the **inspector** (`/api/trajectory`, `?traj=`): who ran the session and what it came to, **What it did**, then **Processes**, read oldest or newest first, with every bound of the read stated |
+| **Agents › Sessions** (its last part; `?tab=trajectories` lands on it) | `/api/trajectories?rank=&window_min=` | at the foot of the Agents tab (`src/tabs/TrajectoriesTab.tsx`), re-read every 5 s while that tab is open: sessions ranked by a switcher that only reorders, each row a band of its phases and a line naming its tasks ([below](#sessions-tasks-phases-and-processes)); a row opens the **inspector** (`/api/trajectory`, `?traj=`; `src/tabs/OpenSession.tsx`, which the Users tab opens too): who ran the session and what it came to, **What it did**, then **Processes**, read oldest or newest first, with every bound of the read stated |
 | **Security** (`?tab=sandbox` opens it too) | `sandbox`, `risk`, `cascades` | *Security checks* (`src/tabs/SecurityTab.tsx`) on launch, confinement, exposure and reach, each with its share of what its axis could judge and a link to its panel, and no threshold of its own: a check that found none is a ring, one not made (its panel not in, or the agent class filtered out) a dashed ring and the reason. Then the **sandbox** panels (`src/tabs/SandboxTab.tsx`), and *Writes outside the start folder*, by kind of place, the most alarming first (`src/lib/places.ts`), then by user; those paths are read from command text, not measured |
 | **Login nodes › Resources** (`?tab=resources`; `?tab=io` opens it too) | `node`, `resources`, `io_process` | *Login node health* (`src/tabs/NodeHealth.tsx`), the node tier's newest snapshot of each host; the worst individual processes; disk read and written by tool, on one scale; network bytes and endpoints; I/O per user. The per-class tables behind them are on **Internal** |
 | **Login nodes › Risks** (`?tab=risk`) | `risk` | the sections the site's [risk profile](../risk-profiles/README.md) lays out, by default build and interpreter CPU on the login node, commands that should not run there, and credentials on command lines (counted, never shown) |
@@ -313,9 +316,10 @@ the feeds, the panels and the sessions.
 ### Filters, URL state and export
 
 Every filter and view lives in the query string, so a reload or a pasted link restores the view:
-the tab, the window (`win`), the session rank, the inspected session (`traj`; `tfrom` once a read
-was continued past its budget, `torder=newest`), the user Sessions opens on (`tuser`), and the
-open portrait (`portrait`). The page-wide filters are `class`, `user` and `atype`, each repeatable
+the tab, the window (`win`), the session rank, the inspected session (`traj`, on the Agents tab or
+under a portrait, closed by going to another tab; `tfrom` once a read was continued past its budget,
+`torder=newest`), the user the Agents tab's list of sessions is narrowed to (`tuser`), and the open
+portrait (`portrait`). The page-wide filters are `class`, `user` and `atype`, each repeatable
 (`agent_type` is still read). `src/lib/filters.ts` owns the one serialisation: `apiQuery()` builds
 the query for both `/api/events` and `/api/export`, so a download is exactly the view. Search &
 export, the tab that draws that table and its button (`?tab=events`), is hidden (`HIDDEN_TABS`,

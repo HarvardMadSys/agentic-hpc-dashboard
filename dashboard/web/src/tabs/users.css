@@ -287,6 +287,23 @@ table.ur-roster tbody.ur-user tr.ur-sumrow td {
 table.ur-tasklist td.wrap {
   min-width: 26ch;
 }
+/* the session open under the portrait (OpenSession.tsx): its row, and the rows
+   of its tasks, in the shade a picked row has (`.tj-item.on`, `.al-item.on`),
+   marked at the start */
+table.ur-sesslist tr.on td,
+table.ur-tasklist tr.on td {
+  background: var(--surface-2);
+}
+table.ur-sesslist tr.on td:first-child,
+table.ur-tasklist tr.on td:first-child {
+  box-shadow: inset 3px 0 0 var(--ink-2);
+}
+/* the inspector under it, a screen tall from the first: it is the foot of the
+   page, so opening it could not bring its top up under the controls before its
+   read had come and made the page long enough */
+.ur-session {
+  min-height: calc(100vh - var(--controls-h));
+}
 .ur-pbar {
   width: 110px;
 }

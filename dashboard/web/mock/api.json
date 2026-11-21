@@ -81649,7 +81649,7 @@
     "project": 0.5
    },
    "basis": {
-    "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together",
+    "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together",
     "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
    },
    "users": [
@@ -82868,7 +82868,7 @@
      "project": 0.5
     },
     "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together",
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together",
      "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "thomwg11",
@@ -84941,7 +84941,7 @@
      "project": 0.5
     },
     "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together",
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together",
      "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "jsilva",
@@ -85690,7 +85690,7 @@
      "project": 0.5
     },
     "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together",
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together",
      "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "dwei",
@@ -86466,7 +86466,7 @@
      "project": 0.5
     },
     "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together",
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together",
      "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "mmarthen",
@@ -87231,7 +87231,7 @@
      "project": 0.5
     },
     "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as on the Sessions tab), and its rows on several days together",
+     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together",
      "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "rkoshy",

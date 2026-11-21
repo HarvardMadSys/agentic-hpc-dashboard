@@ -730,7 +730,8 @@ from the roster's inputs about 20 ms (README).
 
 #### US-11 portrait: sessions
 
-- **Shows:** the newest 60 sessions, each with its launch, category, phases, calls and CPU.
+- **Shows:** the newest 60 sessions, each with its launch, category, phases, calls and CPU, and a
+  link that opens its process tree under the portrait (SE-4 to SE-10), its rows marked while open.
 - **Computation:** each session's sums (`portraits._session`) and, where it has a block, the
   block's `headline`, `category`, tasks and phase times; the 60 are among US-8's 80.
 
@@ -868,7 +869,11 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
   ending is known. A count opens IOCMDS with `outcome=nonzero&outcome=signal`.
 - **Cost:** a few adds a record, with the tool mix's.
 
-## Sessions
+## Agents › Sessions
+
+The Sessions tab's figures, the Agents tab's last part now, under AG-10 (`?tab=trajectories` lands on
+them). The inspector (SE-4 to SE-10) opens under a portrait on the Users tab too (US-11), the same
+component (`tabs/OpenSession.tsx`) over the same read.
 
 See [Sessions: tasks, phases, and processes](../../dashboard/README.md#sessions-tasks-phases-and-processes),
 and for how the page draws them
@@ -1532,8 +1537,8 @@ with the read paths and figures above) and, where nothing was measured, by the w
 4. **The session inspector's read** (INSPECT; SE-5, SE-7, SE-9): one at a time, so a second reader
    waits; a sealed `.gz` with no replica is searched in the service's own process.
 5. **Folding and ranking the sessions on read** (SE-1 to SE-3, LV-3, US-*, AG-2): the fold of every
-   held key runs under the aggregator's lock whenever a record arrived since the last, the Sessions
-   list asks every 5 s, and a running session's phase block is made again on each read; the cascades
+   held key runs under the aggregator's lock whenever a record arrived since the last, the Agents tab's
+   list of sessions asks every 5 s while that tab is open, and a running session's phase block is made again on each read; the cascades
    and the Users roster read the same fold.
 6. **The Users tab's composition** (US-*): a roster walks every session's call log, its inputs every
    tool call of the window, and a portrait makes up to 80 phase blocks; not measured on a real feed.

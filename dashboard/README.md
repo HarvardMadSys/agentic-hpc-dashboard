@@ -1089,7 +1089,9 @@ caps on what is kept, and the cost, are in [AG-4](../docs/figures/README.md#ag-4
 The **Users** tab (`?tab=users`, with a portrait opened as `&portrait=<user>`) shows how each person
 works with coding agents: which agents they use, how and from where they launch them, what the agents'
 commands do, how long a session runs and how many run at once, at what time of day, what they work on,
-and what they ask of the scheduler.
+and what they ask of the scheduler. Each of their sessions opens its process tree under the portrait
+(`&traj=<sid>`): the inspector the Agents tab opens beside its list of every session, read the same
+way (`/api/trajectory`).
 
 Nothing here is reduced or saved. `portraits.py` composes the tab when it is read, from the reducers a
 window view already holds (the trajectories, the sandbox and Slurm) and from the live tier for what is
@@ -1101,11 +1103,11 @@ and changing it rebuilds nothing.
 | launch | trajectories (`surface_of`, `approval_of`), sandbox (`agent_calls`) | agent types; where each session is driven from; approval at launch; whether its tool calls ran sandboxed, as the Security tab counts them |
 | rhythm | trajectories (each row's first and last record, each call's start) | sessions, how long each was open, the most open at once, and the minutes in which a call began, by local hour and weekday |
 | work | each session's call log; its phase block, for one user's portrait | tool calls by category (`phase_rules.CATS`), counted; time in each phase; the agent's own words in a command (a commit message, a pull request's title, a log entry); the project and the tasks |
-| footprint | trajectories | processes, CPU, disk and network bytes, peak memory, summed as a Sessions row sums them |
+| footprint | trajectories | processes, CPU, disk and network bytes, peak memory, summed as a row of the Agents tab's list of sessions sums them |
 | scheduler | Slurm (`_sessions`, `_polls`) | jobs, refusals, queue checks and polling loops of the user's agent sessions, folded as the HPC tab folds them |
 
-- **A session is one agent run.** The rows the Sessions tab lists for one agent on two days are one
-  session here, as its phase block is. Only rooted sessions count, as on the Sessions tab's plates, so
+- **A session is one agent run.** The rows the Agents tab's list of sessions holds for one agent on two
+  days are one session here, as its phase block is. Only rooted sessions count, as on that list's plates, so
   a status bar probing `codex --version` every minute is not a session. A session belongs to the
   account its records name first; one whose records name no user and no uid gets no one's row, and is
   counted under the table (`unattributed`).
@@ -1162,7 +1164,7 @@ is computed is in [HPC](../docs/figures/README.md#hpc)):
   own job, and flags nothing; fast polling is the alarm. "In any 60 s" is a sliding window, not a
   clock minute. The page words the rules from the thresholds the service serves, and holds none of
   its own;
-- **per session**: an agent's collector keys folded into the agent, as the Sessions tab folds them;
+- **per session**: an agent's collector keys folded into the agent, as the list of sessions folds them;
   people and IDEs one row per user: jobs, refusals, the busiest minute, distinct command lines (numbers
   masked: one script resubmitted is one), the flags it submits with, queries, its longest **polling
   loop** (queries within 2 s are one poll, polls within 3 min one loop, 10 min or more is polling),

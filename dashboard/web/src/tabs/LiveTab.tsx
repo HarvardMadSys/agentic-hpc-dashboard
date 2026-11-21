@@ -167,7 +167,7 @@ export const LiveTab = memo(function LiveTab({
   who?: Who;
   feeds: FeedsResponse | null;
   goto: (tab: string) => void;
-  /** open a session, or a user's sessions, on the Sessions tab */
+  /** open a session on the Agents tab, or a user's sessions in their portrait on Users */
   openTraj: (sid: string) => void;
   openUserTraj: (user: string) => void;
   /** the service's default Active users columns (`ui.user_columns`) */

@@ -2068,7 +2068,7 @@ export interface UsersResponse extends PanelEnvelope {
 /** One of a user's sessions. Its `category`, `uses`, and `summary` are its phase block's (`SessionKind`), null where no
  *  block was built for it. */
 export interface PortraitSession extends SessionKind {
-  /** its newest day's row: what the Sessions tab opens it by */
+  /** its newest day's row: what the portrait opens it by, as the Agents tab's list does */
   sid: string;
   /** every day row it is */
   sids: string[];
