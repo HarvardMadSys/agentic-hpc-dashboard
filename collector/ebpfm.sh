@@ -21,7 +21,7 @@
 #   sudo ./ebpfm.sh bootstrap     install dependencies, set required sysctls, verify
 #   sudo ./ebpfm.sh features      probe the BPF blocks, print the resolved set
 #   sudo ./ebpfm.sh overhead      one-off cost measurement (see README)
-#   sudo ./ebpfm.sh install-unit  install the persistent systemd unit (fleet deploys)
+#   sudo ./ebpfm.sh install-unit  install the persistent systemd units, one per tier
 #
 # Why `start` uses systemd-run: the userspace drain is cgroup-charged, and `sudo`
 # does NOT leave the caller's slice — a sudo'd child stays in
@@ -619,7 +619,11 @@ _node_running_pid() {
 # cycle: an already-running daemon is left strictly alone. It needs no systemd
 # and no cgroup escape; one snapshot is a few hundred ms of /proc reads.
 _node_start() {
-    local p
+    local p u
+    if u="$(_node_active_unit)"; then
+        echo "node tier already running on $HOST (unit $u) -- not starting a second loop"
+        return 1
+    fi
     if p="$(_node_running_pid)"; then
         echo "node tier already running on $HOST (pid $p)"
         return 1
@@ -651,7 +655,17 @@ _node_start() {
 }
 
 _node_stop() {
-    local p
+    local p u
+    if u="$(_node_active_unit)"; then
+        if systemctl stop "$u" 2>/dev/null; then
+            echo "node tier unit $u stopped on $HOST"
+            echo "  note: the unit is still ENABLED; 'systemctl disable $u' to keep it down across reboots"
+        else
+            echo "node tier runs as unit $u; stopping it takes root: sudo systemctl stop $u" >&2
+        fi
+        rm -f "$NODE_PID_FILE"
+        return 0
+    fi
     if p="$(_node_running_pid)"; then
         kill "$p" 2>/dev/null && echo "node tier stopped on $HOST (pid $p)"
     else
@@ -661,8 +675,10 @@ _node_stop() {
 }
 
 _node_status() {
-    local p f
-    if p="$(_node_running_pid)"; then
+    local p f u
+    if u="$(_node_active_unit)"; then
+        echo "$NAME node tier: RUNNING on $HOST (unit $u, pid $(systemctl show -p MainPID --value "$u"), mode=$(_node_mode))"
+    elif p="$(_node_running_pid)"; then
         echo "$NAME node tier: RUNNING on $HOST (pid $p, mode=$(_node_mode))"
     else
         echo "$NAME node tier: NOT RUNNING on $HOST"
@@ -783,8 +799,21 @@ _ebpf_status() {
 # not survive a reboot and has no restart policy. For a fleet deployment the
 # admin installs this instead, and systemd -- not run.sh, which is unprivileged
 # and cannot sudo -- becomes the keepalive.
+UNIT_DIR="${EBPFM_UNIT_DIR:-/etc/systemd/system}"
 UNIT_SRC="$DIR/ebpfm.service"
-UNIT_DST="/etc/systemd/system/${NAME}.service"
+UNIT_DST="$UNIT_DIR/${NAME}.service"
+# The node tier's unit: the same loop `start` runs with nohup, kept by systemd.
+NODE_UNIT_SRC="$DIR/ebpfm-node.service"
+NODE_UNIT_DST="$UNIT_DIR/${NAME}-node.service"
+
+# The node tier's unit, when it is active: start, stop and status defer to it, so
+# the loop never runs twice -- two loops would write every snapshot twice.
+_node_active_unit() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl is-active --quiet "${NAME}-node.service" 2>/dev/null \
+        && { echo "${NAME}-node.service"; return 0; }
+    return 1
+}
 
 cmd_install_unit() {
     need_root install-unit
@@ -797,25 +826,48 @@ cmd_install_unit() {
     sed -e "s#@EBPFM_DIR@#$DIR#g" -e "s#@EBPFM_OUTPUT_DIR@#$OUTPUT_DIR#g" \
         "$UNIT_SRC" > "$UNIT_DST" || die "cannot write $UNIT_DST"
     chmod 0644 "$UNIT_DST"
+    # The node tier's unit, where this copy of the collector has its template: a
+    # bundle or package from before it existed has none, and installs the one.
+    local node_unit=0
+    if [ -f "$NODE_UNIT_SRC" ]; then
+        sed -e "s#@EBPFM_DIR@#$DIR#g" -e "s#@EBPFM_NODE_OUTPUT_DIR@#$NODE_OUTPUT_DIR#g" \
+            "$NODE_UNIT_SRC" > "$NODE_UNIT_DST" || die "cannot write $NODE_UNIT_DST"
+        chmod 0644 "$NODE_UNIT_DST"
+        node_unit=1
+    fi
     systemctl daemon-reload || die "daemon-reload failed"
     echo "installed $UNIT_DST"
     echo "  collector: $DIR/ebpf_trace.py"
     echo "  output:    $OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl"
+    if [ "$node_unit" = 1 ]; then
+        echo "installed $NODE_UNIT_DST"
+        echo "  node tier: $NODE_SNAPSHOT, every ${NODE_INTERVAL}s"
+        echo "  output:    $NODE_OUTPUT_DIR/<date>/<host>.jsonl"
+    fi
     echo
-    echo "  systemctl enable --now $NAME     # start it and survive reboots"
+    echo "  systemctl enable --now $NAME     # the eBPF tier: start it and survive reboots"
+    [ "$node_unit" = 1 ] && \
+    echo "  systemctl enable --now $NAME-node   # the node tier, the same way"
     echo "  systemctl status $NAME"
-    echo
-    echo "  The node tier is separate and unprivileged -- run '$SELF start' (or let"
-    echo "  the repo keepalive do it). It needs no unit and no root."
+    if [ "$node_unit" = 1 ] && _node_running_pid >/dev/null 2>&1; then
+        echo
+        echo "  note: a node tier '$SELF start' began runs (pid $(_node_running_pid));"
+        echo "  '$SELF stop' it before enabling $NAME-node, or it writes every snapshot twice."
+    fi
 }
 
 cmd_uninstall_unit() {
     need_root uninstall-unit
-    [ -f "$UNIT_DST" ] || { echo "no unit installed at $UNIT_DST"; return 0; }
-    systemctl disable --now "$NAME" 2>/dev/null
-    rm -f "$UNIT_DST"
+    local u any=0
+    for u in "$UNIT_DST" "$NODE_UNIT_DST"; do
+        [ -f "$u" ] || continue
+        any=1
+        systemctl disable --now "$(basename "$u")" 2>/dev/null
+        rm -f "$u"
+        echo "removed $u"
+    done
+    [ "$any" = 1 ] || { echo "no unit installed in $UNIT_DIR"; return 0; }
     systemctl daemon-reload 2>/dev/null
-    echo "removed $UNIT_DST"
 }
 
 # --- tier dispatchers ------------------------------------------------------
@@ -1079,7 +1131,7 @@ __EBPFM_PAYLOAD__
 HDR
         tar czf - -C "$DIR/.." \
             "$base/ebpfm.sh" "$base/ebpf_trace.py" "$base/node_snapshot.py" \
-            "$base/ebpfm.service" \
+            "$base/ebpfm.service" "$base/ebpfm-node.service" \
             "$base/lib" "$base/README.md" \
             "$base/VENDORED.md" "$base/.vendored.sha256" 2>/dev/null | base64
     } > "$out"

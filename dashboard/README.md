@@ -307,8 +307,10 @@ image (`docker run -p 8080:8080`), with two days of history, Ask LLM off, and th
 working day in New York time. [`deploy/cloudflare`](../deploy/cloudflare/README.md) puts
 that image behind a Cloudflare Worker at <https://dashboard-demo.agentic-system.org>: one
 shared instance that sleeps when nobody is looking and says it is starting while it wakes.
-The real service over live collectors, behind a password, on a host of your own, is
-[`hpc/deploy`](../hpc/deploy/README.md).
+The real service over live collectors, behind a password, on a host of your own, is one
+of [`deploy`](../deploy/README.md)'s two modes -- one server that runs the collector and
+the dashboard, or a fleet of collectors that the dashboard's host pulls from with rsync --
+or, over a cluster's login nodes, [`hpc/deploy`](../hpc/deploy/README.md).
 
 **Restarts resume it.** The feed is a function of the seed, the host count and the clock:
 the same span cut into windows anywhere is the same bytes (`demo/world.py`;
