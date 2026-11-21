@@ -1,8 +1,9 @@
 # The bench
 
-Tools to measure the dashboard, and to show a change kept every answer it serves. Each
-tool's docstring lists its options; this page is how they fit together, and what to watch
-for. Run them from `dashboard/`, with the project's venv (`uv sync`).
+These tools measure the dashboard, and show that a change still gives every answer the
+dashboard served before. Each tool's docstring lists its options. This page explains how the
+tools fit together and what to watch out for. Run them from `dashboard/`, with the project's
+venv (`uv sync`).
 
 | tool | what it does |
 |---|---|
@@ -15,18 +16,19 @@ for. Run them from `dashboard/`, with the project's venv (`uv sync`).
 
 ## A change, measured
 
-**1. A feed.** Make it once, and use the same bytes for both sides of a comparison:
+**1. A feed.** Make it once, and use the same bytes for both sides of a comparison.
 
 ```bash
 .venv/bin/python bench/amplify.py /tmp/feed --days 2 --hosts 3 --host-clones 2 --density 8 --gzip-sealed --end 1795435200
 ```
 
-That is the 6-node feed the READMEs' bench figures come from: 514 K records, 787 MB, every
-day but the newest gzipped as a fleet keeps them, so the `.gz` paths are read as well. `--end`
-fixes the newest record, so the command writes the same bytes again -- but only with the same
-demo generator: a change to `rc_dashboard/demo` changes the feed.
+This is the 6-node feed that the bench figures in the READMEs come from: 514 K records and
+787 MB. Every day except the newest is gzipped, the way a fleet keeps them, so the `.gz` read
+paths get exercised too. `--end` fixes the time of the newest record, so the command writes
+the same bytes each time it runs. That holds only with the same demo generator, though: a
+change to `rc_dashboard/demo` changes the feed.
 
-**2. The answers.** Dump the base and the change, and compare:
+**2. The answers.** Dump the responses from the base and from the change, and compare them.
 
 ```bash
 git worktree add --detach /tmp/base origin/main
@@ -36,36 +38,40 @@ ln -s "$PWD/.venv" /tmp/base/dashboard/.venv
 .venv/bin/python bench/golden.py compare /tmp/base.json /tmp/new.json
 ```
 
-`golden.py` runs the service from the tree it is in, so each dump runs its own tree's code;
-`git worktree remove --force /tmp/base` drops the base tree after.
-`compare` prints `IDENTICAL` or every difference; a speed-up that changes a number the page
-shows is a regression. A key that says when or how fast something ran, rather than what the
-feed holds, is left out of both (`VOLATILE`); if two dumps of one tree ever differ, the key
-that differs belongs there.
+`golden.py` runs the service from the tree it lives in, so each dump runs its own tree's code.
+Afterwards, `git worktree remove --force /tmp/base` removes the base tree.
+`compare` prints either `IDENTICAL` or every difference it finds. A speed-up that changes a
+number the page shows is a regression. Some keys describe when or how fast something ran
+rather than what the feed holds; those are left out of both dumps (`VOLATILE`). If two dumps
+of the same tree ever differ, the key that differs belongs in that list.
 
-**3. The time.** `run.py FEED` times the service as a deployment runs it, from outside; it
-reads the page's own files too, so build `web/dist` first (`cd web && npm ci && npm run build`).
-`hotpaths.py FEED --what scan,hours,merge,filter` times one path in this process. Then:
+**3. The time.** `run.py FEED` times the service from outside, run the way a deployment runs
+it. It also reads the page's own files, so build `web/dist` first (`cd web && npm ci && npm run build`).
+`hotpaths.py FEED --what scan,hours,merge,filter` times one path in-process. Then:
 
 - **Run A, B, A, B.** The same code on the same feed reduced a 24 h window's hours in 14.2 s,
-  and on the same box later in 17.1 s; only runs taken side by side compare.
+  and later, on the same box, in 17.1 s. Only runs taken side by side can be compared.
 - **Pin `PYTHONHASHSEED`** (`svc.py` pins it for the service). Set order decides which file a
-  read opens first, and so what a cache holds when the next one asks: it changes no answer, but
-  it moves counts and times (132 span inflations, or 114, for one build).
-- **Time without `cProfile` before believing it.** It charges every small call, so a reducer
-  that makes millions of `dict.get` calls reads several times its real cost.
-- **Count the work as well as the time** on a busy box: a gzip span inflated or an index
-  built is the same count however loaded the machine is.
+  read opens first, and therefore what a cache holds when the next read asks for it. That
+  changes no answer, but it does move counts and times (132 span inflations or 114, for the
+  same build).
+- **Time without `cProfile` before believing a result.** `cProfile` adds overhead to every
+  small call, so a reducer that makes millions of `dict.get` calls looks several times more
+  expensive than it really is.
+- **Count the work as well as the time** on a busy box. The number of gzip spans inflated or
+  indexes built stays the same however loaded the machine is.
 
-**4. Stalls.** `stallwatch.py OUT.txt [--after 0.5]` serves as `python -m rc_dashboard serve`
-does, configured only by `RC_DASH_*`, so give it the feed's roots and `RC_DASH_OPEN=1` (the
-service refuses to serve without a password otherwise). Its first argument is the file it
-writes to.
+**4. Stalls.** `stallwatch.py OUT.txt [--after 0.5]` serves the same way
+`python -m rc_dashboard serve` does, and is configured only by `RC_DASH_*`. Give it the feed's
+roots and `RC_DASH_OPEN=1`, because otherwise the service refuses to serve without a password.
+Its first argument is the file it writes the stacks to.
 
 ## What the feed is not
 
-An hour of one of the bench feed's files is 1 to 3 MB, under one 8 MB gzip span; a FAS login
-node's is about 140 MB. A change whose gain or cost scales with that -- what a gzip read
-inflates, what a cache of spans holds -- measures very differently here than on a fleet, so
-say which it is, and reason about the fleet's sizes as well: `dashboard/README.md`'s sharing of
-gzip spans is one, its bench figure several times what a fleet would see.
+An hour of one of the bench feed's files is 1 to 3 MB, which fits inside one 8 MB gzip span.
+An hour on a FAS login node is about 140 MB. Some changes have a gain or cost that scales with
+that size, such as how much a gzip read inflates or how much a cache of spans holds. Those
+changes measure very differently here than on a fleet, so say when a change is one of them,
+and reason about the fleet's sizes as well. The sharing of gzip spans described in
+`dashboard/README.md` is one such change: its bench figure is several times what a fleet
+would see.

@@ -30,17 +30,17 @@ everything on the host stays private.
 | The dashboard's host | One folder, `DASH_ROOT`, and one tmux session, `rc-dashboard`, which the systemd user unit `rc-tmux.service` starts. The session's window `stream` runs `fleet_stream.py receive`, which keeps one ssh connection to each node and writes the copy. Its window `dashboard` runs the dashboard on `127.0.0.1:DASH_PORT`. |
 | This machine | The repository and `site.env`. `deploy.sh` builds and ships each release, and `check.sh` checks the host every hour. |
 
-Each window runs `keep-running.sh`. It starts its process in a systemd scope of its own
-(`rc-fleet-stream.scope`, `rc-dashboard.scope`) and starts it again when it ends: after
-10 s for the stream and after 30 s for the dashboard. The window shows the process's log
-as it grows. Linger keeps the user manager, and with it the session, running when no one
-is logged in.
+Each window runs `keep-running.sh`. That script starts the window's process in a systemd
+scope of its own (`rc-fleet-stream.scope`, `rc-dashboard.scope`) and starts it again when it
+ends, after 10 s for the stream and after 30 s for the dashboard. The window shows the
+process's log as it grows. Linger keeps the user manager running when no one is logged in,
+and the session with it.
 
 The scopes cap the dashboard at `DASH_MEMORY_MAX` and the stream at 512 MB. The unit
 caps the tmux session at 64 MB, and each Ask question's Codex run gets 1 GB. These are
-hard caps: past one, the kernel stops the process, and its window starts it again. There
-is no soft cap. With no swap, a soft cap (`MemoryHigh`) stalls a process instead of
-stopping it, and a stalled dashboard answers nothing.
+hard caps: when a process goes past its cap, the kernel stops it, and its window starts it
+again. There is no soft cap. With no swap, a soft cap (`MemoryHigh`) stalls a process
+instead of stopping it, and a stalled dashboard answers nothing.
 
 ## What each host needs
 
@@ -50,12 +50,13 @@ stopping it, and a stalled dashboard answers nothing.
   posts from the hourly check: `jq` and `curl`.
 - **The dashboard's host:** Linux with systemd, a user manager that you can keep running
   with `loginctl enable-linger`, and tmux. Python 3.11 or later for the dashboard's venv
-  (`DASH_PYTHON`; 3.14 reduces the hours about 10% faster than 3.12, with the same panels:
-  `uv python install 3.14`, then `DASH_PYTHON=$(uv python find 3.14)`), and
-  `/usr/bin/python3` for the stream. A deploy whose `DASH_PYTHON` is another version than the
-  venv's makes the venv again, keeps the one before as `venv.old`, and restarts the session.
-  `ss` (without it, the port checks read `/proc/net/tcp`), `curl`, and `getfacl` for
-  the checks. Disk and memory: see [Memory and disk](#memory-and-disk).
+  (`DASH_PYTHON`). Python 3.14 reduces the hours about 10% faster than 3.12 and gives the
+  same panels; to use it, run `uv python install 3.14`, then set
+  `DASH_PYTHON=$(uv python find 3.14)`. The stream needs `/usr/bin/python3`. If a deploy's
+  `DASH_PYTHON` is a different version from the venv's, the deploy makes the venv again,
+  keeps the old one as `venv.old`, and restarts the session. The checks need `ss` (without
+  it, the port checks read `/proc/net/tcp`), `curl`, and `getfacl`. For disk and memory, see
+  [Memory and disk](#memory-and-disk).
 - **Each source node:** the collector ([`collector/`](../../collector), or the RPM), an
   account (`SOURCE_USER`) that can log in with an ssh key, and `/usr/bin/python3` 3.6 or
   later. The sender uses the standard library only, so nothing is installed. The nodes can
@@ -64,7 +65,7 @@ stopping it, and a stalled dashboard answers nothing.
 ## Settings
 
 Copy [`site.env.example`](site.env.example) to `site.env` in this folder, and fill it
-in. Git ignores `site.env`. The example explains each key; in short:
+in. Git ignores `site.env`. The example explains each key. In short:
 
 | Keys | What they set |
 |---|---|
@@ -72,7 +73,7 @@ in. Git ignores `site.env`. The example explains each key; in short:
 | `SENDER_DIR`, `SHARED_HOME` | Where the sender lives on the nodes, and whether their home is shared. |
 | `DASH_SSH`, `DASH_NODE`, `DASH_ROOT`, `DASH_PORT`, `DASH_PYTHON`, `PRIVATE_TREE` | The dashboard's host, its folder, its port, the Python that makes its venv, and whether the folder stays private ([When the stream trips](#when-the-stream-trips)). |
 | `SITE_NAME`, `SITE_DESCRIPTION`, `RISK_PROFILE`, `ANONYMIZE`, `CODEX` | What the page calls itself, the risk rules, aliases for user names, and Ask. |
-| `DROP_USERS`, `DROP_AGENT_USERS` | Accounts whose records the dashboard drops: every record, or their agents' only. Empty, it drops only `SOURCE_USER`'s: the stream's own processes. |
+| `DROP_USERS`, `DROP_AGENT_USERS` | Accounts whose records the dashboard drops: every record, or only their agents' records. If left empty, the dashboard drops only `SOURCE_USER`'s records, which are the stream's own processes. |
 | `HISTORY_DAYS`, `MAX_WINDOWS`, `PREWARM_MIN`, `MAX_SESSIONS`, `DAY_CACHE`, `DASH_MEMORY_MAX`, `FREE_MIN_GB` | History, memory, and disk. A key you leave out takes the dashboard's default. |
 | `SSH_KEY`, `WORK_DIR`, `NODE_MODULES`, `SLACK_WEBHOOK_FILE` | This machine's key, work folder, bundle build, and the check's Slack posts. |
 
@@ -103,21 +104,22 @@ checks every value first, so a bad `site.env` stops a deploy before anything is 
 
        cd dashboard && uv run python -m rc_dashboard new-password
 
-   It writes the password to `~/.config/rc-dashboard/password` and a netrc for curl
-   beside it (both mode 600, for `localhost` and `127.0.0.1`; `--netrc-host <name>` adds a
-   proxy's name), and prints only the hash. On the dashboard's host, put the hash in
-   `$DASH_ROOT/etc/auth.env` (mode 600) as one line, `RC_DASH_PASSWORD_HASH=<hash>`.
+   This writes the password to `~/.config/rc-dashboard/password` and a netrc for curl
+   beside it, and prints only the hash. Both files are mode 600 and cover `localhost` and
+   `127.0.0.1`; `--netrc-host <name>` adds a proxy's name. On the dashboard's host, put the
+   hash in `$DASH_ROOT/etc/auth.env` (mode 600) as one line, `RC_DASH_PASSWORD_HASH=<hash>`.
 5. Optional, to spare the nodes' network: if the nodes' sealed days are already in a
-   folder the dashboard's host can read, as `<folder>/<node>/<day>/*.jsonl.gz`, seed the
-   copy from it before the first start. From a checkout of this repository on the host:
+   folder the dashboard's host can read, laid out as `<folder>/<node>/<day>/*.jsonl.gz`,
+   seed the copy from that folder before the first start. From a checkout of this
+   repository on the host, run
    `python3 fleet/seed_mirror.py <folder> $DASH_ROOT/data --free-min-gb <FREE_MIN_GB>`.
-   `fleet/pull-gz.sh <folder>` makes such a folder with rsync, on a machine that logs in to
-   the nodes with an ordinary key (the stream's key runs only the sender), with the
-   settings from `site.env` in its environment (`set -a; . deploy/fleet/site.env`). The
-   stream fetches whatever is missing.
-6. On this machine: `deploy/fleet/deploy.sh --first`. It installs the sender on the
-   nodes, then the release on the host, makes the venv, starts the session, and turns
-   linger on.
+   To make such a folder, run `fleet/pull-gz.sh <folder>`, which uses rsync. Run it on a
+   machine that logs in to the nodes with an ordinary key (the stream's key runs only the
+   sender), with the settings from `site.env` in its environment
+   (`set -a; . deploy/fleet/site.env`). The stream fetches whatever is missing.
+6. On this machine, run `deploy/fleet/deploy.sh --first`. It installs the sender on the
+   nodes, then installs the release on the host, makes the venv, starts the session, and
+   turns linger on.
 7. Add the hourly check to this machine's crontab ([The hourly check](#the-hourly-check)).
 
 ## Opening the page
@@ -130,10 +132,10 @@ on that host, an ssh tunnel works. On your own machine:
 Then open http://localhost:8000 and sign in. Any free local port works in place of 8000.
 To serve the page at an address of its own, put a reverse proxy or a tunnel service on
 the host in front of `127.0.0.1:DASH_PORT`. When the proxy says the request came over
-https (`X-Forwarded-Proto`), the session cookie is Secure. The dashboard refuses a
-websocket opened by a page on another site, by its `Origin`: a proxy that keeps the
-public name in the `Host` (cloudflared does) needs nothing more, and one that rewrites the
-`Host` to `127.0.0.1:DASH_PORT` needs the page's origin named, as a line
+https (`X-Forwarded-Proto`), the session cookie is Secure. The dashboard checks a
+websocket's `Origin` and refuses one opened by a page on another site. A proxy that keeps
+the public name in the `Host` header (cloudflared does) needs nothing more. A proxy that
+rewrites the `Host` to `127.0.0.1:DASH_PORT` needs the page's origin named, as a line
 `RC_DASH_ALLOWED_ORIGINS=https://<the public name>` in `etc/auth.env`. See the dashboard's
 [Password](../../dashboard/README.md#password) section for the sign-in, the cookie, and
 scripts.
@@ -158,7 +160,7 @@ To change the password, run step 4 again with `--force`, put the new hash in
 | The hourly check and its copy of `site.env` | `WORK_DIR/bin/` on this machine |
 
 With `PRIVATE_TREE=true` (the default), everything is mode 700 or 600. The stream writes
-only through a folder handle that it checked at start, and stops if the path is swapped
+only through a folder handle that it checked at start, and it stops if the path is swapped
 ([When the stream trips](#when-the-stream-trips)).
 
 ## Watching and restarting
@@ -167,12 +169,12 @@ On the dashboard's host:
 
     tmux -L rc-dashboard attach         # Ctrl-b n moves between the windows; Ctrl-b d leaves
 
-In a window, Ctrl-C (or `Ctrl-\`) stops its process, which starts again after the pause.
-A second Ctrl-C during the pause stops it until the next hourly check, or until
-`tmux -L rc-dashboard respawn-pane -t rc-dashboard:dashboard.0` (or `:stream.0`) starts
-it. A process is stopped by stopping its scope: SIGTERM, then SIGKILL after 90 s. Open
-your own shells outside this session: anything that runs in it shares the session's
-64 MB cap.
+In a window, Ctrl-C (or `Ctrl-\`) stops the window's process, which starts again after the
+pause. A second Ctrl-C during the pause keeps it stopped until the next hourly check, or
+until `tmux -L rc-dashboard respawn-pane -t rc-dashboard:dashboard.0` (or `:stream.0`)
+starts it. Stopping a process means stopping its scope: SIGTERM, then SIGKILL after 90 s.
+Open your own shells outside this session, because anything that runs in it shares the
+session's 64 MB cap.
 
 To restart both processes, or the session itself:
 
@@ -192,49 +194,51 @@ Through an ssh tunnel, the password's netrc works from this machine:
 
 Each start of the dashboard refills its history from the copy. The page answers within a
 second. First the refill finds where the history starts in each file, and the Feeds tab
-says "positioning". The live panels and the view builds wait for that step; then the
-refill reads backwards, beside the builds.
+says "positioning". The live panels and the view builds wait for that step. After it, the
+refill reads backwards, alongside the builds.
 
 ## Memory and disk
 
 The dashboard's defaults hold 7 days of history, so the window picker offers 1h, 6h,
 12h, 24h, 3d, and 7d. It holds up to 5 built views (`MAX_WINDOWS`), builds the 1h, 6h,
 and 12h views ahead (`PREWARM_MIN`), and keeps up to 150,000 sessions per view
-(`MAX_SESSIONS`), the most recently active ones. The day cache (`DAY_CACHE`) merges each
-finished day's 24 hour states into one saved state, so a wide window merges days, not
-hours.
+(`MAX_SESSIONS`), choosing the most recently active ones. The day cache (`DAY_CACHE`)
+merges each finished day's 24 hour states into one saved state, so a wide window merges
+days instead of hours.
 
-Every 6 hours a view is built again from the saved hours, beside the held one, until it
-replaces it. Views are built one at a time, so a reader who asks for another window
-meanwhile waits. After a deploy that changes what an hour holds (the reducers' code,
-sessions per view, or days of history), the first build of each view reduces its hours
-again from the copy.
+Every 6 hours a view is built again from the saved hours. The new build runs alongside the
+held view until it replaces it. Views are built one at a time, so a reader who asks for
+another window in the meantime has to wait. After a deploy that changes what an hour holds
+(the reducers' code, sessions per view, or days of history), the first build of each view
+reduces its hours again from the copy.
 
-The copy keeps a sealed day as `.gz`, as each node does (`keep_gz` in `stream.json`):
-about 19 times less disk than plain. The dashboard reads a `.gz` through an index of
-about 0.5% of its plain size, and drops the index of a file that is gone or that no
-reader used for 30 minutes. At each day's end the stream gzips the day it has just
-checked. The stream pauses every node's link while the copy's volume has less free space
-than `FREE_MIN_GB`, or than 10% of the volume if that is more.
+The copy keeps each sealed day as `.gz`, as each node does (`keep_gz` in `stream.json`).
+That takes about 19 times less disk than keeping it uncompressed. The dashboard reads a `.gz` through
+an index that is about 0.5% of the file's uncompressed size. It drops the index of a file that is
+gone, or that no reader has used for 30 minutes. At the end of each day, the stream gzips
+the day it has just checked. The stream pauses every node's link while the copy's volume
+has less free space than `FREE_MIN_GB`, or less than 10% of the volume if that is more.
 
-The dashboard keeps each sealed day as Parquet too, in `DASH_ROOT/cache/history`, and
-reads a filtered query of a sealed day -- one user's events, one session's process tree --
-from it rather than inflating the `.gz` ([History in
-Parquet](../../dashboard/README.md#history-in-parquet)). It takes about a third of the
-`.gz`'s disk, and is made in the background after a start and as each day is sealed, by
-up to 8 processes (one per CPU the service may use), each holding up to 0.8 GB inside the
-`DASH_MEMORY_MAX` cap while it works; they exit when the days are converted. Nothing waits
-for it: a day not converted yet is read from its `.gz`. On a deployment over the same 8 nodes
-with a 32G cap, the first start after this store came in converted their 7 sealed days
-(18.4 GB of `.gz`, 182 M records) into 5.8 GB of Parquet in 12 minutes beside its refill,
-the service peaking at 19.1 GiB meanwhile and holding 12.5 GiB after.
-The hours are reduced meanwhile too, by `INGEST_WORKERS` processes (two per node unless
-set, 16 here) of about 0.5 GB each, plus about 1.7 GB in the service while it merges an
-hour: about 9 GB more at once, so a first start can come near 28 GiB of the 32G cap. On a
-lower cap, set `INGEST_WORKERS` to the node count (8 here: about 4 GB, and 80 to 90% of
-the speed of 16). Each worker reads only its own node's files, and keeps the last span it
-inflated of each sealed one for the next read of it in the same node-hour: at most 4 spans
-of 8 to 12 MB (`NODE_SHARED_FILES` in `hours.py`), let go when that hour is done.
+The dashboard also keeps each sealed day as Parquet, in `DASH_ROOT/cache/history`. For a
+filtered query of a sealed day, such as one user's events or one session's process tree,
+it reads the Parquet instead of inflating the `.gz` ([History in
+Parquet](../../dashboard/README.md#history-in-parquet)). The Parquet takes about a third of
+the `.gz`'s disk space. It is made in the background after a start and as each day is
+sealed, by up to 8 processes (one per CPU the service may use). Each process holds up to
+0.8 GB inside the `DASH_MEMORY_MAX` cap while it works, and the processes exit when the
+days are converted. Nothing waits for the conversion: a day that isn't converted yet is
+read from its `.gz`. On a deployment over the same 8 nodes with a 32G cap, the first start
+after this store was added converted the nodes' 7 sealed days (18.4 GB of `.gz`, 182 M
+records) into 5.8 GB of Parquet in 12 minutes, alongside its refill. During that time the
+service peaked at 19.1 GiB, and it held 12.5 GiB afterwards.
+The hours are reduced at the same time, by `INGEST_WORKERS` processes (two per node unless
+set, so 16 here) of about 0.5 GB each, plus about 1.7 GB in the service while it merges an
+hour. That adds about 9 GB at once, so a first start can come near 28 GiB of the 32G cap.
+On a lower cap, set `INGEST_WORKERS` to the node count (8 here, which uses about 4 GB and
+runs at 80 to 90% of the speed of 16). Each worker reads only its own node's files. For
+each sealed file, a worker keeps the last span it inflated, for the next read of that file
+in the same node-hour. It keeps at most 4 spans of 8 to 12 MB (`NODE_SHARED_FILES` in
+`hours.py`), and releases them when that hour is done.
 
 For scale, one deployment that reads 8 busy login nodes, measured with the defaults and a
 32G cap:
@@ -272,45 +276,46 @@ crontab:
 
     17 * * * * <WORK_DIR>/bin/check.sh >> <WORK_DIR>/check.log 2>&1
 
-The check turns linger back on if it is off, and its own login starts the session after
-a reboot. It starts the session if it is down, starts again a window whose process
-stopped (a start limit, or Ctrl-C), and makes a missing window. It restarts a dashboard
-that listens, has run 20 minutes, and twice gives no answer at all (a 401 without the
-password counts as an answer), and one that has not listened after 2 hours. It reports a
-node whose link has been down for more than an hour, and one connected with nothing from
-it for an hour (`STREAM ... stale`). The stream itself closes a link whose node has sent
-nothing, not even its pings, for 5 minutes (a `stall_s` in `stream.json` changes that):
-the link shows as down, and stays down while its node only says hello or sends what the
-stream refuses. It checks that the listener on the port is the dashboard's own and, with
+The check turns linger back on if it is off, and after a reboot the check's own login
+starts the session. It starts the session if it is down, restarts a window whose process
+stopped (because of a start limit, or Ctrl-C), and recreates a missing window. It restarts
+the dashboard in two cases: when the dashboard listens, has run for 20 minutes, and twice
+gives no answer at all (a 401 without the password counts as an answer), and when it still
+hasn't listened after 2 hours. The check reports a node whose link has been down for more
+than an hour, and a node that is connected but has sent nothing for an hour
+(`STREAM ... stale`). The stream itself closes a link whose node has sent nothing, not even
+its pings, for 5 minutes (set `stall_s` in `stream.json` to change that). The link then shows
+as down, and it stays down while its node only says hello or sends data the stream refuses.
+The check also confirms that the listener on the port is the dashboard's own and, with
 `PRIVATE_TREE=true`, audits that nothing in `DASH_ROOT` is readable by anyone else. It
-prints `OK`, or one line of findings with an exit code; anything but `OK` goes to Slack
-when `SLACK_WEBHOOK_FILE` names a webhook.
+prints `OK`, or one line of findings with an exit code. Anything other than `OK` goes to
+Slack when `SLACK_WEBHOOK_FILE` names a webhook.
 
 ## When the stream trips
 
 If `DASH_ROOT` or its `data` folder stops being the folder the stream opened (renamed,
 replaced, or opened up to other users), the stream stops the dashboard and then itself,
-and writes `DASH_ROOT/TRIPPED`. Neither process starts while that file exists: both
-windows stop and say why, and the hourly check reports `TRIPPED`, stops either process
-if it still runs, and restarts nothing. To recover, on the dashboard's host:
+and writes `DASH_ROOT/TRIPPED`. Neither process starts while that file exists. Both
+windows stop and say why. The hourly check reports `TRIPPED`, stops either process if it
+is still running, and restarts nothing. To recover, on the dashboard's host:
 
 1. Find out what happened: `ls -la $DASH_ROOT/` (owners, modes, and symlinks), and the
    stream's log in `$DASH_ROOT/logs/`.
 2. Make `DASH_ROOT` and its `data` folder this account's own 700 folders again (with
-   `PRIVATE_TREE=true`). If anything else was put there, keep it aside and start from
-   fresh folders; the stream fetches the copy again.
+   `PRIVATE_TREE=true`). If anything else was put there, move it aside and start from
+   fresh folders. The stream fetches the copy again.
 3. `rm $DASH_ROOT/TRIPPED`, then `systemctl --user restart rc-tmux`.
 
 `PRIVATE_TREE=false` in `site.env` is for a host that only your team can log in to.
-There, modes, owners, and ACLs are yours to set. The stream, the start checks, and the
-hourly check do not check them, the hourly check does no privacy audit, and a deploy
-does not reset them (it makes only `etc/`, which holds the secrets, 700). New folders
-and files in the copy follow its default ACL, as entries made there by hand would, so
-an account that an ACL lets read the copy can also read each new day, and each day's
-`.gz` when it is sealed. A trip then means only that a folder was put in the place of
-`DASH_ROOT` or its `data` folder. Use it when, for example, an ACL lets a teammate's
-account read the copy: the ACL changes the folders' modes, and with `true` the stream
-then stops itself and the dashboard.
+On such a host, modes, owners, and ACLs are yours to set. The stream, the start checks,
+and the hourly check don't check them, the hourly check does no privacy audit, and a
+deploy doesn't reset them (it sets only `etc/`, which holds the secrets, to 700). New
+folders and files in the copy follow the copy's default ACL, just as entries made there by
+hand would. So an account that an ACL lets read the copy can also read each new day, and
+each day's `.gz` once it is sealed. With `false`, a trip means only that a folder was put
+in the place of `DASH_ROOT` or its `data` folder. Use `false` when, for example, an ACL lets
+a teammate's account read the copy. The ACL changes the folders' modes, so with `true` the
+stream would stop itself and the dashboard.
 
 ## Moving to another host
 
@@ -338,7 +343,7 @@ On the nodes: `rm -rf <SENDER_DIR>`, and delete the `rc-fleet-stream` line from
 
 The kit's tests run each script for real, with systemctl, tmux, ssh, and the other
 system commands replaced by stand-ins that log their calls. They also render every
-template from `site.env.example`, load the result with the dashboard's own config loader,
-and check that the kit and the stream name no deployment: given a private list of real
-names (`RC_REAL_NAMES`, one per line), a failure names the file and the line number in
-the list, never the name.
+template from `site.env.example` and load the result with the dashboard's own config
+loader. Finally, they check that the kit and the stream don't name any deployment. Given a
+private list of real names (`RC_REAL_NAMES`, one per line), a failure reports the file and
+the line number in the list, never the name itself.

@@ -1,17 +1,17 @@
 # The demo on Cloudflare
 
-The dashboard's [demo mode](../../dashboard/README.md#demo-mode) on a public URL,
-**<https://dashboard-demo.agentic-system.org>**: this Worker fronts one
+This folder puts the dashboard's [demo mode](../../dashboard/README.md#demo-mode) on a public
+URL, **<https://dashboard-demo.agentic-system.org>**. A Worker fronts one
 [Cloudflare Container](https://developers.cloudflare.com/containers/) running
 `rc_dashboard demo`, built from [`docker/demo/Dockerfile`](../../docker/demo/Dockerfile).
-Every visitor watches the same live demo, and every page says *fake data*: the
-records are made up for fictional login nodes and users, and nothing in them was measured.
+Every visitor watches the same live demo, and every page says *fake data*. The records are
+made up for fictional login nodes and users, and nothing in them was measured.
 
 ## Deploy
 
-Needs the Cloudflare account that holds the `agentic-system.org` zone, on the Workers Paid
-plan (Containers run there); Docker running locally (`wrangler deploy` builds the image,
-`linux/amd64`); and Node 20 or later.
+You need the Cloudflare account that holds the `agentic-system.org` zone, on the Workers Paid
+plan (Containers run on that plan). You also need Docker running locally, because
+`wrangler deploy` builds the image (`linux/amd64`), and Node 20 or later.
 
 ```bash
 cd deploy/cloudflare
@@ -21,20 +21,20 @@ npx wrangler deploy      # builds docker/demo/Dockerfile, pushes it, deploys the
 npx wrangler secret put DEMO_PASSWORD   # the demo's password; until it is set, nobody gets in
 ```
 
-**The password.** Visitors sign in once and stay signed in for 30 days on that browser (a
-cookie). Without it, a page shows a sign-in page that says to write to
-admin@agentic-system.org (`CONTACT` in `src/index.ts`), and an API call gets a 401; neither
-wakes the container. A wrong password is answered a second late. To change the password, run
-`npx wrangler secret put DEMO_PASSWORD` again: it takes effect at once, no deploy needed, and
-signs everyone out. With no secret set the demo stays closed.
+**The password.** Visitors sign in once and stay signed in on that browser for 30 days (a
+cookie). Until a visitor signs in, a page request gets a sign-in page that says to write to
+admin@agentic-system.org (`CONTACT` in `src/index.ts`), and an API call gets a 401. Neither one wakes the container. The answer to a wrong password is delayed by a
+second. To change the password, run `npx wrangler secret put DEMO_PASSWORD` again. The new
+password takes effect at once, with no deploy needed, and signs everyone out. With no secret
+set, the demo stays closed.
 
-The demo is then at <https://dashboard-demo.agentic-system.org>, and at the
-`https://agent-dashboard-demo.<your-subdomain>.workers.dev` URL the deploy prints. The
+The demo is then at <https://dashboard-demo.agentic-system.org>, and also at the
+`https://agent-dashboard-demo.<your-subdomain>.workers.dev` URL that the deploy prints. The
 hostname is the Worker's [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)
-(`routes` in `wrangler.jsonc`): the first deploy creates its DNS record and certificate,
-which can take a few minutes to answer, and the container takes a few minutes to provision.
-Until then, and after every idle spell, the page says the demo is starting and reloads
-itself. Plain `http://` is redirected to `https://` by the Worker, so the password never
+(`routes` in `wrangler.jsonc`). The first deploy creates its DNS record and certificate,
+which can take a few minutes to start answering, and the container takes a few minutes to
+provision. Until then, and after every idle spell, the page says the demo is starting and
+reloads itself. The Worker redirects plain `http://` to `https://`, so the password never
 crosses the network in the clear.
 
 ### Deploying from GitHub
@@ -42,30 +42,32 @@ crosses the network in the clear.
 [`.github/workflows/demo-deploy.yml`](../../.github/workflows/demo-deploy.yml) runs the same
 `npx wrangler deploy` on every push to `develop` that changes what the demo runs: the
 service (`dashboard/rc_dashboard`, `pyproject.toml`, `uv.lock`), the page (`dashboard/web`),
-`docker/demo`, or this folder. A change to the collector or a test does not redeploy. It can
-also be run by hand from the repository's Actions tab (*demo-deploy*, *Run workflow*, on
-`develop`): after rotating the token, or after a security fix to a base image, since
-`docker/demo/Dockerfile` names them by tag and a rebuilt one reaches the demo only at the
-next deploy. Only `develop` deploys; a run started from another branch is skipped.
+`docker/demo`, or this folder. A change to the collector or to a test does not redeploy. You
+can also run the workflow by hand from the repository's Actions tab (*demo-deploy*, *Run
+workflow*, on `develop`). Do that after rotating the token, or after a security fix to a
+base image: `docker/demo/Dockerfile` names the base images by tag, so a rebuilt image only
+reaches the demo at the next deploy. Only `develop` deploys. A run started from any other
+branch is skipped.
 
-The runner's Docker builds the image, and wrangler is the version pinned in `package.json`,
-as for a deploy by hand. `npm run typecheck` runs first, since wrangler's bundler strips
-types without checking them. Deploys queue rather than cancel one another, because a deploy
-is not transactional: the new Worker can be live before its image has rolled out. GitHub
-keeps one waiting run, so of several pushes during a deploy the newest is the one that
-deploys next, and the ones it replaced show as cancelled.
+As with a deploy by hand, the runner's Docker builds the image, and wrangler is the version
+pinned in `package.json`. `npm run typecheck` runs first, because wrangler's bundler strips
+types without checking them. Deploys queue instead of cancelling one another, because a
+deploy is not transactional: the new Worker can be live before its image has rolled out.
+GitHub keeps only one waiting run. If several pushes land during a deploy, the newest one
+deploys next, and the runs it replaced show as cancelled.
 
-It needs two secrets from the Cloudflare account that holds the `agentic-system.org` zone.
-Put them on the **`demo` environment**, not on the repository, so that no other workflow or
-branch can read a token that edits that account's Workers and Containers:
+The workflow needs two secrets from the Cloudflare account that holds the
+`agentic-system.org` zone. Put them on the **`demo` environment**, not on the repository.
+That way no other workflow or branch can read a token that can edit that account's Workers
+and Containers.
 
 1. *Settings*, *Environments*, *New environment*, `demo`. Do this before the workflow's first
-   run: a run that finds no `demo` environment creates one with no branch rule, which
-   protects nothing until step 2 is done.
+   run. A run that finds no `demo` environment creates one with no branch rule, and that
+   environment protects nothing until step 2 is done.
 2. Under *Deployment branches and tags*, choose *Selected branches and tags* and add
-   `develop`. This rule, not the job's `if`, is what keeps the token from other branches: a
-   run started by hand uses the workflow file of the branch it is started on, which can
-   have the `if` taken out.
+   `develop`. This rule is what keeps the token away from other branches, not the job's
+   `if`. A run started by hand uses the workflow file from the branch it is started on, and
+   that file could have the `if` removed.
 3. Only then, add the two environment secrets:
 
 | secret | value |
@@ -74,14 +76,14 @@ branch can read a token that edits that account's Workers and Containers:
 | `CLOUDFLARE_ACCOUNT_ID` | that account's ID (the Workers overview shows it) |
 
 Never add them as repository secrets as well (*Settings*, *Secrets and variables*,
-*Actions*, *Repository secrets* should hold no `CLOUDFLARE_*`): a repository secret is
-readable by any workflow on any branch, whatever the environment's rule says.
+*Actions*, *Repository secrets* should hold no `CLOUDFLARE_*`). Any workflow on any branch can
+read a repository secret, whatever the environment's rule says.
 
-Until both are set, the workflow fails at its first step and names the missing secret, so a
-push to `develop` never looks deployed when it was not. Cloudflare's docs name the template
-for Workers and the Containers permission. They do not say what attaching the Custom Domain
-needs beyond the template: if a deploy fails at the domain, add **Zone · DNS · Edit** for
-`agentic-system.org` to the token.
+Until both secrets are set, the workflow fails at its first step and names the missing one,
+so a push to `develop` never looks deployed when it wasn't. Cloudflare's docs name the
+template for Workers and the Containers permission. They don't say what else attaching the
+Custom Domain needs beyond the template. If a deploy fails at the domain, add
+**Zone · DNS · Edit** for `agentic-system.org` to the token.
 
 ## What runs
 
@@ -95,25 +97,26 @@ needs beyond the template: if a deploy fails at the domain, add **Zone · DNS ·
 | outbound internet | none (`enableInternet = false`); Ask LLM is off in the image |
 | access | a password (the `DEMO_PASSWORD` secret), checked by the Worker before anything reaches the container |
 | visits | counted by [Statcounter](https://statcounter.com/): the Worker adds its code (`STATCOUNTER` in `src/index.ts`) to the end of each dashboard page, never to the "starting" page, which reloads itself, nor to an API reply |
-| time zone | `America/New_York` (`TZ` in the Dockerfile): whose working day the fictional people keep |
+| time zone | `America/New_York` (`TZ` in the Dockerfile): the working day the fictional people keep |
 
 **Cold start.** The container sleeps after 15 minutes with no request and no websocket
-message (`SLEEP_AFTER`), and the next request starts it. The service writes its history
-before it listens -- about 11 s on a `basic` instance, plus the container's own start. It
-then preprocesses the history, also before it listens (`panels.preprocess`): every hour
-reduced and every window built, so the first page has every window ready rather than a
-*merging* bar. On a laptop that took ~6 s for the two days; on a `basic` instance expect it
-to scale the way the writing does (not yet measured there). A request waits up to
-6 s (`READY_WAIT_MS`); past that, a page gets a small "starting the demo" page that reloads
-itself every 4 s, and an API call a 503 with `Retry-After`. Each request waits on its own and
-ends its wait before it answers: a wait shared between requests was dropped with the request
-that began it and left every request after it hanging (found under `wrangler dev`). The feed
-lives in the container, so each start writes it afresh, ending at the moment it starts.
+message (`SLEEP_AFTER`), and the next request starts it again. The service writes its history
+before it listens, which takes about 11 s on a `basic` instance, plus the container's own
+start time. It then preprocesses the history, also before it listens (`panels.preprocess`).
+Every hour is reduced and every window is built, so the first page has every window ready
+instead of showing a *merging* bar. On a laptop, preprocessing took ~6 s for the two days. On
+a `basic` instance, expect it to scale the way the writing does (it hasn't been measured
+there yet). A request waits up to 6 s (`READY_WAIT_MS`). After that, a page request gets a
+small "starting the demo" page that reloads itself every 4 s, and an API call gets a 503 with
+`Retry-After`. Each request waits on its own and ends its wait before it answers. An earlier
+version shared one wait between requests, but that wait was dropped along with the request
+that started it, and every later request hung (found under `wrangler dev`). The feed lives in
+the container, so each start writes it afresh, ending at the moment the container starts.
 
-**Cost.** A container is billed while it is awake. An open page keeps it awake -- the
-dashboard streams over a websocket, and every message counts as activity -- so a tab left
-open overnight keeps one `basic` instance running overnight; `max_instances` stops it ever
-being more than one. See [Containers pricing](https://developers.cloudflare.com/containers/pricing/).
+**Cost.** A container is billed while it is awake. An open page keeps it awake, because the
+dashboard streams over a websocket and every message counts as activity. So a tab left open
+overnight keeps one `basic` instance running overnight. `max_instances` makes sure it never
+grows past one instance. See [Containers pricing](https://developers.cloudflare.com/containers/pricing/).
 
 ## Operate
 
@@ -125,13 +128,14 @@ npx wrangler delete                  # take the demo down
 npm run typecheck                    # wrangler types && tsc --noEmit
 ```
 
-To change: the history and the time zone in `docker/demo/Dockerfile`; the address, the
-instance size and the ceiling in `wrangler.jsonc` (`standard-1` halves a cold start, and
-costs more while awake; `"workers_dev": false` leaves only the Custom Domain); the idle
-time, the wait and the Statcounter code in `src/index.ts`. The code is added here, by the
-Worker, and nowhere else: the image and the service load no tracker, so a dashboard on a
-cluster, whose URLs carry real user names, sends nothing to a third party. A hostname in a zone of another account cannot be a
-Custom Domain: deploy from that account, or delete `routes` for the `workers.dev` URL alone.
+To change the history or the time zone, edit `docker/demo/Dockerfile`. The address, the
+instance size and the instance ceiling are in `wrangler.jsonc` (`standard-1` halves a cold
+start but costs more while awake, and `"workers_dev": false` leaves only the Custom Domain).
+The idle time, the wait and the Statcounter code are in `src/index.ts`. The Worker adds the
+Statcounter code here and nowhere else. The image and the service load no tracker, so a
+dashboard running on a cluster, whose URLs carry real user names, sends nothing to a third
+party. A hostname in a zone that belongs to another account can't be a Custom Domain. Either
+deploy from that account, or delete `routes` to use the `workers.dev` URL alone.
 
 ## Without Cloudflare
 
