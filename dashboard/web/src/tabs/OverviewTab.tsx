@@ -263,6 +263,12 @@ export const OverviewTab = memo(function OverviewTab({
                             v != null ? why : null,
                           ].filter(Boolean).join('\n') || undefined}
                         >
+                          {/* the class's name over its numbers, shown only on a
+                              phone, where the header row is out of sight */}
+                          <span className="clsv-k">
+                            <i style={{ background: CLS_COL[c] }} />
+                            {CLS_LBL[c] ?? c}
+                          </span>
                           {u.io && v ? (
                             <IoNum q={{ title: `${u.k} · ${CLS_LBL[c] ?? c}`, sort: u.io, class: [c], ...coveredBy(io) }}>
                               <ShareCell pct={pct} sub={u.fmt ? u.fmt(v) : fint(v)} c={CLS_COL[c]} bar={false} />
