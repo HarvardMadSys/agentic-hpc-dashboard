@@ -249,6 +249,39 @@ class IngestTest(Case):
         self.assertEqual(self.rows(agg)["class"], whole["class"])
         self.assertGreater(agg.rollup.status(agg.lock)["kept_better"], 0)
 
+    def test_a_better_copy_written_by_another_process_meanwhile_is_kept(self):
+        # the `rollup` command commits a whole day just before the flush writes
+        self.feed()
+        agg = self.run_service(self.cfg())
+        d2 = date_of(self.today - 2 * DAY_S)
+        self.write([exit_rec(self.today - 2 * DAY_S + 20 * 3600, 5002, user="dave")])
+        agg.poll_once()                      # day -2 dirty: 5 records
+        other = rollup.RollupStore(agg.rollup.path)
+        big = rollup.Day(d2, self.today - 2 * DAY_S, self.today - DAY_S)
+        for k in range(9):
+            big.feed({"event": "exit", "host": "h1", "_a3": "agent", "agent_type": "codex",
+                      "user": "erin", "cpu_s": 1.0}, self.today - 2 * DAY_S + 60 * k, "exit")
+        real = agg.rollup.store._connect
+
+        raced = []
+
+        def racing():
+            # once, as the flush opens the connection it writes through: after
+            # anything it judged before writing, before its transaction
+            f, calls = sys._getframe(1), set()
+            while f is not None:              # past mock's own frames
+                calls.add(f.f_code.co_name)
+                f = f.f_back
+            if not raced and "write" in calls:
+                raced.append(1)
+                other.write([big.snapshot(self.now, True)], source="files")
+            return real()
+        with mock.patch.object(agg.rollup.store, "_connect", side_effect=racing):
+            agg.rollup.flush(agg.lock, force=True)
+        days = {d: recs for d, _h, recs, _c in self.rows(agg)["day"]}
+        self.assertEqual(days[d2], 9)
+        self.assertGreater(agg.rollup.status(agg.lock)["kept_better"], 0)
+
     def test_a_day_the_read_began_inside_never_replaces_the_whole_copy(self):
         self.feed(spread=True)
         whole = self.rows(self.run_service(self.cfg()))

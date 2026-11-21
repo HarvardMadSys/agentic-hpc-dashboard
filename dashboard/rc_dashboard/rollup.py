@@ -274,15 +274,30 @@ class RollupStore:
         db.execute("PRAGMA synchronous = NORMAL")
         return _Tx(db)
 
-    def write(self, snaps, source="ingest", now=None):
-        """Replace each day's rows with `snaps` (Day.snapshot), in one transaction."""
+    def write(self, snaps, source="ingest", now=None, guard=False, kept=None):
+        """Replace each day's rows with `snaps` (Day.snapshot), in one transaction.
+
+        With `guard`, a day is passed over where the table holds a better copy
+        of it (`better`), judged inside the same transaction, so a writer in
+        another process (the `rollup` command) cannot slip a better copy in
+        between the judging and the writing. Each date passed over is appended
+        to `kept`."""
         if not snaps:
             return 0
         now = time.time() if now is None else now
+        n = 0
         with self.lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             for s in snaps:
                 d = s["date"]
+                if guard:
+                    row = db.execute("SELECT complete, records FROM day WHERE date = ?",
+                                     (d,)).fetchone()
+                    if row is not None and better(row, s):
+                        if kept is not None:
+                            kept.append(d)
+                        continue
+                n += 1
                 db.execute("DELETE FROM day_class WHERE date = ?", (d,))
                 db.execute("DELETE FROM day_user WHERE date = ?", (d,))
                 db.execute("INSERT OR REPLACE INTO day VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -296,16 +311,7 @@ class RollupStore:
             db.execute("COMMIT")
             self.version += 1
             self._cache.clear()
-        return len(snaps)
-
-    def held(self, dates):
-        """{date: (complete, records)} for the `dates` the table holds."""
-        if not dates:
-            return {}
-        with self._connect() as db:
-            return {r[0]: (r[1], r[2]) for r in db.execute(
-                "SELECT date, complete, records FROM day WHERE date IN (%s)"
-                % ",".join("?" * len(dates)), list(dates))}
+        return n
 
     def complete_dates(self):
         with self._connect() as db:
@@ -450,6 +456,20 @@ class RollupStore:
                           "written_at": summary[4]}}
 
 
+def better(row, snap):
+    """Whether the table's copy of a day, `row` = (complete, records), is better
+    than `snap`, which then is not written. A cut day (`snap["cut"]`, a day the
+    read began inside) only where the table has no whole copy and fewer of its
+    records; any day never over a whole copy holding more records than this
+    read -- a file the startup could not open (the tail reads it once it can,
+    and the day is written then), or day-files cleaned away inside retention.
+    Late records only ever add to a day."""
+    complete, records = row
+    if snap.get("cut"):
+        return bool(complete) or records >= snap["records"]
+    return bool(complete) and records > snap["records"]
+
+
 class _Tx:
     """A connection as a context manager that closes it (sqlite3's own commits only)."""
 
@@ -514,27 +534,12 @@ class Rollup:
                         done.append((day, complete))
                         day.dirty = False
             try:
-                # Never over a better copy. A cut day only where the table has
-                # no whole copy and fewer of its records; any day never over a
-                # whole copy holding more records than this run read -- a file
-                # the startup could not open (the tail reads it once it can,
-                # and the day is written then), or day-files cleaned away
-                # inside retention. Late records only ever add to a day.
-                had = self.store.held([s["date"] for s in snaps])
-                cut = {s["date"] for s, (day, _c) in zip(snaps, done)
-                       if day.day_from < self.covered_from}
-
-                def worse(s):
-                    h = had.get(s["date"])
-                    if h is None:
-                        return False
-                    if s["date"] in cut:
-                        return bool(h[0]) or h[1] >= s["records"]
-                    return bool(h[0]) and h[1] > s["records"]
-                kept = [s["date"] for s in snaps if worse(s)]
-                snaps = [s for s in snaps if s["date"] not in kept]
+                # never over a better copy (`better`), judged as it is written
+                for s, (day, _c) in zip(snaps, done):
+                    s["cut"] = day.day_from < self.covered_from
+                kept = []
+                n = self.store.write(snaps, now=now, guard=True, kept=kept)
                 self.kept_better += len(kept)
-                n = self.store.write(snaps, now=now)
             except Exception as e:
                 with lock:
                     for day, _ in done:
