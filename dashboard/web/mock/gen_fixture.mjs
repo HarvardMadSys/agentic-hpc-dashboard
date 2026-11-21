@@ -2036,11 +2036,12 @@ function nodePanel(nowEpoch) {
   };
 }
 
-/* Each class per day over retention (reducers/live.py `daily`): the oldest day
- * cut where retention starts, a day the collector wrote nothing in (null, not
- * 0), and today, still going. Dates in the generator's local time, like the
- * live tab's clock strings. */
-function trendPanel(nowEpoch) {
+/* Each class per day over a week, the days the mock `/api/trend` folds into
+ * days, weeks and months (mock/plugin.ts): the oldest day cut where the range
+ * starts, a day the collector wrote nothing in (null, not 0), and today, still
+ * going. Dates in the generator's local time, like the live tab's clock
+ * strings. */
+function trendDays(nowEpoch) {
   const pad = (n) => String(n).padStart(2, '0');
   const now = new Date(nowEpoch * 1000);
   const days = [];
@@ -2074,11 +2075,7 @@ function trendPanel(nowEpoch) {
       },
     });
   }
-  return {
-    ...ENV('ebpfm', EBPFM_PATHS),
-    days, bin_s: 60, retention_minutes: 10_080, retained_from: nowEpoch - 7 * 86_400, tz: 'EDT',
-    basis: 'processes and CPU from the live tier\'s minute bins; users and agent types from its roster',
-  };
+  return days;
 }
 
 function build() {
@@ -2308,7 +2305,6 @@ function build() {
         trajectories: trajectories(nowEpoch),
         cascades: cascades(nowEpoch),
         node: nodePanel(nowEpoch),
-        trend: trendPanel(nowEpoch),
         /* An absent panel, so <EmptyState> is verifiable without the backend. */
         gpu_duty: {
           _feed: 'dcgm',
@@ -2322,6 +2318,7 @@ function build() {
       purposes: ['poll', 'slurm_mon', 'slurm_sub', 'build', 'git', 'data', 'compute', 'runtime', 'editor', 'filesearch', 'other'],
     },
     live,
+    trend_days: trendDays(nowEpoch),
     trajectories: trajectories(nowEpoch),
     trajectory_detail: trajectoryDetail(nowEpoch, trajectories(nowEpoch)),
     users: users(nowEpoch, trajectories(nowEpoch)),

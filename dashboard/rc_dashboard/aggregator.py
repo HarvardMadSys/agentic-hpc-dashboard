@@ -689,16 +689,6 @@ class Aggregator:
             # now, this is the selected window
             body["series"] = node_series
             out["node"] = body
-            # Day by day over everything the live tier holds: its own bins, so
-            # it is neither the selected window nor narrowed by the filter --
-            # `_filter` says the latter, and the page says both.
-            try:
-                trend = dict(self.live.daily())
-            except Exception as e:
-                trend = {"_error": str(e)}
-            trend.update(ebpf)
-            trend["_filter"] = None
-            out["trend"] = trend
             res = {"panels": out,
                    # The node tier is a snapshot of current state, not a window
                    # aggregate, so it keeps its own build stamp.

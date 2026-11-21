@@ -13,7 +13,6 @@ jobs plate is replaced by one built from eBPF `submit` records -- agent job
 submissions in the window, which is per-submission AND actor-attributed, and so
 is better evidence than a census count.
 """
-import bisect
 import collections
 import heapq
 import itertools
@@ -825,128 +824,6 @@ class LiveReducer:
                 "recent_depth": self.user_tail_n, "recent_held": len(tail)}
 
     # ---------------------------------------------------------------- result
-    # How long a day-by-day reading is reused: its days move by the minute, and
-    # every /api/panels answer carries it.
-    DAILY_REUSE_S = 20
-
-    def daily(self, now=None):
-        """Each class's processes, CPU and users per local day, over the days
-        the live tier holds -- retention, not the selected window.
-
-        Processes and CPU are the minute bins' (`buckets`), the same sums the
-        rate chart draws; users and agent types are the roster's, which counts
-        an account once a day in each class it ran something in. A day is told
-        apart from a quiet one by its `held` minutes -- the minutes in it the
-        collector wrote any exit in -- against the minutes of it the tier could
-        hold (`minutes`): today is still going, and the oldest day starts where
-        retention does. A day no minute was held in has null counts, not 0.
-        """
-        now = now or time.time()
-        # Its age by the monotonic clock as well as by `now`: with `clock.as_of`
-        # set, time.time() stands still, and a reading taken mid-backfill would
-        # otherwise be reused for good.
-        mono = time.monotonic()
-        hit = getattr(self, "_daily", None)
-        if hit is not None and 0 <= now - hit[0] < self.DAILY_REUSE_S \
-                and mono - hit[2] < self.DAILY_REUSE_S:
-            return hit[1]
-        self.buckets.evict(now)
-        bin_s = self.buckets.bin_s
-        start, end = self.buckets._span(now)
-        lo = start * bin_s
-        # Local midnights from the day the tier starts in to the one after
-        # today: mktime with isdst=-1 places each, so a day with a clock change
-        # is 23 or 25 hours long.
-        t = time.localtime(lo)
-        mids = []
-        y, m, d = t.tm_year, t.tm_mon, t.tm_mday
-        while True:
-            e = time.mktime((y, m, d, 0, 0, 0, 0, 0, -1))
-            mids.append(e)
-            if e > now:
-                break
-            d += 1
-        if len(mids) < 2:
-            mids.append(mids[0] + 86400)
-        days = []
-        for i in range(len(mids) - 1):
-            a, b = mids[i], mids[i + 1]
-            if b <= lo or a > now:
-                continue
-            frm, to = max(a, lo), min(b, now)
-            days.append({"date": time.strftime("%Y-%m-%d", time.localtime(a + 1)),
-                         "from": frm, "to": to, "day_from": a, "day_to": b,
-                         "today": a <= now < b, "cut": a < lo,
-                         "minutes": max(0, int((to - frm) // 60)), "held": 0,
-                         "_by": {}, "_users": {}, "_types": {}})
-        starts = [x["day_from"] for x in days]
-
-        def day_of(epoch):
-            j = bisect.bisect_right(starts, epoch) - 1
-            return days[j] if 0 <= j < len(days) and epoch < days[j]["day_to"] else None
-
-        for idx, slot in self.buckets.bins.items():
-            if idx < start or idx > end or not slot:
-                continue
-            day = day_of(idx * bin_s)
-            if day is None:
-                continue
-            day["held"] += bin_s / 60.0
-            for cls, c in slot.items():
-                acc = day["_by"].setdefault(cls, [0, 0.0])
-                acc[0] += c.get("n", 0)
-                acc[1] += c.get("cpu_s", 0.0)
-        ros = self.roster
-        ros.roll(now)
-        for store, size in ((ros.coarse, ros.coarse_s), (ros.fine, ros.fine_s)):
-            for idx, slot in store.items():
-                day = day_of(idx * size)
-                if day is None:
-                    continue
-                for user, e in slot.items():
-                    for (cls, atype), n, cpu in ros.decode(e):
-                        day["_users"].setdefault(cls, set()).add(user)
-                        if cls == "agent" and atype:
-                            ty = day["_types"].setdefault(atype, [set(), 0, 0.0])
-                            ty[0].add(user)
-                            ty[1] += n
-                            ty[2] += cpu
-        out = []
-        for day in days:
-            held = day["held"] > 0
-            classes = list(self.classes) + [c for c in day["_by"] if c not in self.classes]
-            by = {}
-            for c in classes:
-                acc = day["_by"].get(c)
-                if not held:
-                    by[c] = {"n": None, "cpu_s": None, "users": None}
-                else:
-                    # in a day with records, a class with none is a measured 0
-                    by[c] = {"n": acc[0] if acc else 0,
-                             "cpu_s": round(acc[1], 1) if acc else 0.0,
-                             "users": len(day["_users"].get(c, ()))}
-            out.append({
-                "date": day["date"], "from": day["from"], "to": day["to"],
-                "today": day["today"], "cut": day["cut"],
-                "minutes": day["minutes"], "held": int(round(day["held"])),
-                "by_class": by,
-                "types": {t: {"users": len(v[0]), "n": v[1], "cpu_s": round(v[2], 1)}
-                          for t, v in sorted(day["_types"].items(),
-                                             key=lambda kv: -len(kv[1][0]))} if held else {},
-            })
-        body = {
-            "days": out, "bin_s": bin_s,
-            "retention_minutes": self.retention_s // 60,
-            "retained_from": self.buckets.oldest_epoch(),
-            "tz": time.strftime("%Z", time.localtime(now)),
-            "basis": "processes and CPU from the live tier's minute bins, by exit time; "
-                     "users and agent types from its roster (an account once a day in "
-                     "each class it ran something in; its bins are hours past the last "
-                     "day, so a day boundary off the hour lands with the hour it is in). "
-                     "`held` is the minutes of the day the collector wrote any exit in.",
-        }
-        self._daily = (now, body, mono)
-        return body
 
     def result(self, now=None, window_s=None):
         """The live tier as seen through `window_s` (default: all of retention).

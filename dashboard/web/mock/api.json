@@ -33215,351 +33215,6 @@
     "cpu_delta_basis": "per_user_cgroup.cpu_usage_usec is CUMULATIVE; cpu_delta_s is the difference between the two newest snapshots",
     "privilege": "cgroup v2 stats are readable by the slice owner and root"
    },
-   "trend": {
-    "_feed": "ebpfm",
-    "_status": "ok",
-    "_present": true,
-    "_paths": [
-     "/var/log/ebpfm/exit_2026-09-14.jsonl",
-     "/var/log/ebpfm/exit_2026-09-13.jsonl"
-    ],
-    "_notice": null,
-    "days": [
-     {
-      "date": "2026-09-07",
-      "from": 1788795200,
-      "to": 1788840000,
-      "today": false,
-      "cut": true,
-      "minutes": 746,
-      "held": 739,
-      "by_class": {
-       "agent": {
-        "n": 356159,
-        "cpu_s": 6752.8,
-        "users": 30
-       },
-       "human": {
-        "n": 28486,
-        "cpu_s": 1954.4,
-        "users": 121
-       },
-       "ide": {
-        "n": 145360,
-        "cpu_s": 3597.6,
-        "users": 59
-       }
-      },
-      "types": {
-       "claude_code": {
-        "users": 19,
-        "n": 213735,
-        "cpu_s": 3996.4
-       },
-       "codex": {
-        "users": 11,
-        "n": 121373,
-        "cpu_s": 2294.2
-       },
-       "copilot": {
-        "users": 3,
-        "n": 21051,
-        "cpu_s": 462.1
-       }
-      }
-     },
-     {
-      "date": "2026-09-08",
-      "from": 1788840000,
-      "to": 1788926400,
-      "today": false,
-      "cut": false,
-      "minutes": 1440,
-      "held": 1426,
-      "by_class": {
-       "agent": {
-        "n": 749367,
-        "cpu_s": 14208.1,
-        "users": 32
-       },
-       "human": {
-        "n": 59935,
-        "cpu_s": 4112.2,
-        "users": 122
-       },
-       "ide": {
-        "n": 305841,
-        "cpu_s": 7569.5,
-        "users": 58
-       }
-      },
-      "types": {
-       "claude_code": {
-        "users": 20,
-        "n": 449703,
-        "cpu_s": 8408.6
-       },
-       "codex": {
-        "users": 11,
-        "n": 255371,
-        "cpu_s": 4827.1
-       },
-       "copilot": {
-        "users": 3,
-        "n": 40635,
-        "cpu_s": 892
-       }
-      }
-     },
-     {
-      "date": "2026-09-09",
-      "from": 1788926400,
-      "to": 1789012800,
-      "today": false,
-      "cut": false,
-      "minutes": 1440,
-      "held": 1426,
-      "by_class": {
-       "agent": {
-        "n": 811241,
-        "cpu_s": 15381.3,
-        "users": 34
-       },
-       "human": {
-        "n": 64883,
-        "cpu_s": 4451.7,
-        "users": 123
-       },
-       "ide": {
-        "n": 331094,
-        "cpu_s": 8194.5,
-        "users": 60
-       }
-      },
-      "types": {
-       "claude_code": {
-        "users": 21,
-        "n": 486834,
-        "cpu_s": 9102.9
-       },
-       "codex": {
-        "users": 12,
-        "n": 276457,
-        "cpu_s": 5225.7
-       },
-       "copilot": {
-        "users": 3,
-        "n": 40635,
-        "cpu_s": 892
-       }
-      }
-     },
-     {
-      "date": "2026-09-10",
-      "from": 1789012800,
-      "to": 1789099200,
-      "today": false,
-      "cut": false,
-      "minutes": 1440,
-      "held": 0,
-      "by_class": {
-       "agent": {
-        "n": null,
-        "cpu_s": null,
-        "users": null
-       },
-       "human": {
-        "n": null,
-        "cpu_s": null,
-        "users": null
-       },
-       "ide": {
-        "n": null,
-        "cpu_s": null,
-        "users": null
-       }
-      },
-      "types": {}
-     },
-     {
-      "date": "2026-09-11",
-      "from": 1789099200,
-      "to": 1789185600,
-      "today": false,
-      "cut": false,
-      "minutes": 1440,
-      "held": 1426,
-      "by_class": {
-       "agent": {
-        "n": 934990,
-        "cpu_s": 17727.6,
-        "users": 38
-       },
-       "human": {
-        "n": 74781,
-        "cpu_s": 5130.8,
-        "users": 125
-       },
-       "ide": {
-        "n": 381600,
-        "cpu_s": 9444.5,
-        "users": 58
-       }
-      },
-      "types": {
-       "claude_code": {
-        "users": 23,
-        "n": 561097,
-        "cpu_s": 10491.4
-       },
-       "codex": {
-        "users": 13,
-        "n": 318629,
-        "cpu_s": 6022.9
-       },
-       "copilot": {
-        "users": 3,
-        "n": 40635,
-        "cpu_s": 892
-       }
-      }
-     },
-     {
-      "date": "2026-09-12",
-      "from": 1789185600,
-      "to": 1789272000,
-      "today": false,
-      "cut": false,
-      "minutes": 1440,
-      "held": 1325,
-      "by_class": {
-       "agent": {
-        "n": 996864,
-        "cpu_s": 18900.7,
-        "users": 40
-       },
-       "human": {
-        "n": 79730,
-        "cpu_s": 5470.3,
-        "users": 126
-       },
-       "ide": {
-        "n": 406853,
-        "cpu_s": 10069.5,
-        "users": 60
-       }
-      },
-      "types": {
-       "claude_code": {
-        "users": 24,
-        "n": 598229,
-        "cpu_s": 11185.7
-       },
-       "codex": {
-        "users": 13,
-        "n": 339714,
-        "cpu_s": 6421.4
-       },
-       "copilot": {
-        "users": 3,
-        "n": 40635,
-        "cpu_s": 892
-       }
-      }
-     },
-     {
-      "date": "2026-09-13",
-      "from": 1789272000,
-      "to": 1789358400,
-      "today": false,
-      "cut": false,
-      "minutes": 1440,
-      "held": 1426,
-      "by_class": {
-       "agent": {
-        "n": 1058738,
-        "cpu_s": 20073.9,
-        "users": 42
-       },
-       "human": {
-        "n": 84678,
-        "cpu_s": 5809.8,
-        "users": 127
-       },
-       "ide": {
-        "n": 432106,
-        "cpu_s": 10694.5,
-        "users": 59
-       }
-      },
-      "types": {
-       "claude_code": {
-        "users": 25,
-        "n": 635360,
-        "cpu_s": 11880
-       },
-       "codex": {
-        "users": 14,
-        "n": 360800,
-        "cpu_s": 6820
-       },
-       "copilot": {
-        "users": 3,
-        "n": 40635,
-        "cpu_s": 892
-       }
-      }
-     },
-     {
-      "date": "2026-09-14",
-      "from": 1789358400,
-      "to": 1789400000,
-      "today": true,
-      "cut": false,
-      "minutes": 693,
-      "held": 686,
-      "by_class": {
-       "agent": {
-        "n": 539295,
-        "cpu_s": 10225.1,
-        "users": 44
-       },
-       "human": {
-        "n": 43133,
-        "cpu_s": 2959.4,
-        "users": 128
-       },
-       "ide": {
-        "n": 220104,
-        "cpu_s": 5447.5,
-        "users": 58
-       }
-      },
-      "types": {
-       "claude_code": {
-        "users": 26,
-        "n": 323637,
-        "cpu_s": 6051.4
-       },
-       "codex": {
-        "users": 14,
-        "n": 183783,
-        "cpu_s": 3473.9
-       },
-       "copilot": {
-        "users": 3,
-        "n": 19556,
-        "cpu_s": 429.3
-       }
-      }
-     }
-    ],
-    "bin_s": 60,
-    "retention_minutes": 10080,
-    "retained_from": 1788795200,
-    "tz": "EDT",
-    "basis": "processes and CPU from the live tier's minute bins; users and agent types from its roster"
-   },
    "gpu_duty": {
     "_feed": "dcgm",
     "_status": "missing",
@@ -52763,6 +52418,336 @@
    "hours": 168
   }
  },
+ "trend_days": [
+  {
+   "date": "2026-09-07",
+   "from": 1788795200,
+   "to": 1788840000,
+   "today": false,
+   "cut": true,
+   "minutes": 746,
+   "held": 739,
+   "by_class": {
+    "agent": {
+     "n": 356159,
+     "cpu_s": 6752.8,
+     "users": 30
+    },
+    "human": {
+     "n": 28486,
+     "cpu_s": 1954.4,
+     "users": 121
+    },
+    "ide": {
+     "n": 145360,
+     "cpu_s": 3597.6,
+     "users": 59
+    }
+   },
+   "types": {
+    "claude_code": {
+     "users": 19,
+     "n": 213735,
+     "cpu_s": 3996.4
+    },
+    "codex": {
+     "users": 11,
+     "n": 121373,
+     "cpu_s": 2294.2
+    },
+    "copilot": {
+     "users": 3,
+     "n": 21051,
+     "cpu_s": 462.1
+    }
+   }
+  },
+  {
+   "date": "2026-09-08",
+   "from": 1788840000,
+   "to": 1788926400,
+   "today": false,
+   "cut": false,
+   "minutes": 1440,
+   "held": 1426,
+   "by_class": {
+    "agent": {
+     "n": 749367,
+     "cpu_s": 14208.1,
+     "users": 32
+    },
+    "human": {
+     "n": 59935,
+     "cpu_s": 4112.2,
+     "users": 122
+    },
+    "ide": {
+     "n": 305841,
+     "cpu_s": 7569.5,
+     "users": 58
+    }
+   },
+   "types": {
+    "claude_code": {
+     "users": 20,
+     "n": 449703,
+     "cpu_s": 8408.6
+    },
+    "codex": {
+     "users": 11,
+     "n": 255371,
+     "cpu_s": 4827.1
+    },
+    "copilot": {
+     "users": 3,
+     "n": 40635,
+     "cpu_s": 892
+    }
+   }
+  },
+  {
+   "date": "2026-09-09",
+   "from": 1788926400,
+   "to": 1789012800,
+   "today": false,
+   "cut": false,
+   "minutes": 1440,
+   "held": 1426,
+   "by_class": {
+    "agent": {
+     "n": 811241,
+     "cpu_s": 15381.3,
+     "users": 34
+    },
+    "human": {
+     "n": 64883,
+     "cpu_s": 4451.7,
+     "users": 123
+    },
+    "ide": {
+     "n": 331094,
+     "cpu_s": 8194.5,
+     "users": 60
+    }
+   },
+   "types": {
+    "claude_code": {
+     "users": 21,
+     "n": 486834,
+     "cpu_s": 9102.9
+    },
+    "codex": {
+     "users": 12,
+     "n": 276457,
+     "cpu_s": 5225.7
+    },
+    "copilot": {
+     "users": 3,
+     "n": 40635,
+     "cpu_s": 892
+    }
+   }
+  },
+  {
+   "date": "2026-09-10",
+   "from": 1789012800,
+   "to": 1789099200,
+   "today": false,
+   "cut": false,
+   "minutes": 1440,
+   "held": 0,
+   "by_class": {
+    "agent": {
+     "n": null,
+     "cpu_s": null,
+     "users": null
+    },
+    "human": {
+     "n": null,
+     "cpu_s": null,
+     "users": null
+    },
+    "ide": {
+     "n": null,
+     "cpu_s": null,
+     "users": null
+    }
+   },
+   "types": {}
+  },
+  {
+   "date": "2026-09-11",
+   "from": 1789099200,
+   "to": 1789185600,
+   "today": false,
+   "cut": false,
+   "minutes": 1440,
+   "held": 1426,
+   "by_class": {
+    "agent": {
+     "n": 934990,
+     "cpu_s": 17727.6,
+     "users": 38
+    },
+    "human": {
+     "n": 74781,
+     "cpu_s": 5130.8,
+     "users": 125
+    },
+    "ide": {
+     "n": 381600,
+     "cpu_s": 9444.5,
+     "users": 58
+    }
+   },
+   "types": {
+    "claude_code": {
+     "users": 23,
+     "n": 561097,
+     "cpu_s": 10491.4
+    },
+    "codex": {
+     "users": 13,
+     "n": 318629,
+     "cpu_s": 6022.9
+    },
+    "copilot": {
+     "users": 3,
+     "n": 40635,
+     "cpu_s": 892
+    }
+   }
+  },
+  {
+   "date": "2026-09-12",
+   "from": 1789185600,
+   "to": 1789272000,
+   "today": false,
+   "cut": false,
+   "minutes": 1440,
+   "held": 1325,
+   "by_class": {
+    "agent": {
+     "n": 996864,
+     "cpu_s": 18900.7,
+     "users": 40
+    },
+    "human": {
+     "n": 79730,
+     "cpu_s": 5470.3,
+     "users": 126
+    },
+    "ide": {
+     "n": 406853,
+     "cpu_s": 10069.5,
+     "users": 60
+    }
+   },
+   "types": {
+    "claude_code": {
+     "users": 24,
+     "n": 598229,
+     "cpu_s": 11185.7
+    },
+    "codex": {
+     "users": 13,
+     "n": 339714,
+     "cpu_s": 6421.4
+    },
+    "copilot": {
+     "users": 3,
+     "n": 40635,
+     "cpu_s": 892
+    }
+   }
+  },
+  {
+   "date": "2026-09-13",
+   "from": 1789272000,
+   "to": 1789358400,
+   "today": false,
+   "cut": false,
+   "minutes": 1440,
+   "held": 1426,
+   "by_class": {
+    "agent": {
+     "n": 1058738,
+     "cpu_s": 20073.9,
+     "users": 42
+    },
+    "human": {
+     "n": 84678,
+     "cpu_s": 5809.8,
+     "users": 127
+    },
+    "ide": {
+     "n": 432106,
+     "cpu_s": 10694.5,
+     "users": 59
+    }
+   },
+   "types": {
+    "claude_code": {
+     "users": 25,
+     "n": 635360,
+     "cpu_s": 11880
+    },
+    "codex": {
+     "users": 14,
+     "n": 360800,
+     "cpu_s": 6820
+    },
+    "copilot": {
+     "users": 3,
+     "n": 40635,
+     "cpu_s": 892
+    }
+   }
+  },
+  {
+   "date": "2026-09-14",
+   "from": 1789358400,
+   "to": 1789400000,
+   "today": true,
+   "cut": false,
+   "minutes": 693,
+   "held": 686,
+   "by_class": {
+    "agent": {
+     "n": 539295,
+     "cpu_s": 10225.1,
+     "users": 44
+    },
+    "human": {
+     "n": 43133,
+     "cpu_s": 2959.4,
+     "users": 128
+    },
+    "ide": {
+     "n": 220104,
+     "cpu_s": 5447.5,
+     "users": 58
+    }
+   },
+   "types": {
+    "claude_code": {
+     "users": 26,
+     "n": 323637,
+     "cpu_s": 6051.4
+    },
+    "codex": {
+     "users": 14,
+     "n": 183783,
+     "cpu_s": 3473.9
+    },
+    "copilot": {
+     "users": 3,
+     "n": 19556,
+     "cpu_s": 429.3
+    }
+   }
+  }
+ ],
  "trajectories": {
   "_feed": "ebpfm",
   "_status": "ok",
