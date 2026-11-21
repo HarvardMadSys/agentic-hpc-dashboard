@@ -63,7 +63,7 @@ done
 
 group=
 if [ "$mode" = single ]; then
-  named=$( (sed -n 's/^EBPFM_GROUP=//p' "$DEFAULTS" 2>/dev/null || true) | tail -n 1)
+  named=$(_ebpfm_default EBPFM_GROUP)    # without the quotes systemd takes off
   group=${COLLECTOR_GROUP:-$named}
   [ -n "$group" ] || die "no group can read the collector's output: run install-collector.sh first (it sets EBPFM_GROUP in $DEFAULTS), or set COLLECTOR_GROUP"
   getent group "$group" >/dev/null || die "group $group does not exist: run install-collector.sh first"

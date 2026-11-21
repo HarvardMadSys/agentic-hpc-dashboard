@@ -46,7 +46,7 @@ fi
 command -v rsync >/dev/null 2>&1 || die "no rsync: the dashboard's host copies the collector's files with it (dnf/apt install rsync)"
 
 "$repo/deploy/common/install-collector.sh" ${pass[@]+"${pass[@]}"}
-group=$( (sed -n 's/^EBPFM_GROUP=//p' "$DEFAULTS" 2>/dev/null || true) | tail -n 1)
+group=$(_ebpfm_default EBPFM_GROUP)      # without the quotes systemd takes off
 [ -n "$group" ] || die "$DEFAULTS names no EBPFM_GROUP after install-collector.sh"
 # Where the collector writes, as install-collector.sh resolved it: what the key may read.
 collector_paths

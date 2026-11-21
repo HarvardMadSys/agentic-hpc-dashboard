@@ -231,6 +231,17 @@ class TestSingle(Rig):
         self.assertEqual(self.unit("rc-dashboard.service")["SupplementaryGroups"], ["research"])
         self.assertNotIn("groupadd", self.calls())
 
+    def test_a_quoted_group_is_the_group(self):
+        """systemd takes the quotes off EBPFM_GROUP="research": so does the installer."""
+        with open(self.default, "w") as fh:
+            fh.write('EBPFM_MIN_UID=0\nEBPFM_GROUP="research"\n')
+        with open(self.env["STUB_DB"], "w") as fh:
+            fh.write("group research\n")
+        self.install()
+        self.assertEqual(self.unit("rc-dashboard.service")["SupplementaryGroups"], ["research"])
+        self.assertNotIn("groupadd", self.calls())
+        self.assertIn("chgrp -R research " + self.ebpf, self.calls())
+
     def test_the_folders_the_collector_settings_name_are_read(self):
         """/etc/default/ebpfm may name the output folders (systemd lets an EnvironmentFile=
         override the units' Environment=), and the collector then writes there: the group
@@ -348,6 +359,14 @@ class TestNode(Rig):
         self.assertEqual(self.authorized(), 'restrict,command="%s -ro %s" %s\n' % (rr, data, KEY))
         self.assertIn("FLEET_EBPF_SOURCE=ebpfm\n", out)
         self.assertIn("FLEET_NODE_SOURCE=ebpfm-login\n", out)
+
+    def test_a_quoted_group_is_the_group(self):
+        with open(self.default, "w") as fh:
+            fh.write("EBPFM_MIN_UID=0\nEBPFM_GROUP='research'\n")
+        with open(self.env["STUB_DB"], "w") as fh:
+            fh.write("group research\n")
+        self.install("--key", KEY, RRSYNC="")
+        self.assertIn("usermod -a -G research rc-pull", self.calls())
 
     def test_without_rrsync_the_key_is_restricted_but_not_to_rsync(self):
         out = self.install("--key", KEY, RRSYNC="")

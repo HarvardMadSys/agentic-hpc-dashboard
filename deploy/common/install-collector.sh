@@ -59,7 +59,7 @@ collector_paths
 for d in "$EBPF_DIR" "$NODE_DIR"; do
   case $d in /?*) ;; *) die "EBPF_DIR and NODE_DIR must be absolute paths (got '$d')" ;; esac
 done
-named=$( (sed -n 's/^EBPFM_GROUP=//p' "$DEFAULTS" || true) | tail -n 1)
+named=$(_ebpfm_default EBPFM_GROUP)      # without the quotes systemd takes off
 GROUP=${COLLECTOR_GROUP:-${named:-ebpfm}}
 if [ -n "$named" ] && [ "$named" != "$GROUP" ]; then
   die "$DEFAULTS gives the output to group $named, and COLLECTOR_GROUP says $GROUP; settle on one"
