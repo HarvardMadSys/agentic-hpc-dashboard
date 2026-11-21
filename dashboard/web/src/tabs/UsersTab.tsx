@@ -37,7 +37,6 @@ import { clockLabel, fullClock, timeTicks } from '../charts/scale';
 import { Svg } from '../charts/primitives';
 import { NoRows, Panel } from '../components/Panel';
 import { FigureKey, PortraitFigure } from '../components/PortraitFigure';
-import { Segmented } from '../components/ClassFilter';
 import { absent } from '../lib/panels';
 import { Plate } from '../components/Plate';
 import { SortTh } from '../components/SortTh';
@@ -287,8 +286,6 @@ function Roster({
 }) {
   const [q, setQ] = useState('');
   const [trait, setTrait] = useState<string | null>(null);
-  // the roster as a table, or as everyone's figure side by side
-  const [view, setView] = useState<'table' | 'figures'>('table');
   // rows name people: A to Z until a header is clicked (lib/useSort.ts)
   const s = useSort<RosterKey>('user', 'asc');
   const catalogue = U.traits ?? [];
@@ -338,53 +335,9 @@ function Roster({
           onChange={(e) => setQ(e.target.value.trim())}
           aria-label="find a user"
         />
-        <Segmented
-          value={view}
-          onChange={setView}
-          options={[
-            { k: 'table', lbl: 'table', tip: 'one row a user, sortable' },
-            { k: 'figures', lbl: 'figures', tip: 'each user drawn from their numbers, in the table’s order; hover a part of a figure for what it says' },
-          ]}
-        />
         <span className="nm">click a user for their portrait</span>
       </div>
-      {sorted.length && view === 'figures' ? (
-        <div className="ur-gallery">
-          {sorted.map((r) => {
-            const on = open === r.user;
-            const toggle = () => setOpen(on ? null : r.user);
-            return (
-              <div
-                key={r.user}
-                className={`ur-card${on ? ' open' : ''}`}
-                role="button"
-                tabIndex={0}
-                aria-pressed={on}
-                onClick={toggle}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    toggle();
-                  }
-                }}
-              >
-                <PortraitFigure row={r} catalogue={catalogue} />
-                <div className="ur-cardhead">
-                  <span className="mono u-name">{r.user}</span>
-                  {r.running > 0 && (
-                    <span className="ur-live" data-tip={`${plural(r.running, 'session')} running now`}>
-                      <i />
-                      {fint(r.running)}
-                    </span>
-                  )}
-                  <span className="nm ur-cardn">{plural(r.sessions, 'session')}</span>
-                </div>
-                <p className="ur-cardline">{leverageHeadline(r)}</p>
-              </div>
-            );
-          })}
-        </div>
-      ) : sorted.length ? (
+      {sorted.length ? (
         <div className="scroller vscroll">
           <table className="roomy users ur-roster wrap-head">
             <thead>

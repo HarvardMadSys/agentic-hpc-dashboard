@@ -1690,8 +1690,8 @@ imports it, and changing it rebuilds nothing.
   hourglass for polling; a server with a light for each Slurm job. Each part says its numbers and the rule
   behind it on hover, and a key says what each one means. The only numbers the page adds are drawing caps (six
   robots, five sheets, ten lights), each said where it applies; a calls count the service could not make is
-  drawn as unread, never as an empty shelf. It leads the portrait, and the roster shows everyone's side by side
-  (*figures*). `npm run check:figures` renders every fixture user's figure and checks it against their row.
+  drawn as unread, never as an empty shelf. It leads the portrait. `npm run check:figures` renders every
+  fixture user's figure and checks it against their row.
 - **Traits** are plain statements ("launches with a bypass flag", "keeps several sessions open at once"),
   each from one rule over the numbers above (`portraits.RULES`, `portraits.TRAITS`). The rules are served with
   them and shown on hover; each trait carries the numbers that met its rule. None is a judgement, none is made

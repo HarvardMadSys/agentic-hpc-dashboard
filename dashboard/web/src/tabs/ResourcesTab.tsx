@@ -16,8 +16,6 @@ import { Term } from '../components/Term';
 import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
-import { TimeChart } from '../charts/TimeChart';
-import type { TimeLine, View } from '../charts/TimeChart';
 import { Basis, Panel, More } from '../components/Panel';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt, mb, notMeasured, pc } from '../lib/format';
@@ -302,9 +300,6 @@ function FaultTable({
     </div>
   );
 }
-
-export { TimeChart };
-export type { TimeLine, View };
 
 /* Two readers, two halves (user, 2026-11-17). An operator asks whose process
  * to go and look at, and who moved the bytes and where to: that is Resources.

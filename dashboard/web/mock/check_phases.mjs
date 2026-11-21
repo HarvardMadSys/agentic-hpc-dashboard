@@ -2429,7 +2429,7 @@ test('the category chip: its short name with the dot of its use, the summary on 
   }
 });
 
-/* ------------------------------------------- the inspector's story: what it did, then its processes (SessionMap.tsx) */
+/* ------------------------------------- the inspector's story: what it did, then its processes (TrajectoryInspector.tsx) */
 
 test('sequenceParts: the parts of the row line, a phase each, and the `…` that stands for the middle of a long list', () => {
   const at = (...spec) => {
@@ -2463,9 +2463,8 @@ test('bandAxis: a session drawn whole, from its first record or its first phase 
   assert.deepEqual(P.bandAxis(list, undefined, 900), [100, 900], 'running: on to now');
   assert.deepEqual(P.bandAxis(list, undefined, 400), [100, 500], 'a now before the last call ends is the last call');
   assert.equal(P.bandAxis([], 50, 900), null);
-  // the row's band and the inspector's map are drawn on it, and neither works an axis out of its own
+  // the row's band is drawn on it, and works no axis out of its own
   assert.equal(callsOf('tabs/TrajectoriesTab.tsx', 'bandAxis'), 1);
-  assert.equal(callsOf('tabs/SessionMap.tsx', 'bandAxis'), 1);
   assert.doesNotMatch(source('tabs/TrajectoriesTab.tsx'), /Math\.min\(r\.first/);
 });
 
@@ -2481,77 +2480,6 @@ test("phasesUnread: an agent whose commands are not read says why, in the servic
   assert.deepEqual(spelledIn('phases not available for this agent type'), ['lib/phases.ts']);
   assert.equal(callsOf('tabs/TrajectoriesTab.tsx', 'phasesUnread'), 1);
   assert.equal(callsOf('tabs/TrajectoryInspector.tsx', 'phasesUnread'), 1);
-});
-
-test("the map of the whole session: a block to each task and a band to each phase on the session's own axis, each with its hover, and the key to the colours", async () => {
-  const ui = await renderer();
-  mock.timers.enable({ apis: ['Date'], now: api.now_epoch * 1000 });
-  try {
-    // the server renders it at the width it has before its box is measured
-    const W = P.plotW(900);
-    const seen = { both: 0, num: 0, lone: 0, edge: 0 };
-    for (const r of blocks) {
-      const b = r.phases;
-      const now = r.running?.now ?? null;
-      const html = await ui.render('tabs/SessionMap.tsx', 'SessionMap', { block: b, first: r.first, now, onTask() {}, onPhase() {} });
-      const axis = P.bandAxis(b.list, r.first, now ? api.now_epoch : null);
-      assert.match(html, new RegExp(`<svg viewBox="0 0 ${W} \\d+(?:\\.\\d+)?" width="${W}"`), `${r.sid}: drawn as wide as its plot`);
-      // a band to each phase, in order: what it was on hover, and what a click does
-      const bands = [...html.matchAll(/<g class="sm-pick" data-kind="([^"]+)" data-tip="([^"]*)">/g)].map(([, kind, tip]) => [kind, textOf(tip)]);
-      assert.deepEqual(bands, b.list.map((p) => [p.kind, `${P.phaseTip(p)}\n${P.zoomTip(p.t0)}`]), `${r.sid}: the bands`);
-      // a block to each task and lone stretch, in order: its hover, and its number and label where they fit, as the list has them
-      const lane = [...html.matchAll(/<g class="sm-pick" data-tip="([^"]*)">(.*?)<\/g>/g)].map(([, tip, inner]) => ({
-        tip: textOf(tip),
-        num: /<tspan class="sm-num">(\d+)<\/tspan>/.exec(inner)?.[1] ?? null,
-        label: /<tspan dx="[^"]*">(.*?)<\/tspan>/.exec(inner)?.[1] ?? null,
-      }));
-      const nums = T.taskNumbers(b.tasks);
-      const want = T.taskBlocks(b.tasks, axis, W).map(({ i, w }) => {
-        const t = b.tasks[i];
-        const label = T.taskLabel(t);
-        const n = nums[i] == null ? null : String(nums[i]);
-        const say =
-          t.kind === 'lone' ? [null, null]
-          : P.labelFits(`${n} ${label}`, w) ? [n, label]
-          : P.labelFits(label, w) ? [null, label]
-          : P.labelFits(n, w) ? [n, null]
-          : [null, null];
-        seen.both += say[0] && say[1] ? 1 : 0;
-        seen.num += say[0] && !say[1] ? 1 : 0;
-        seen.lone += t.kind === 'lone' ? 1 : 0;
-        return { tip: `${T.taskTip(t, b)}\n${P.zoomTip(t.t0)}`, num: say[0], label: say[1] };
-      });
-      assert.equal(want.length, b.tasks.length, `${r.sid}: every task is on the session's axis`);
-      assert.deepEqual(lane.map((x) => ({ ...x, label: x.label === null ? null : textOf(x.label) })), want, `${r.sid}: the lane`);
-      // the levels it captions, and the key to the colours of the phases it draws, named as the bands are
-      assert.equal((html.match(/class="tn-cap tn-lane-cap"/g) ?? []).length, 2, r.sid);
-      const key = [...html.matchAll(/<span class="tn-legend-item" role="listitem">(.*?)<\/span>/g)].map((m) => textOf(m[1]));
-      assert.deepEqual(key, P.phaseLegend(b.list, axis).map((e) => e.name), `${r.sid}: the key`);
-      // an image to a screen reader, named by its tasks and its phases in words
-      const name = textOf(/role="img" aria-label="([^"]*)"/.exec(html)[1]);
-      assert.ok(name.endsWith(`phases ${P.sequenceLine(b.list, now)}`), `${r.sid}: ${name}`);
-      // a session running now ends in its live edge, which is no pick
-      const edge = /<g data-kind="edge" data-tip="([^"]*)">/.exec(html);
-      if (now && ['running', 'idle', 'unknown'].includes(now.state)) {
-        const last = b.list[b.list.length - 1].t1;
-        assert.ok(edge, `${r.sid}: its live edge`);
-        assert.equal(textOf(edge[1]), P.edgeTip(now, last, Math.max(api.now_epoch, last)), r.sid);
-        seen.edge++;
-      } else assert.equal(edge, null, r.sid);
-      // a block with no tasks, as one of the first version: no lane, and the phases alone are captioned
-      const bare = await ui.render('tabs/SessionMap.tsx', 'SessionMap', { block: { ...b, tasks: [] }, first: r.first, now, onTask() {}, onPhase() {} });
-      assert.doesNotMatch(bare, /class="tn-task/, r.sid);
-      assert.equal((bare.match(/class="tn-cap tn-lane-cap"/g) ?? []).length, 1, r.sid);
-      assert.equal((bare.match(/<g class="sm-pick" data-kind=/g) ?? []).length, b.list.length, r.sid);
-    }
-    for (const [what, n] of Object.entries(seen)) assert.ok(n >= 1, `no fixture row draws ${what}: ${JSON.stringify(seen)}`);
-    // nothing in it comes from the read, and it says no word of its own about a click: the one function does
-    assert.doesNotMatch(source('tabs/SessionMap.tsx'), /\bTrajectoryDetail\b|\bd\.scan\b|\bnav\b/);
-    assert.deepEqual(spelledIn('click: zoom to it'), ['lib/phases.ts']);
-  } finally {
-    mock.timers.reset();
-    await ui.close();
-  }
 });
 
 test('under each closed task, its phases in order with the chip of each; none under a lone stretch, nor under the task that is open', async () => {
@@ -2603,7 +2531,6 @@ test("the inspector tells the session's story before its processes: the facts, t
     at(/className="ins-headline"/, 'the headline'),
     at(/className="ins-gist"/, 'the gist'),
     at(/>What it did<\/h4>/, 'what it did'),
-    at(/<SessionMap\b/, 'the map of the whole session'),
     at(/<TaskList\b/, 'the list of tasks'),
     at(/>Processes<\/h4>/, 'the processes'),
     at(/<ProcessMix\b/, 'the purposes and the tool runs'),
@@ -2621,8 +2548,8 @@ test("the inspector tells the session's story before its processes: the facts, t
   // the story is the row's, so it waits for no read: the headline, the gist, and what it did are drawn as soon as the row is here
   assert.doesNotMatch(ins, /d\?\.found && axis && block\?\.(?:headline|summary)/);
   assert.match(ins, /\{block && block\.list\.length > 0 && \(\s*<section className="ins-sec"/);
-  // the map and the list pick as everything else does
-  assert.match(ins, /<SessionMap block=\{block\} first=\{r\?\.first\} now=\{edge\} onTask=\{onTask\} onPhase=\{onPhase\} \/>/);
+  // the list picks as everything else does
+  assert.match(ins, /<TaskList block=\{block\} now=\{edge\} view=\{view \?\? aim\} onTask=\{onTask\} onPhase=\{onPhase\} \/>/);
   // what the read covers is said first in its part, before how it was read, and is never a tooltip
   const read = /function ReadLine\([\s\S]*?\n\}\n/.exec(ins)?.[0] ?? '';
   assert.ok(read.indexOf('className="ins-bound"') > 0 && read.indexOf('className="ins-bound"') < read.indexOf('processes read'), 'the box first');
