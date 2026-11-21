@@ -93,9 +93,10 @@ Inside a record, by field category:
 **F1. Identity rides on every record about a process.** `_base_identity`
 (`collector/ebpf_trace.py:3813`) stamps 30 keys on every `exit`, `truncated`,
 `residency`, `conn`, `netio` and `submit`. On tick records, identity is half to
-two-thirds of the bytes. The collector's own README says as much (`collector/README.md:715`):
-*"identity, and so `args`, rides on every record about a process, including each tick's
-`residency`, `conn` and `netio`, so one long command line is repeated all day."*
+two-thirds of the bytes. The collector's own README says as much (`collector/README.md`,
+"Schema 7: network bytes by endpoint"): *"The identity block, and therefore `args`, goes on
+every record about a process, including each tick's `residency`, `conn` and `netio`, so one
+long command line is repeated all day."*
 
 **F2. Nothing says a process started, so readers reconstruct it.**
 - `LiveReducer` reads `conn`/`netio` "for one thing: the identity block of a running

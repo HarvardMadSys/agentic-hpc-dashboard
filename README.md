@@ -185,8 +185,8 @@ The records name real users and show what they ran, so both halves keep them clo
 - **On each node**, the collector creates its folders `0750` and its files `0640`
   (`EBPFM_DIR_MODE`, `EBPFM_FILE_MODE`; `EBPFM_GROUP` opens them to one group), and masks
   every command line before writing it: credentials (API keys, tokens, passwords, private
-  keys) and the prompts handed to an agent on its command line become `[REDACTED]`
-  (`EBPFM_REDACT`). Its records go only to its output folders; its one use of the network is
+  keys) become `[REDACTED]`, and the prompts handed to an agent on its command line
+  `[REDACTED-PROMPT]` (`EBPFM_REDACT`). Its records go only to its output folders; its one use of the network is
   resolving host names that command lines mention, to name the endpoints a process talked to
   (`EBPFM_ARGV_HOSTS=0` turns that off).
 - **The dashboard** will not start without a password unless told to (`--open`), and masks
