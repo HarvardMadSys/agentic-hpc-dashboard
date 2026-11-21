@@ -55,7 +55,6 @@ export function Plate({
     >
       <div className="k" data-tip={tip}>
         {k}
-        {tip && <sup className="qm" aria-hidden="true">?</sup>}
       </div>
       {/* under the label, in one piece: the plates of a row share the label's
           height (styles.css), so their numbers start on one line */}

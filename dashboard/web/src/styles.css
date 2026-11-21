@@ -1004,12 +1004,8 @@ html {
   font-family: 'IBM Plex Mono', monospace;
 }
 /* a label that carries a tip is the one affordance on a plate: the caveat about
-   how the number is counted lives there, so it has to look hoverable */
-.plate .k[data-tip] {
-  text-decoration: underline dotted;
-  text-underline-offset: 3px;
-  cursor: help;
-}
+   how the number is counted lives there, so it is marked as every label with
+   an explanation is (terms and sorting, below) */
 .plate .v {
   font-size: 32px;
   font-weight: 600;
@@ -2416,25 +2412,36 @@ tr.xsub > td {
 }
 
 /* ---------------------------------------------------------- terms and sorting
- * A term a reader may not know carries a small "?" (lib/glossary.ts): the
- * explanation is on hover, so the page stays as short as it was. */
-.term {
+ * A term a reader may not know is underlined, dotted (lib/glossary.ts): the
+ * explanation is on hover, so the page stays as short as it was, and no
+ * glyph is added to say so. Every label that explains itself on hover is
+ * marked the same way: a term, a plate's label, a header, an eyebrow, a
+ * badge. A reader knows where the explanations are without hovering all. */
+.term,
+.plate .k[data-tip],
+th[data-tip],
+.eyebrow[data-tip],
+td.lbl[data-tip],
+.u-badge[data-tip],
+.q-mark[data-tip],
+.pt-head [data-tip] {
   cursor: help;
+  text-decoration: underline dotted var(--edge);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
 }
-.qm {
-  font-size: 0.72em;
-  font-weight: 600;
-  margin-left: 2px;
-  color: var(--muted);
-  font-family: 'IBM Plex Mono', monospace;
-  vertical-align: super;
-  line-height: 0;
+.term:hover,
+.plate .k[data-tip]:hover,
+th[data-tip]:hover,
+.eyebrow[data-tip]:hover,
+td.lbl[data-tip]:hover,
+.u-badge[data-tip]:hover,
+.q-mark[data-tip]:hover,
+.pt-head [data-tip]:hover {
+  text-decoration-color: var(--muted);
 }
-.term:hover .qm,
-.plate .k:hover .qm {
-  color: var(--ink-2);
-}
-/* A sortable header says so with a faint arrow; the column in use shows it solid. */
+/* A sortable header shows its arrow on hover or focus; the column in use
+ * shows it always. A touch screen has no hover, so there every arrow shows. */
 th.sortable {
   cursor: pointer;
   user-select: none;
@@ -2447,9 +2454,20 @@ th .sort-arrow {
   margin-left: 4px;
   font-size: 10.5px;
   color: var(--edge);
+  visibility: hidden;
+}
+th.sortable:hover .sort-arrow,
+th.sortable:focus-visible .sort-arrow {
+  visibility: visible;
 }
 th.sorted .sort-arrow {
+  visibility: visible;
   color: var(--ink-2);
+}
+@media (hover: none) {
+  th .sort-arrow {
+    visibility: visible;
+  }
 }
 
 /* Live's row of plates says which span it counts: the same word ("sessions",
@@ -2503,28 +2521,6 @@ th.sorted .sort-arrow {
 /* two panel grids in a row on one tab, spaced like the panels within one */
 .grid-gap {
   height: 14px;
-}
-/* Every header or eyebrow that explains itself on hover says so with a "?",
- * so a reader knows where the explanations are without hovering everything. */
-th[data-tip]::after,
-.eyebrow[data-tip]::after,
-td.lbl[data-tip]::after,
-.u-badge[data-tip]::after,
-.q-mark[data-tip]::after,
-.pt-head [data-tip]::after {
-  content: '?';
-  font-size: 0.72em;
-  font-weight: 600;
-  margin-left: 2px;
-  color: var(--muted);
-  font-family: 'IBM Plex Mono', monospace;
-  vertical-align: super;
-  line-height: 0;
-}
-th[data-tip],
-.eyebrow[data-tip],
-td.lbl[data-tip] {
-  cursor: help;
 }
 
 /* ------------------------------------------------- Active users, opened up

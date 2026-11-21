@@ -7,7 +7,7 @@
  * A mouse shows it on hover, beside the pointer. A finger has no hover, so on a
  * touch screen a tap shows it instead -- above the finger, not under it -- and
  * it stays until the next tap or a scroll. There it is the only way to read a
- * bar's value, or what a "?" explains. A tap on a control (a button, a link, a
+ * bar's value, or what an underlined term explains. A tap on a control (a button, a link, a
  * field) is taken as working it, and shows nothing: its hint is about using it
  * with a mouse, and would only sit over what it opened.
  *
@@ -30,7 +30,7 @@ function keyboardFocus(t: Element): boolean {
 }
 
 /** The tip a focused element answers to: its own or an ancestor's, else, for a
- *  table header, the "?" term on its label (SortTh puts the tip there). */
+ *  table header, the term on its label (SortTh puts the tip there). */
 function tipOf(t: Element): HTMLElement | null {
   const own = t.closest<HTMLElement>('[data-tip]');
   if (own?.dataset.tip) return own;
