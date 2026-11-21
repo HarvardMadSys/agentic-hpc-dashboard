@@ -171,9 +171,10 @@ CODE_FILES = ("normalize.py", "export.py", "redact.py", "procindex.py", "roles.p
 # masking of names on the way out (anonymize.py), the questions asked of a
 # built view (ask.py), and the other feeds and the paths (the eBPF roots are
 # fingerprinted as resolved) -- so a checkout moved, a node-tier path changed,
-# anonymization switched, or another agent set to answer, keeps its hours.
+# anonymization switched, or another agent set to answer, keeps its hours. Nor
+# the roll-up table the Trend tab reads (rollup.py), which no hour feeds.
 CONFIG_IGNORED = ("server", "panels", "ingest", "rebuild", "export", "clock", "anonymize", "ui",
-                  "ask", "history")
+                  "ask", "history", "rollup")
 LIVE_IGNORED = ("window_min", "window_presets_min", "event_tail", "submit_tail",
                 "backfill_hours")
 

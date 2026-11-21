@@ -1,0 +1,360 @@
+"""The roll-up table the Trend tab reads (rollup.py).
+
+* the ingest writes a day once the service read all of it -- complete once it
+  ended GRACE_S ago, today as it stands -- and its counts are the live tier's;
+* a restart recounts the days it reads again from the files: the table holds the
+  same rows, never twice the counts;
+* a day the read began inside (`cut`) never overwrites the table's whole copy,
+  and is written, partial, only where the table has none;
+* a late record for a written day is written again;
+* a week's or a month's users are distinct accounts over it, a stretch with no
+  record is null, not 0;
+* the days on disk the live tier never held are filled by hand
+  (`build_from_files`) into the same rows the ingest writes;
+* `rollup.enabled` off is no table at all, and a demo writes only its own.
+
+    cd dashboard && .venv/bin/python -m unittest tests.test_rollup -q
+"""
+import datetime
+import json
+import os
+import shutil
+import sqlite3
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from rc_dashboard import config as configmod      # noqa: E402
+from rc_dashboard import rollup                   # noqa: E402
+from rc_dashboard.aggregator import Aggregator     # noqa: E402
+
+TS = "%Y-%m-%d %H:%M:%S"
+DAY_S = 86400
+_TZ = None
+
+
+def setUpModule():
+    # Days are local days: one zone for every test, so a date is a date.
+    global _TZ
+    _TZ = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+
+
+def tearDownModule():
+    if _TZ is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = _TZ
+    time.tzset()
+
+
+def exit_rec(epoch, pid, user="alice", actor3="agent", host="h1", cpu=0.5):
+    return {"schema_version": 8, "event": "exit", "ts": time.strftime(TS, time.localtime(epoch)),
+            "ts_epoch": epoch, "host": host, "user": user, "actor3": actor3,
+            "agent_type": "claude_code" if actor3 == "agent" else None,
+            "comm": "git", "args": "git status", "pid": pid, "ppid": 1,
+            "cpu_s": cpu, "duration_s": 1.0}
+
+
+def submit_rec(epoch, user="alice", host="h1"):
+    return {"schema_version": 8, "event": "submit", "ts": time.strftime(TS, time.localtime(epoch)),
+            "ts_epoch": epoch, "host": host, "user": user, "actor3": "agent",
+            "agent_type": "claude_code", "comm": "sbatch", "args": "sbatch job.sh",
+            "pid": 77, "ppid": 1}
+
+
+def midnight_before(epoch):
+    t = time.localtime(epoch)
+    return rollup.midnight(datetime.date(t.tm_year, t.tm_mon, t.tm_mday))
+
+
+def date_of(epoch):
+    return time.strftime("%Y-%m-%d", time.localtime(epoch))
+
+
+class Case(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rc_rollup_")
+        self.root = os.path.join(self.tmp, "ebpf")
+        self.now = time.time()
+        self.today = midnight_before(self.now)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def cfg(self, cache="cache", **over):
+        tree = configmod.defaults()
+        tree["feeds"]["ebpf"]["roots"] = [self.root]
+        tree["feeds"]["ebpf_node"]["roots"] = [os.path.join(self.tmp, "node")]
+        tree["cache"]["dir"] = os.path.join(self.tmp, cache)
+        tree["cache"]["state_dir"] = os.path.join(self.tmp, "state")
+        tree["panels"]["merge_reduce"] = False
+        for k, v in over.items():
+            node = tree
+            parts = k.split(".")
+            for p in parts[:-1]:
+                node = node.setdefault(p, {})
+            node[parts[-1]] = v
+        return configmod.Config(tree, {}, None)
+
+    def write(self, recs, stream="exits", host="h1"):
+        """Each record into the date dir of its own day, as the collector files it."""
+        for r in recs:
+            d = os.path.join(self.root, date_of(r["ts_epoch"]))
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "%s.%s.jsonl" % (host, stream)), "ab") as fh:
+                fh.write(json.dumps(r).encode() + b"\n")
+
+    def feed(self, spread=False):
+        """Days -4, -3 and -2 at noon, each with alice and bob, and today so far;
+        with `spread`, an exit every 10 minutes of day -4 besides, so a read
+        begun inside it misses some."""
+        recs, pid = [], 100
+        if spread:
+            base = self.today - 4 * DAY_S
+            recs += [exit_rec(base + 600 * k + 5, 3000 + k, user="erin") for k in range(144)]
+        for back in (4, 3, 2):
+            noon = self.today - back * DAY_S + 12 * 3600
+            for i, user in enumerate(("alice", "bob", "alice")):
+                pid += 1
+                recs.append(exit_rec(noon + 60 * i, pid, user=user))
+            pid += 1
+            recs.append(exit_rec(noon + 600, pid, user="carol", actor3="human", cpu=None))
+        recs.append(exit_rec(max(self.today + 1, self.now - 60), 999, user="alice"))
+        self.write(sorted(recs, key=lambda r: r["ts_epoch"]))
+        self.write([submit_rec(self.today - 3 * DAY_S + 13 * 3600)], stream="snapshot")
+
+    def run_service(self, cfg):
+        agg = Aggregator(cfg)
+        agg.backfill_now()
+        agg.rollup.flush(agg.lock, force=True)
+        return agg
+
+    @staticmethod
+    def rows(agg_or_path):
+        path = agg_or_path if isinstance(agg_or_path, str) else agg_or_path.rollup.path
+        db = sqlite3.connect(path)
+        try:
+            return {
+                "day": sorted(db.execute("SELECT date, held, records, complete FROM day")),
+                "class": sorted(db.execute(
+                    "SELECT date, host, class, agent_type, processes, cpu_s, cpu_n, submits "
+                    "FROM day_class")),
+                "user": sorted(db.execute(
+                    "SELECT date, user, class, agent_type, processes, cpu_s, submits "
+                    "FROM day_user")),
+            }
+        finally:
+            db.close()
+
+
+class IngestTest(Case):
+
+    def test_whole_days_are_written_complete_and_today_as_it_stands(self):
+        self.feed()
+        agg = self.run_service(self.cfg())
+        days = {d: (held, recs, done) for d, held, recs, done in self.rows(agg)["day"]}
+        for back in (4, 2):
+            self.assertEqual(days[date_of(self.today - back * DAY_S)], (4, 4, 1))
+        # the day with a submission: a record, and no minute of exits more
+        self.assertEqual(days[date_of(self.today - 3 * DAY_S)], (4, 5, 1))
+        self.assertEqual(days[date_of(self.now)][1:], (1, 0))
+        cls = {(d, c): (n, cpu, cpu_n, sub) for d, _h, c, _t, n, cpu, cpu_n, sub
+               in self.rows(agg)["class"]}
+        d3 = date_of(self.today - 3 * DAY_S)
+        self.assertEqual(cls[(d3, "agent")], (3, 1.5, 3, 1))
+        # a null CPU is not a 0: counted, but not as a reading
+        self.assertEqual(cls[(d3, "human")], (1, 0.0, 0, 0))
+
+    def test_the_counts_are_the_live_tiers_day_by_day(self):
+        self.feed()
+        agg = self.run_service(self.cfg())
+        live = {d["date"]: d["by_class"] for d in agg.live.daily()["days"]}
+        body = agg.trend(7, "day")
+        for b in body["buckets"]:
+            if not b["data_days"] or b["key"] not in live:
+                continue
+            for c, v in b["by_class"].items():
+                self.assertEqual((v["n"], v["cpu_s"], v["users"]),
+                                 (live[b["key"]][c]["n"], live[b["key"]][c]["cpu_s"],
+                                  live[b["key"]][c]["users"]), (b["key"], c))
+
+    def test_a_restart_recounts_rather_than_adds(self):
+        self.feed()
+        first = self.rows(self.run_service(self.cfg()))
+        second = self.rows(self.run_service(self.cfg()))
+        self.assertEqual(first["class"], second["class"])
+        self.assertEqual(first["user"], second["user"])
+        self.assertEqual([r[:3] for r in first["day"]], [r[:3] for r in second["day"]])
+
+    def test_nothing_is_written_before_the_read_of_the_history_is_done(self):
+        self.feed()
+        agg = Aggregator(self.cfg())
+        self.assertEqual(agg.rollup.flush(agg.lock, force=True), 0)
+        self.assertEqual(self.rows(agg)["day"], [])
+        self.assertEqual(agg.rollup.status(agg.lock)["state"], "reading")
+
+    def test_a_late_record_for_a_written_day_writes_it_again(self):
+        self.feed()
+        agg = self.run_service(self.cfg())
+        d2 = date_of(self.today - 2 * DAY_S)
+        self.write([exit_rec(self.today - 2 * DAY_S + 20 * 3600, 5000, user="dave")])
+        agg.poll_once()
+        agg.rollup.flush(agg.lock, force=True)
+        days = {d: recs for d, _h, recs, _c in self.rows(agg)["day"]}
+        self.assertEqual(days[d2], 5)
+        self.assertIn((d2, "dave", "agent", "claude_code", 1, 0.5, 0), self.rows(agg)["user"])
+
+    def test_a_day_the_read_began_inside_never_replaces_the_whole_copy(self):
+        self.feed(spread=True)
+        whole = self.rows(self.run_service(self.cfg()))
+        d4 = date_of(self.today - 4 * DAY_S)
+        # read from between 12:00 and 13:00 of day -4: its morning is left behind
+        hours = int((self.now - (self.today - 4 * DAY_S + 12 * 3600)) / 3600.0)
+        cut = self.run_service(self.cfg(**{"live.backfill_hours": hours}))
+        self.assertLess(cut.rollup.covered_from, self.today - 3 * DAY_S)
+        self.assertEqual(self.rows(cut)["day"], whole["day"])
+        self.assertEqual([r for r in self.rows(cut)["class"] if r[0] == d4],
+                         [r for r in whole["class"] if r[0] == d4])
+
+    def test_a_day_the_read_began_inside_is_written_partial_where_there_is_none(self):
+        self.feed(spread=True)
+        hours = int((self.now - (self.today - 4 * DAY_S + 12 * 3600)) / 3600.0)
+        agg = self.run_service(self.cfg(cache="fresh", **{"live.backfill_hours": hours}))
+        days = {d: (recs, done) for d, _h, recs, done in self.rows(agg)["day"]}
+        d4 = date_of(self.today - 4 * DAY_S)
+        self.assertIn(d4, days)
+        self.assertEqual(days[d4][1], 0)
+        self.assertLess(days[d4][0], 144 + 4)
+        self.assertEqual(days[date_of(self.today - 3 * DAY_S)][1], 1)
+
+    def test_off_is_no_table(self):
+        self.feed()
+        agg = Aggregator(self.cfg(**{"rollup.enabled": False}))
+        agg.backfill_now()
+        self.assertIsNone(agg.rollup)
+        body = agg.trend(30, "week")
+        self.assertFalse(body["enabled"])
+        self.assertFalse(os.path.exists(rollup.path_of(self.cfg(**{"rollup.enabled": False}))))
+
+
+class TrendTest(Case):
+    """Buckets, from rows written straight to the store."""
+
+    def snap(self, date, users, cls="agent", complete=True):
+        a = rollup.midnight(date)
+        day = rollup.Day(date.isoformat(), a, rollup.midnight(date + datetime.timedelta(days=1)))
+        for i, u in enumerate(users):
+            day.feed({"event": "exit", "host": "h1", "_a3": cls, "agent_type": "codex",
+                      "user": u, "cpu_s": 2.0}, a + 3600 + 60 * i, "exit")
+        return day.snapshot(a + 2 * DAY_S, complete)
+
+    def test_users_over_a_week_or_month_are_distinct_accounts(self):
+        store = rollup.RollupStore(os.path.join(self.tmp, "t", rollup.FILE))
+        mon = datetime.date(2026, 11, 2)                   # a Monday
+        store.write([self.snap(mon, ["alice", "bob"]),
+                     self.snap(mon + datetime.timedelta(days=1), ["alice"]),
+                     self.snap(mon + datetime.timedelta(days=8), ["carol"])])
+        today = mon + datetime.timedelta(days=13)
+        week = {b["key"]: b for b in store.trend(14, "week", today)["buckets"]}
+        self.assertEqual(sorted(week), ["2026-11-02", "2026-11-09"])
+        w1 = week["2026-11-02"]
+        self.assertEqual((w1["users"], w1["by_class"]["agent"]["users"],
+                          w1["by_class"]["agent"]["n"], w1["data_days"], w1["days"]),
+                         (2, 2, 3, 2, 7))
+        self.assertEqual(w1["types"]["codex"], {"n": 3, "cpu_s": 6.0, "users": 2})
+        days = {b["key"]: b for b in store.trend(14, "day", today)["buckets"]}
+        self.assertEqual([days[k]["users"] for k in ("2026-11-02", "2026-11-03")], [2, 1])
+        month = store.trend(14, "month", today)["buckets"]
+        self.assertEqual([(b["key"], b["users"]) for b in month], [("2026-11-01", 3)])
+        self.assertTrue(month[0]["cut"])
+
+    def test_a_stretch_with_no_record_is_null_not_zero(self):
+        store = rollup.RollupStore(os.path.join(self.tmp, "t", rollup.FILE))
+        mon = datetime.date(2026, 11, 2)
+        store.write([self.snap(mon, ["alice"])])
+        days = {b["key"]: b for b in store.trend(3, "day", mon + datetime.timedelta(days=2))["buckets"]}
+        empty = days["2026-11-03"]
+        self.assertEqual((empty["users"], empty["by_class"], empty["data_days"]), (None, {}, 0))
+        self.assertTrue(empty["partial"])
+
+    def test_a_partial_day_makes_its_bucket_partial(self):
+        store = rollup.RollupStore(os.path.join(self.tmp, "t", rollup.FILE))
+        mon = datetime.date(2026, 11, 2)
+        store.write([self.snap(mon + datetime.timedelta(days=k), ["alice"], complete=k != 6)
+                     for k in range(7)])
+        (w,) = store.trend(7, "week", mon + datetime.timedelta(days=6))["buckets"]
+        self.assertEqual((w["complete_days"], w["partial"], w["today"]), (6, True, True))
+
+    def test_a_table_of_another_format_is_refused(self):
+        path = os.path.join(self.tmp, "t", rollup.FILE)
+        rollup.RollupStore(path)
+        db = sqlite3.connect(path)
+        db.execute("UPDATE meta SET value = '99' WHERE key = 'format'")
+        db.commit()
+        db.close()
+        with self.assertRaises(RuntimeError):
+            rollup.RollupStore(path)
+
+
+class FromFilesTest(Case):
+
+    def test_the_days_on_disk_fill_the_rows_the_ingest_writes(self):
+        self.feed()
+        ingest = self.rows(self.run_service(self.cfg()))
+        cfg = self.cfg(cache="by-hand")
+        with open(os.devnull, "w") as quiet:
+            n = rollup.build_from_files(cfg, days=30, out=quiet)
+        self.assertEqual(n, 3)
+        hand = self.rows(rollup.path_of(cfg))
+        whole = {date_of(self.today - k * DAY_S) for k in (2, 3, 4)}
+        self.assertEqual([r for r in hand["class"] if r[0] in whole],
+                         [r for r in ingest["class"] if r[0] in whole])
+        self.assertEqual([r for r in hand["user"] if r[0] in whole],
+                         [r for r in ingest["user"] if r[0] in whole])
+        # today is the service's, never written by hand
+        self.assertNotIn(date_of(self.now), {r[0] for r in hand["day"]})
+        # and a second run reads nothing it holds whole
+        with open(os.devnull, "w") as quiet:
+            self.assertEqual(rollup.build_from_files(cfg, days=30, out=quiet), 0)
+
+
+class ConfigTest(unittest.TestCase):
+
+    def test_the_switch_and_the_directory(self):
+        with mock.patch.dict(os.environ, {"RC_DASH_ROLLUP": "0", "RC_DASH_ROLLUP_DIR": "/x/roll"}):
+            cfg = configmod.load(None, None)
+        self.assertFalse(rollup.enabled(cfg))
+        self.assertEqual(rollup.path_of(cfg), os.path.join("/x/roll", rollup.FILE))
+        with mock.patch.dict(os.environ, {"RC_DASH_ROLLUP": "maybe"}), \
+                self.assertRaises(SystemExit):
+            configmod.load(None, None)
+
+    def test_the_table_is_not_in_what_a_saved_state_is_keyed_on(self):
+        from rc_dashboard import hours, snapshots
+        a = configmod.Config(configmod.defaults(), {}, None)
+        b = configmod.Config(configmod.defaults(), {}, None)
+        b.tree["rollup"] = {"enabled": False, "dir": "/elsewhere"}
+        self.assertEqual(snapshots.fingerprint("c", a, []), snapshots.fingerprint("c", b, []))
+        self.assertEqual(hours.fingerprint("c", a, []), hours.fingerprint("c", b, []))
+
+    def test_a_demo_writes_only_its_own_table(self):
+        from rc_dashboard import demo
+        cfg = configmod.Config(configmod.defaults(), {}, None)
+        cfg.tree["rollup"]["dir"] = "/real/rollup"
+        tmp = tempfile.mkdtemp(prefix="rc_rollup_demo_")
+        try:
+            demo.configure(cfg, {"dir": tmp, "days": 1, "hosts": 1, "seed": "x"})
+            self.assertTrue(rollup.path_of(cfg).startswith(os.path.abspath(tmp)))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

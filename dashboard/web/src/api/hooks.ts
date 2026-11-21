@@ -11,6 +11,7 @@ import type {
   TrajRank,
   Trajectories,
   TrajectoryDetail,
+  TrendResponse,
   UserPortrait,
   UsersResponse,
   WindowsResponse,
@@ -22,6 +23,7 @@ import {
   getPanels,
   getTrajectories,
   getTrajectory,
+  getTrend,
   getUser,
   getUsers,
   getWindows,
@@ -187,6 +189,14 @@ export function useUsers(
   everyMs: number | null = null,
 ): Async<UsersResponse> {
   const a = useFetched((s) => getUsers(win, s, who), [win, buildNonce, who ? whoQuery(who) : '']);
+  useRefresh(a, everyMs);
+  return a;
+}
+
+/** The Trend tab's roll-up: `days` back in `by` buckets, read again every
+ *  `everyMs` while on screen (the table is written a minute at a time). */
+export function useTrend(days: number, by: string, everyMs: number | null = null): Async<TrendResponse> {
+  const a = useFetched((s) => getTrend(days, by, s), [days, by]);
   useRefresh(a, everyMs);
   return a;
 }

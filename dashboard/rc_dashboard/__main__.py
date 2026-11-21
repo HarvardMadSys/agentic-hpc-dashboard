@@ -1,5 +1,5 @@
-"""CLI: `--print-config`, `--check-feeds`, `serve`, `demo` (rc_dashboard/demo), and
-`new-password`."""
+"""CLI: `--print-config`, `--check-feeds`, `serve`, `demo` (rc_dashboard/demo),
+`new-password`, and `rollup` (older days into the Trend tab's table, rollup.py)."""
 import argparse
 import json
 import os
@@ -12,7 +12,8 @@ from . import feeds as feedmod
 def build_parser():
     ap = argparse.ArgumentParser(prog="rc-dashboard")
     ap.add_argument("command", nargs="?", default="serve",
-                    choices=["serve", "check-feeds", "print-config", "demo", "new-password"])
+                    choices=["serve", "check-feeds", "print-config", "demo", "new-password",
+                             "rollup"])
     ap.add_argument("--config", default=None)
     # every flag defaults to None so an unset flag never outranks the config file
     ap.add_argument("--ebpf-root", action="append", dest="ebpf_root", default=None)
@@ -58,6 +59,10 @@ def build_parser():
     ap.add_argument("--dir", default=None)
     ap.add_argument("--netrc-host", action="append", default=None)
     ap.add_argument("--force", action="store_true")
+    # rollup: how far back to fill the Trend tab's table from the day-files on
+    # disk; --force reads again the days it already holds complete.
+    ap.add_argument("--rollup-days", type=int, default=365,
+                    help="rollup: the days back to fill from the day-files on disk (365)")
     return ap
 
 
@@ -136,6 +141,15 @@ def main(argv=None):
         for line in history.describe(cfg):
             print(line)
         return code
+
+    if args.command == "rollup":
+        from . import rollup
+        if not rollup.enabled(cfg):
+            sys.stderr.write("rollup: off (rollup.enabled)\n")
+            return 2
+        n = rollup.build_from_files(cfg, days=args.rollup_days, force=args.force)
+        sys.stderr.write("rollup: %d day(s) written to %s\n" % (n, rollup.path_of(cfg)))
+        return 0
 
     why = refusal(cfg)
     if why:

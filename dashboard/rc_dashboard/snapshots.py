@@ -102,11 +102,12 @@ def fingerprint(code, cfg, roots):
 
     Not `anonymize` (names are masked on the way out, after the reducers), not
     `ui` (what the page opens on), not `ask` (a question reads a built view, it
-    never builds one), and not `history` (a sealed file's replica reads as the
-    file does, offsets and all): none changes anything a saved state holds, so
-    switching them is a restart, not a rebuild."""
+    never builds one), not `history` (a sealed file's replica reads as the
+    file does, offsets and all), and not `rollup` (the Trend tab's table, which
+    no view reads): none changes anything a saved state holds, so switching
+    them is a restart, not a rebuild."""
     tree = {k: v for k, v in cfg.as_dict().items()
-            if k not in ("server", "anonymize", "ui", "ask", "history")}
+            if k not in ("server", "anonymize", "ui", "ask", "history", "rollup")}
     blob = json.dumps([code, tree, list(roots)], sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 

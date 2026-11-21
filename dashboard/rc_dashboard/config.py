@@ -200,6 +200,12 @@ def defaults():
         # sealed file's selective reads and time searches are answered from it.
         # `days`: the newest dated dirs kept, 0 for every one the source holds.
         "history": dict(HISTORY),
+        # The roll-up table the Trend tab draws (rollup.py): each local day's
+        # processes, CPU, users and submissions by class, agent type and host,
+        # summed as records are ingested and kept past retention, in SQLite
+        # under `dir` (<cache.dir>/rollup unless set). It is the only copy of a
+        # day whose day-files are gone, so a `dir` outside the cache is safer.
+        "rollup": {"enabled": True, "dir": ""},
         # The service's present. "" is the wall clock; "auto" or a local time
         # pins (and freezes) it, for a feed captured elsewhere and copied here.
         # See clock.py.
@@ -559,6 +565,8 @@ ENV_MAP = {
     "history.dir": ("RC_DASH_HISTORY_DIR", str),
     "history.workers": ("RC_DASH_HISTORY_WORKERS", int),
     "history.days": ("RC_DASH_HISTORY_DAYS", int),
+    "rollup.enabled": ("RC_DASH_ROLLUP", _flag),
+    "rollup.dir": ("RC_DASH_ROLLUP_DIR", str),
     "ingest.workers": ("RC_DASH_INGEST_WORKERS", int),
     "ingest.reducer_groups": ("RC_DASH_INGEST_REDUCER_GROUPS", int),
     "clock.as_of": ("RC_DASH_AS_OF", str),
@@ -939,6 +947,21 @@ def load(args=None, config_path=None):
             raise SystemExit("%s: %r is not %s (set by %s)" % (
                 dotted, val, what, origins.get(dotted, "default")))
         hist[key] = "" if (key == "dir" and val is None) else val
+
+    # The roll-up table (rollup.py): a switch and a directory.
+    roll = _get(tree, "rollup", None)
+    if not isinstance(roll, dict):
+        raise SystemExit("rollup: %r is not an object (set by %s)" % (
+            roll, origins.get("rollup", "default")))
+    for key, ok, what, dflt in (
+            ("enabled", lambda v: isinstance(v, bool), "true or false", True),
+            ("dir", lambda v: v is None or isinstance(v, str), "a path, or empty", "")):
+        dotted = "rollup." + key
+        val = roll.get(key, dflt)
+        if not ok(val):
+            raise SystemExit("%s: %r is not %s (set by %s)" % (
+                dotted, val, what, origins.get(dotted, "default")))
+        roll[key] = "" if (key == "dir" and val is None) else val
 
     # candidate-probe annotation for the multi-root feeds
     for feed in ("ebpf", "ebpf_node"):

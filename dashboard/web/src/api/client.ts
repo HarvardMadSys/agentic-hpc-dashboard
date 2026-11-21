@@ -27,6 +27,7 @@ import type {
   TrajRank,
   Trajectories,
   TrajectoryDetail,
+  TrendResponse,
   UserPortrait,
   UsersResponse,
   WindowsResponse,
@@ -103,6 +104,9 @@ export const getPanels = (minutes?: number | null, s?: AbortSignal, w?: Who | nu
   const q = (win(minutes, '') + who(w)).replace(/^&/, '');
   return get<PanelsResponse>(`/panels${q ? '?' + q : ''}`, { signal: s });
 };
+/** The Trend tab: the roll-up table's last `days` days in `by` buckets. */
+export const getTrend = (days: number, by: string, s?: AbortSignal) =>
+  get<TrendResponse>(`/trend?days=${encodeURIComponent(days)}&by=${encodeURIComponent(by)}`, { signal: s });
 export const getLive = (minutes?: number | null, s?: AbortSignal) =>
   get<LiveResponse>(`/live${win(minutes)}`, { signal: s });
 
