@@ -1623,114 +1623,120 @@ and no filter.
   `meta`'s `kernel`, `bcc`, `features`, `features_rejected`, `sysctl`, `euid`, `schema_version`;
   `stop`'s `reason`, `uptime_s`, `records`, `truncated`, `perf_lost`, `perf_seen`. Also the FEEDS
   report's file list (size, mtime, host) of the eBPF and node tiers.
-- **Computation:** `CollectorHealth.feed`, in the live dispatch, so over the backfill's span and the
-  tail, keeps per host up to 20 runs (by collector pid) and its newest heartbeat; `report` judges each
-  host against `feeds.ebpf.max_age_s` (300 s) and a loss of 0.1% of kernel events
-  (`LOST_WARN_PCT`), worst first.
-- **Cost:** O(1) per `meta`, `stop` or heartbeat; per read, hosts times runs. Read again every 20 s
-  while shown.
+- **Computation:** `CollectorHealth.feed` runs in the live dispatch, so it covers the backfill's
+  span and the tail. It keeps up to 20 runs per host (by collector pid) and the host's newest
+  heartbeat. `report` judges each host against `feeds.ebpf.max_age_s` (300 s) and a loss of 0.1%
+  of kernel events (`LOST_WARN_PCT`), and lists the worst first.
+- **Cost:** O(1) per `meta`, `stop` or heartbeat; per read, hosts times runs. While the tab is
+  shown, it is read again every 20 s.
 
 #### FD-2 feeds, and the history store
 
-- **Shows:** every feed -- eBPF, node tier, `sacct`, `sacctmgr`, domains CSV, user CSV --: status,
-  newest record and its age against the feed's limit, where it was read from and where else it was
-  looked for, files, bytes, days, hosts; for the eBPF tier, the history store's replicas and their
-  size, the conversion's progress, and how many selective reads the replicas answered
-  ([History in Parquet](../../dashboard/README.md#history-in-parquet)).
-- **Records:** for the eBPF and node tiers, the newest file's last record; for the others, none, only
-  their files' names, sizes and times.
-- **Computation:** `resolve`: the dated tiers glob `feeds.<feed>.days` dated directories (8 for the
-  eBPF tier, 2 for the node tier) and read the newest file's last record (`newest_record_ts`);
-  `sacct` and `sacctmgr` glob their patterns; the CSVs stat their file. `refresh_feeds` adds the eBPF
-  tier's records counted, schema versions, exclusions, backfill, tail counters, synthetic hosts and
-  the store's status.
-- **Cost:** per read a glob, a stat per file and a tail read per dated feed (SH-4).
+- **Shows:** for every feed (eBPF, node tier, `sacct`, `sacctmgr`, domains CSV, user CSV): status,
+  the newest record and its age against the feed's limit, where it was read from and where else
+  the service looked for it, files, bytes, days and hosts. For the eBPF tier, it also shows the
+  history store's replicas and their size, the conversion's progress, and how many selective reads
+  the replicas answered ([History in Parquet](../../dashboard/README.md#history-in-parquet)).
+- **Records:** for the eBPF and node tiers, the newest file's last record. For the other feeds, no
+  records, only their files' names, sizes and times.
+- **Computation:** `resolve`. The dated tiers glob `feeds.<feed>.days` dated directories (8 for
+  the eBPF tier, 2 for the node tier) and read the newest file's last record
+  (`newest_record_ts`). `sacct` and `sacctmgr` glob their patterns, and the CSVs stat their file.
+  `refresh_feeds` adds the eBPF tier's record counts, schema versions, exclusions, backfill, tail
+  counters, synthetic hosts and the store's status.
+- **Cost:** per read, a glob, a stat per file and a tail read per dated feed (SH-4).
 
 #### FD-3 startup read
 
-- **Shows:** the backfill's state -- placing itself in each file, reading with a percentage and the
-  records so far, done (records, bytes, time, how far back the history reaches), skipped or failed --
-  and the lines that did not parse.
-- **Computation:** `Aggregator.backfill`, updated a batch at a time; `retained_from` is the oldest
-  live bin.
+- **Shows:** the backfill's state, and the lines that did not parse. The state is one of: finding
+  its place in each file; reading, with a percentage and the records so far; done (records, bytes,
+  time, how far back the history reaches); skipped; or failed.
+- **Computation:** `Aggregator.backfill`, updated one batch at a time. `retained_from` is the
+  oldest live bin.
 
 #### FD-4 configuration
 
-- **Shows:** every resolved setting, its value and where it came from (flag, environment, file,
-  default); the password hash hidden.
+- **Shows:** every resolved setting, its value, and where it came from (flag, environment, file,
+  default). The password hash is hidden.
 - **Computation:** `config.py:Config.as_dict(with_origins=True)`. No records.
 
 ## Served, not drawn
 
-What the service computes and serves that no figure on `develop` draws. Each still costs its
-reducer's work, and some reach Ask LLM's snapshot or a panel's basis note.
+This section lists what the service computes and serves but no figure on `develop` draws. Each of
+these still costs its reducer's work, and some of them reach Ask LLM's snapshot or a panel's basis
+note.
 
-- **`panels.node`** (NODE, `reducers/resources.py:NodeReducer.result`): per host the load, memory,
+- **`panels.node`** (NODE, `reducers/resources.py:NodeReducer.result`): per host, the load, memory,
   CPU idle and iowait, process states, responsiveness probes, logged-in users and open files; per
-  user the cgroup CPU used between the two newest snapshots, its quota, throttling, memory and pids;
-  NFS mounts and disk space. Made every rebuild tick and served in every `/api/panels`. The login
-  nodes table's `load₁` and `CPU` columns (LV-23) read the live tier's host rows instead, where they
-  are always null.
-- **`workspace`**: the workspace reducer's own payload is its buffer counters; the per-agent views
-  the page draws are in `cascades.workspace` (AG-4).
+  user, the cgroup CPU used between the two newest snapshots, its quota, throttling, memory and
+  pids; and NFS mounts and disk space. It is made every rebuild tick and served in every
+  `/api/panels` response. The login nodes table's `load₁` and `CPU` columns (LV-23) read the live
+  tier's host rows instead, where those values are always null.
+- **`workspace`**: the workspace reducer's own payload is its buffer counters. The per-agent views
+  that the page draws are in `cascades.workspace` (AG-4).
 - **`cascades.edges`, `edge_via`, `role_census`**: who starts whom, how each parent was found, and
   every classifier-tagged process counted by agent type and role.
 - **`trajectories`' `drift`** (cwd drift and the purpose mix's Jensen-Shannon divergence, per row),
   `dominant_user_share_pct`, `by_key_type`, `by_class_counts`, `fold` and `buffer`.
 - **`sandbox.agent_only` and `sandbox_detail`**: only in IN-6's basis note.
 - **The I/O plates and the "Requested bytes against disk bytes" panel** of `RiskIoTab`: the
-  Resources tab passes `plates={false}` and `series={false}`, so they are not drawn; their numbers
-  are LV-8's rows and LV-16's charts.
+  Resources tab passes `plates={false}` and `series={false}`, so they are not drawn. Their numbers
+  appear in LV-8's rows and LV-16's charts.
 
 ## What is slow
 
-The expensive operations, the most expensive first, by what the repo measured and, where it did not,
-by the work the code does.
+These are the expensive operations, most expensive first. The ranking is based on what the repo
+measured and, where nothing was measured, on the work the code does.
 
 1. **Reading a window from the day-files.** A scan, or the first reduction of a window's hours,
-   parses every line of the window but `meta` and `stop` (`windows.EVENTS`), at about 25 µs a record
-   through json and the normalizer, and feeds each to about eleven reducers. Measured on one login
-   node: ~15 s for 24 h and ~160 s for 7 d scanned (README); FAS's eight nodes write 21.6 M records a
-   day. Merged windows pay it once per hour ever, but these builds still read the window: the first
-   fill of the hours, the 1 h view (always scanned), every view filtered by user or agent type
-   (always scanned, though the byte check and the replicas skip what the filter rejects), and the
-   drift re-builds of those last two. Every BUILD figure waits on it; the page shows the saved
-   panels meanwhile.
+   parses every line in the window except `meta` and `stop` (`windows.EVENTS`). That costs about
+   25 µs per record through json and the normalizer, and each record is then fed to about eleven
+   reducers. Measured on one login node: ~15 s for 24 h and ~160 s for 7 d when scanned (README).
+   FAS's eight nodes write 21.6 M records a day. Merged windows pay this cost only once per hour,
+   ever, but some builds still read the window: the first fill of the hours, the 1 h view
+   (always scanned), every view filtered by user or agent type (always scanned, though the byte
+   check and the replicas skip what the filter rejects), and the drift rebuilds of those last two.
+   Every BUILD figure waits on this read, and the page shows the saved panels in the meantime.
 2. **Re-reading a window per click or query.** IOCMDS (SH-11, and every I/O number) reads the
-   window's bytes for each new lookup: about a minute per day of the FAS capture, from the JSONL
-   unless the lookup names a user, a host, a directory or agent pids. EVENTS reads the planned
-   files' ranges from the JSONL unless the filter names a column a replica can test, inflating each
-   `.gz` whole to index it: one user's exits over a week took 222-444 s from the `.gz` and
-   13.6-15.4 s from replicas; an export streams every match in its range, up to 5,000,000 rows.
-3. **The backfill.** Placing the read in every file inflates every sealed `.gz` to index it: 4
-   minutes for a week of 8 login nodes; reading is 35-45 s per node-week. Window builds wait for the
-   placing to finish, and the inflater indexes are rebuilt on every restart.
-4. **The session inspector's read** (SE-5, SE-7, SE-9): up to 150,000 records (600,000 newest first)
-   or 6 GiB per open, one at a time, so a second reader waits. Its records are built in 8
-   processes: on FAS a 150,000-record read takes 2.5-2.7 s, and a newest-first one of as many
-   5.3-5.5 s, most of it the tree keeping the newest. A sealed `.gz` with no replica, and every
-   sealed day of a terminal's or a login scope's session, is still searched in the service's
-   process: 30-43 s for a session in FAS's busiest sealed day-file, against 2.8 s from its replica
-   in one process.
-5. **Folding and ranking the sessions on read** (SE-1 to SE-3, LV-5, US-*, AG-2). The fold of every
-   held key, "half a second to most of one" at 24 h on rtx6000a, runs under the aggregator's lock,
-   which the tail and every reader share, whenever a record arrived since the last fold; the
-   Sessions list asks for it every 5 s. A running session's phase block is made again on each read:
-   `segment` up to 1.66-1.84 s for one session at the 20,000-call cap in its worst shape. The
-   cascades (each rebuild tick) and the Users roster (every 5-60 s) read the same fold, and make it
-   again when a record arrived since.
+   window's bytes for each new lookup. That takes about a minute per day of the FAS capture, read
+   from the JSONL unless the lookup names a user, a host, a directory or agent pids. EVENTS reads
+   the planned files' ranges from the JSONL unless the filter names a column that a replica can
+   test, and it inflates each `.gz` whole to index it. One user's exits over a week took
+   222-444 s from the `.gz` and 13.6-15.4 s from replicas. An export streams every match in its
+   range, up to 5,000,000 rows.
+3. **The backfill.** Finding the read's starting place in every file inflates every sealed `.gz`
+   to index it. That took 4 minutes for a week of 8 login nodes. The reading itself takes 35-45 s
+   per node-week. Window builds wait for the placing to finish, and the inflater indexes are
+   rebuilt on every restart.
+4. **The session inspector's read** (SE-5, SE-7, SE-9): up to 150,000 records (600,000 newest
+   first) or 6 GiB per open, one read at a time, so a second reader has to wait. Its records are
+   built in 8 processes. On FAS, a 150,000-record read takes 2.5-2.7 s, and a newest-first read of
+   the same size takes 5.3-5.5 s, most of it spent by the tree keeping the newest records. A sealed
+   `.gz` with no replica, and every sealed day of a terminal's or a login scope's session, is still
+   searched in the service's process. That takes 30-43 s for a session in FAS's busiest sealed
+   day-file, compared with 2.8 s from its replica in one process.
+5. **Folding and ranking the sessions on read** (SE-1 to SE-3, LV-5, US-*, AG-2). Whenever a
+   record has arrived since the last fold, the fold of every held key runs under the aggregator's
+   lock, which the tail and every reader share. The fold takes "half a second to most of one" at
+   24 h on rtx6000a, and the Sessions list asks for it every 5 s. A running session's phase block
+   is made again on each read: `segment` takes up to 1.66-1.84 s for one session at the 20,000-call
+   cap in its worst shape. The cascades (each rebuild tick) and the Users roster (every 5-60 s)
+   read the same fold, and make it again if a record has arrived since.
 6. **The Users tab's composition** (US-*): a roster walks every session's call log, and its inputs
-   walk every tool call of the window; a portrait makes up to 80 phase blocks. About 0.3 s a roster
-   on 500 synthetic sessions with 100,000 calls; not measured on a real feed.
+   walk every tool call of the window. A portrait makes up to 80 phase blocks. A roster took about
+   0.3 s on 500 synthetic sessions with 100,000 calls. This has not been measured on a real feed.
 7. **Memory, and feeding every view.** Every live record is reduced once per held view (5 by
    default, plus filtered ones). The trajectories hold ~6 KB per collector key, up to 150,000 keys,
-   ~950 MB a view; a held 7 d window of a busy node is up to ~1 GB. Unbounded within the window: the
-   sandbox's tool calls, the tool mix's and I/O's per-tool and per-user maps, the resources'
-   CPU-to-run ratios, the endpoints' addresses, the live tier's submissions.
-8. **Making and serving the panels.** Every held view's payload is made again each rebuild tick, a
-   reducer per lock hold. Each `/api/panels` read copies the payload and names and ranks the
-   endpoints for every class mix (RE-7); a panels payload of 1.8 MB held the event loop for a quarter
-   of a second before serializing moved to the request's thread (`app.py`). Not measured since.
-9. **The live frame** (LV-1 to LV-3, LV-7, LV-19 to LV-23): one per distinct window per poll that
-   brought records, cheap by design -- a bin's rows are cached until a record lands in it, and the
-   roster sums closed bins once -- but it holds the aggregator's lock for its payload.
+   which is ~950 MB per view. A held 7 d window of a busy node takes up to ~1 GB. These have no
+   bound within the window: the sandbox's tool calls, the tool mix's and I/O's per-tool and
+   per-user maps, the resources' CPU-to-run ratios, the endpoints' addresses, and the live tier's
+   submissions.
+8. **Making and serving the panels.** Every held view's payload is made again on each rebuild
+   tick, one reducer per lock hold. Each `/api/panels` read copies the payload, and names and ranks
+   the endpoints for every class combination (RE-7). A panels payload of 1.8 MB held the event loop
+   for a quarter of a second, before serializing was moved to the request's thread (`app.py`). It
+   has not been measured since.
+9. **The live frame** (LV-1 to LV-3, LV-7, LV-19 to LV-23): one frame per distinct window for each
+   poll that brought records. Making it is cheap, because a bin's rows are cached until a record
+   lands in the bin, and the roster sums the closed bins only once. But it holds the aggregator's
+   lock while it makes its payload.

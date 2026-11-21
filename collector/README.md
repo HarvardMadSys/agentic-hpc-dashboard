@@ -38,8 +38,7 @@ tier's collection mode depends on which tiers are running. When the eBPF tier is
 the node tier drops the four per-process sections that the eBPF tier collects properly
 (`SNAPSHOT_MODE=node`). Otherwise it keeps everything, because dropping those sections on
 a host with no eBPF tier would lose them entirely. **Losing root on one node costs that
-node its per-process tier and nothing else.** The decision is made per host, not
-fleet-wide.
+node its per-process tier and nothing else.** The effect is per host, not fleet-wide.
 
 ### Supervision
 
@@ -1032,11 +1031,11 @@ int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC
 2. Runs `apt-get install -y python3-bpfcc linux-headers-$(uname -r)`, and adds
    `linux-tools-$(uname -r)` only if `bpftool` is missing. Skips `bpfcc-tools` (not
    needed, and there is no candidate here).
-3. `sysctl -w kernel.sched_schedstats=1 kernel.task_delayacct=1`, persisted to
+3. Runs `sysctl -w kernel.sched_schedstats=1 kernel.task_delayacct=1`, persisted to
    `/etc/sysctl.d/99-ebpfm.conf`. **Two of the eight data points are inert without
    these.**
-4. Re-runs `check`, exiting non-zero on any FAIL.
-5. Is idempotent. On RHEL/Rocky uses `dnf` with `bcc-tools python3-bcc kernel-devel`.
+4. Re-runs `check`, and exits non-zero on any FAIL.
+5. Is idempotent. On RHEL/Rocky it uses `dnf` with `bcc-tools python3-bcc kernel-devel`.
 
 ### Environment
 
@@ -1052,7 +1051,7 @@ lose the connections that close after the exit event) ·
 `EBPFM_NETPEER_MAX` (65536; the kernel endpoint table) · `EBPFM_NET_ENDPOINTS_MAX`
 (256; endpoints listed per record) · `EBPFM_NETIO` (on; `0` = no `netio` series, keep
 `net_endpoints`) · `EBPFM_ARGV_HOSTS` (on; `0` = no `host` names from argv) ·
-`EBPFM_FLUSH_MODE` (`poll`; `record` = flush every record, the schema-5 behaviour —
+`EBPFM_FLUSH_MODE` (`poll`; `record` = flush every record, the schema-5 behaviour;
 note this is NOT `EBPFM_FLUSH`, which is about flushing live *processes* at stop) ·
 `EBPFM_REDACT` (`keys,prompts`; `0` = write argv raw) · `EBPFM_REORDER_MS` (20; how far
 behind kernel time events are applied) · `EBPFM_SUBMIT_BUDGET` (8192; bytes of a submit
@@ -1073,41 +1072,45 @@ python3 tests/bpf_compile_check.py           # compile every block with BCC, no 
 `bpf_compile_check.py` runs BCC's real frontend and LLVM over the generated program,
 block by block as `probe_features()` would, supplying the tracepoint argument structs
 itself (tracefs is root-only). It shows what the rewriter and the 512-byte stack limit
-accept on this host's headers; only a load shows what the verifier does.
+accept on this host's headers. Only an actual load shows what the verifier does.
 
-Pure helpers, the BTF member walk (including bpftool's literal `(anon)` rendering for
-unnamed union members), each BPF block compiled alone, ancestry, which tagged processes
-are agent roots (schema 8: the role table and whole agent trees), attribution precedence
-(ancestry beats tty beats uid), tty **non**-inheritance, cwd inheritance, thread-clone
-skip, pid recycling, and the netlink parser against a captured response blob.
+The unit tests cover: pure helpers, the BTF member walk (including bpftool's literal
+`(anon)` rendering for unnamed union members), each BPF block compiled alone, ancestry,
+which tagged processes are agent roots (schema 8: the role table and whole agent trees),
+attribution precedence (ancestry beats tty beats uid), tty **non**-inheritance, cwd
+inheritance, thread-clone skip, pid recycling, and the netlink parser against a captured
+response blob.
 
-The day-files: one `write(2)` per dirty stream (`os.write` counted), the JSONL bytes
-unchanged, exact stop `flushes`, a failed write kept and retried, sealed days gzipped, and
-`ebpfm.sh`'s helpers run for real (`_node_tick` with a stub snapshot, `tail`, the record
-count and `stop` record `overhead` reads). The suite holds the collector's Python, the
-Python inside `ebpfm.sh` included, to 3.6 syntax, EL8's.
+They also cover the day-files: one `write(2)` per dirty stream (`os.write` counted), the
+JSONL bytes unchanged, exact stop `flushes`, a failed write kept and retried, and sealed
+days gzipped. `ebpfm.sh`'s helpers are run for real (`_node_tick` with a stub snapshot,
+`tail`, and the record count and `stop` record that `overhead` reads). The suite holds
+all of the collector's Python, including the Python inside `ebpfm.sh`, to 3.6 syntax
+(EL8's version).
 
-The schema-7 network section is also **compiled and run**: `build_net_c()` is built with
+The schema-7 network section is also **compiled and run**. `build_net_c()` is built with
 the host C compiler against `tests/bpf_mock.h` (map semantics, `bpf_probe_read` as a
 copy), and its probes are driven with fake sockets laid out at the BTF offsets. That
 covers the entry/return hand-off, the v4-mapped double count, byte order, direction
-and a full table. Those tests are skipped without a C compiler. It is not BPF:
-whether the program loads and attaches is still only shown by `features` on a real
-kernel, and the `netpeer_hdr` variant, which needs kernel headers, is only checked
-as text.
+and a full table. Those tests are skipped without a C compiler. This is not BPF, though.
+Only `features` on a real kernel shows whether the program loads and attaches, and the
+`netpeer_hdr` variant, which needs kernel headers, is only checked as text.
 
 ## Kernel support
 
-Developed against **6.8** (Ubuntu 24.04) and **6.17**. FASRC login nodes run **4.18**,
-where `dstate_task` (needs 5.19+) will be rejected, and `tcp_accept` and `netpeer_btf`
-need BTF -- which their Python 3.6 never read before schema 8; `dstate_stat` is the 4.18 path for data point 2, which is why both blocks
-exist and are cross-checked, and `netpeer_hdr` is the 4.18 path for the endpoint table. Run `features` on the target kernel before trusting any field, and
-`EBPFM_PROBE_VERBOSE=1` to see why a block was rejected.
+Developed against **6.8** (Ubuntu 24.04) and **6.17**. FASRC login nodes run **4.18**.
+There, `dstate_task` (which needs 5.19+) will be rejected, and `tcp_accept` and
+`netpeer_btf` need BTF, which the collector never managed to read under their Python 3.6
+before schema 8.
+`dstate_stat` is the 4.18 path for data point 2, which is why both blocks exist and are
+cross-checked, and `netpeer_hdr` is the 4.18 path for the endpoint table. Run `features`
+on the target kernel before trusting any field, and use `EBPFM_PROBE_VERBOSE=1` to see
+why a block was rejected.
 
 ## Relationship to the other collectors
 
-This bundle is **login nodes only**. Compute-node collection is out of scope: it stays
-with `collect/compute/`, which runs `collect/common/snapshot.py` unchanged, in `full` mode.
+This bundle is for **login nodes only**. Compute-node collection is out of scope. It
+stays with `collect/compute/`, which runs `collect/common/snapshot.py` unchanged, in `full` mode.
 
 | Collector | Status |
 |---|---|

@@ -25,9 +25,9 @@ machine-readable form of the third column.
 
 ## Why copies and not symlinks
 
-A symlink breaks as soon as the folder is copied off the machine, and copying the
-folder off the machine is the main thing it exists to support. `sys.path` manipulation
-has the same problem.
+A symlink breaks as soon as the folder is copied off the machine, and being copied off
+the machine is exactly what this folder exists for. `sys.path` manipulation has the
+same problem.
 
 ## The cost, stated plainly
 
