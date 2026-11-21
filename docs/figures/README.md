@@ -1673,6 +1673,9 @@ and no filter.
 What the service computes and serves that no figure on `develop` draws. Each still costs its
 reducer's work, and some reach Ask LLM's snapshot or a panel's basis note.
 
+- **`resources.series.by_class[c].n`**: each class's processes exited per bin. A share of them
+  bin by bin was drawn on Live beside the CPU chart, the rate chart's count again over its bin's
+  total; the count is LV-5's, per minute, and each class's share of the window LV-6's.
 - **`load_1` and `cpu_pct` of the live frame's host rows**: always null, being the node tier's
   (`LiveReducer`), so the login nodes table (LV-21) has no column for them; the node tier's own load
   and CPU are RE-1's.
