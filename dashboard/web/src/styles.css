@@ -35,6 +35,12 @@
   --s7: #d2607d;
   --s8: #3aa0d0;
   --sg: #93a1ad;
+  /* each class's hue at 12% over --surface, painted out rather than mixed: the
+     cell that holds a unit's largest share in Who uses what (OverviewTab.tsx) */
+  --wash-s1: #f2e0e3;
+  --wash-s2: #e4eaf2;
+  --wash-s3: #e8eee1;
+  --wash-sg: #f0f0f2;
   --good: #2f8f2c;
   --warn: #fcb315;
   --serious: #ec8f9c;
@@ -2409,6 +2415,10 @@ table.shares tr.grp td .nm {
   height: 100%;
   border-radius: 2px;
 }
+/* no share -- not known, which is not 0% -- is a hatched track, not an empty one */
+.share-track.none {
+  background: repeating-linear-gradient(135deg, var(--rule) 0 2px, transparent 2px 5px);
+}
 .share-cell b {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 13.5px;
@@ -2423,6 +2433,81 @@ table.shares tr.grp td .nm {
   font-family: 'IBM Plex Mono', monospace;
   margin-top: 2px;
 }
+/* Who uses what: each track takes its column's width, so a share reads off a
+   bar long enough to compare, with its number right at the bar's end rather
+   than across a gap; a hairline at 50% says which class holds a majority. */
+@media (min-width: 601px) {
+  table.shares.who .share-cell {
+    --track: minmax(96px, 1fr);
+    grid-template-columns: var(--track) minmax(44px, auto);
+    max-width: 300px;
+  }
+  table.shares.who .share-cell b {
+    text-align: left;
+  }
+}
+/* a byte count opens the commands behind it: its button takes the whole cell,
+   so its track is as long as every other row's */
+table.shares.who .ionum {
+  display: block;
+  width: 100%;
+  text-align: inherit;
+}
+table.shares.who .share-track {
+  height: 10px;
+  background:
+    linear-gradient(to right, transparent calc(50% - 0.5px), var(--edge) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
+    var(--rule);
+}
+table.shares.who .share-track.none {
+  background: repeating-linear-gradient(135deg, var(--rule) 0 2px, transparent 2px 5px);
+}
+/* the bar grows from the left: square there, a 4px rounded end where it stops */
+table.shares.who .share-track i {
+  border-radius: 0 4px 4px 0;
+}
+/* the class with the unit's largest share: its cell washed in the class's hue,
+   so the eye can follow the lead down the table, and see where it changes */
+table.shares.who td.lead .share-cell {
+  background: var(--lead-wash, var(--sunken));
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: -6px -8px;
+}
+table.shares.who td.lead .share-cell b {
+  font-weight: 700;
+}
+/* the key to that wash, in the panel's header */
+.pill.lead-sum {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+.pill.lead-sum > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.lead-key {
+  display: inline-block;
+  width: 14px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--wash-s1);
+  box-shadow: inset 0 0 0 1px var(--edge);
+}
+@media (max-width: 600px) {
+  /* on a phone the key wraps under its label rather than run off the panel */
+  .pill.lead-sum {
+    white-space: normal;
+    border-radius: 10px;
+    flex: 0 1 auto;
+  }
+  table.shares.who td.lead .share-cell {
+    padding: 5px 6px;
+    margin: -5px -6px;
+  }
+}
+
 /* the label column holds still, so one class column sits beside it rather
    than across the panel */
 table.shares th:first-child,

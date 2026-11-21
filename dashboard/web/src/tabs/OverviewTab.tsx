@@ -11,7 +11,7 @@ import { Basis, Panel } from '../components/Panel';
 import { ShareCell } from '../components/ShareCell';
 import { SortTh } from '../components/SortTh';
 import { Term } from '../components/Term';
-import { CLS_COL, CLS_LBL } from '../lib/classes';
+import { CLS, CLS_COL, CLS_LBL, CLS_WASH } from '../lib/classes';
 import { DASH, dur, fint, fmt, mb } from '../lib/format';
 import { GLOSS } from '../lib/glossary';
 import { useNodeWords } from '../lib/nodes';
@@ -20,6 +20,7 @@ import { pick, winLabel } from '../lib/panels';
 import { countedIn, noShare, shareOf, wholeOf } from '../lib/shares';
 import { useSort } from '../lib/useSort';
 import { Fragment, memo } from 'react';
+import type { CSSProperties } from 'react';
 import type { Panels } from '../lib/panels';
 import { coveredBy } from '../lib/iocmds';
 import { IoNum } from '../components/IoCmds';
@@ -133,6 +134,29 @@ export const OverviewTab = memo(function OverviewTab({
     sort.sort(units.filter((u) => (u.group ?? 'node') === g), (u, k) => (k === 'unit' ? u.k : shareIn(u, k))),
   );
 
+  // The class with each unit's largest share, out of every class the unit
+  // counted -- a class the chips hide and `unlabeled` too -- so turning the
+  // leader off shades no other cell in its place. None while the whole is not
+  // known, or nothing was counted; every class at the top when they tie.
+  const leads = new Map(units.map((u): [UnitRow, string[]] => {
+    const w = wholes.get(u)!;
+    if (w.unknown.length || !w.tot) return [u, []];
+    let top = 0;
+    let who: string[] = [];
+    for (const c of u.all) {
+      const v = u.get(c) ?? 0;
+      if (v > top) [top, who] = [v, [c]];
+      else if (v === top && top > 0) who.push(c);
+    }
+    return [u, who];
+  }));
+  // How many units each class leads, the panel's point in one line: the lead
+  // changes hands from unit to unit.
+  const tally = new Map<string, number>();
+  for (const l of leads.values()) if (l.length === 1) tally.set(l[0], (tally.get(l[0]) ?? 0) + 1);
+  const byLead = [...tally].sort((a, b) =>
+    b[1] - a[1] || [...CLS, 'unlabeled'].indexOf(a[0] as Cls) - [...CLS, 'unlabeled'].indexOf(b[0] as Cls));
+
   return (
     <div className="grid wide">
       <Panel
@@ -149,6 +173,30 @@ export const OverviewTab = memo(function OverviewTab({
         ]}
         p={tm}
         span
+        header={
+          byLead.length ? (
+            <span
+              className="pill lead-sum"
+              data-tip={
+                'the class with the largest share of each unit, its cell shaded in the table. ' +
+                'the ranking is not the same from unit to unit: a unit that de-weights the loudest users ' +
+                'can erase or flip the gap between classes.\n\n' +
+                'a share is out of every class counted, so a class the chips hide still leads where it leads, ' +
+                'and no other cell is shaded in its place; a unit with no known whole has no lead'
+              }
+            >
+              largest share:
+              {byLead.map(([c, n], i) => (
+                <span key={c}>
+                  {i ? '· ' : ''}
+                  <i className="lead-key" style={{ background: CLS_WASH[c] ?? 'var(--sunken)' }} />
+                  {CLS_LBL[c] ?? c}{' '}
+                  {byLead.length === 1 && n === units.length ? 'in every unit' : i ? `in ${n}` : `in ${n} unit${n === 1 ? '' : 's'}`}
+                </span>
+              ))}
+            </span>
+          ) : undefined
+        }
         empty={!units.length}
         emptyWhat="no unit is populated for the selection"
         basis={
@@ -165,7 +213,7 @@ export const OverviewTab = memo(function OverviewTab({
         {/* A table, not a stacked bar per measure: each class keeps its own
             track, so the IDE's 0.3% of the processes is still there to read. */}
         <div className="scroller">
-          <table className="roomy shares">
+          <table className="roomy shares who">
             <thead>
               <tr>
                 <SortTh s={sort} k="unit" first="asc">each class's share of</SortTh>
@@ -196,8 +244,18 @@ export const OverviewTab = memo(function OverviewTab({
                     {have.map((c) => {
                       const v = u.get(c);
                       const pct = shareIn(u, c);
+                      const lead = leads.get(u)!.includes(c);
                       return (
-                        <td key={c} data-tip={[u.cellTip?.(c), v != null ? why : null].filter(Boolean).join('\n') || undefined}>
+                        <td
+                          key={c}
+                          className={lead ? 'lead' : undefined}
+                          style={lead ? ({ '--lead-wash': CLS_WASH[c] } as CSSProperties) : undefined}
+                          data-tip={[
+                            lead ? `the largest share of ${u.k}` : null,
+                            u.cellTip?.(c),
+                            v != null ? why : null,
+                          ].filter(Boolean).join('\n') || undefined}
+                        >
                           {u.io && v ? (
                             <IoNum q={{ title: `${u.k} · ${CLS_LBL[c] ?? c}`, sort: u.io, class: [c], ...coveredBy(io) }}>
                               <ShareCell pct={pct} sub={u.fmt ? u.fmt(v) : fint(v)} c={CLS_COL[c]} />
