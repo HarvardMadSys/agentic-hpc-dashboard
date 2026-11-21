@@ -1154,12 +1154,11 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
 | RE-1 | per-process distributions | BUILD | `resources.by_class[c].quants`, `top`, `oncpu_set_aside` | `reducers/resources.py:ResourceReducer.feed`, `result`; `reducers/__init__.py:Quant` · `tabs/ResourcesTab.tsx:DistTable` |
 | RE-2 | faults, delays, and D-state | BUILD | `resources.by_class[c].faults`, `delays`, `dstate`; `impossible_waits` | `ResourceReducer.feed`; `reducers/__init__.py:Acc` · `tabs/ResourcesTab.tsx:FaultTable` |
 | RE-3 | worst individual processes | BUILD | `resources.worst_stall`, `worst_fault`, `worst_wait` | `ResourceReducer._keep_worst` · `tabs/ResourcesTab.tsx:ResourcesTab`, `tabs/RiskIoTab.tsx:InstanceTable` |
-| RE-4 | disk read by tool | BUILD; a bar opens IOCMDS | `io_process.by_tool` | `reducers/io.py:IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:toolBars`, `charts/primitives.tsx:HBars` |
-| RE-5 | disk written by tool | BUILD; a bar opens IOCMDS | `io_process.by_tool` | as RE-4 |
-| RE-6 | network bytes, and per class | BUILD; a cell opens IOCMDS | `io_process.by_class[c]`: `net_tx_mb`, `net_rx_mb`, `net_calls` | `IoReducer.feed` · `tabs/RiskIoTab.tsx:RiskIoTab`, `charts/primitives.tsx:GroupBars` |
-| RE-7 | network endpoints | BUILD, named on read | `io_process.endpoints` | `IoReducer._feed_endpoints`, `_endpoint_rows`; `endpoints.py:serve`, `fold` · `tabs/NetEndpoints.tsx:NetEndpoints` |
-| RE-8 | I/O by user | BUILD; a cell opens IOCMDS | `io_process.by_user` | `IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:RiskIoTab` |
-| RE-9 | I/O distributions | BUILD | `io_process.by_class[c].quants` | `IoReducer.feed`; `Quant` · `tabs/RiskIoTab.tsx:RiskIoTab`, `components/Coverage.tsx:QuantCells` |
+| RE-4 | disk read and written by tool | BUILD; a bar opens IOCMDS | `io_process.by_tool` | `reducers/io.py:IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:toolBars`, `charts/primitives.tsx:HGroupBars` |
+| RE-5 | network bytes, and per class | BUILD; a cell opens IOCMDS | `io_process.by_class[c]`: `net_tx_mb`, `net_rx_mb`, `net_calls` | `IoReducer.feed` · `tabs/RiskIoTab.tsx:RiskIoTab`, `charts/primitives.tsx:GroupBars` |
+| RE-6 | network endpoints | BUILD, named on read | `io_process.endpoints` | `IoReducer._feed_endpoints`, `_endpoint_rows`; `endpoints.py:serve`, `fold` · `tabs/NetEndpoints.tsx:NetEndpoints` |
+| RE-7 | I/O by user | BUILD; a cell opens IOCMDS | `io_process.by_user` | `IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:RiskIoTab` |
+| RE-8 | I/O distributions | BUILD | `io_process.by_class[c].quants` | `IoReducer.feed`; `Quant` · `tabs/RiskIoTab.tsx:RiskIoTab`, `components/Coverage.tsx:QuantCells` |
 
 #### RE-1 per-process distributions
 
@@ -1198,21 +1197,24 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
   by the same rule.
 - **Cost:** a row only for a value above the floor, so few records make one.
 
-#### RE-4 disk read by tool, RE-5 disk written by tool
+#### RE-4 disk read and written by tool
 
-- **Shows:** the 14 tools that read the most from (wrote the most to) disk, as bars; the bytes
-  requested and the cache hit on hover. Over every class: the class chips do not narrow it.
+- **Shows:** a row per tool with two bars on one scale, its disk read and its disk written, for the
+  14 tools that read the most from disk and the 14 that wrote the most to it; the bytes requested
+  and the cache hit on hover. Over every class: the class chips do not narrow it.
 - **Records:** `exit`: `_eff` or `_command`, `io.rd_mb`, `io.rchar_mb`, `io.wr_mb`,
   `io.wchar_mb`, and `pid`, `ppid`, `host`, `io.scope` for the join.
 - **Computation:** `IoReducer.feed` sums each tool's four byte counters, each process's own (its
   `OwnIo` takes back what a parent's figure holds of the children it reaped), its processes and
   those with an `io` block; `result` serves the union of the top `reducers.io.top_n` (20) tools on
   each counter
-  (`_heaviest`, up to 80 rows); the page ranks by disk bytes and draws 14. A bar opens IOCMDS for the
-  tool, read from the JSONL unless the page is filtered by user.
+  (`_heaviest`, up to 80 rows); the page keeps the 14 heaviest on disk read and the 14 on disk
+  written, up to 28 rows, and orders them by the two together. A kept tool's 0 on the other counter
+  is drawn as 0. A bar opens IOCMDS for the tool, read from the JSONL unless the page is filtered by
+  user.
 - **Cost:** a few adds a record; the tool map is unbounded; per read four `nlargest` passes.
 
-#### RE-6 network bytes, and per class
+#### RE-5 network bytes, and per class
 
 - **Shows:** per class, bytes sent and received, and the network calls, with coverage; a cell opens
   IOCMDS.
@@ -1220,7 +1222,7 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
   collector's netbytes block was dropped.
 - **Computation:** an `Acc` per class and counter.
 
-#### RE-7 network endpoints
+#### RE-6 network endpoints
 
 - **Shows:** the top 10 remote endpoints by send and receive calls, or by bytes, for the classes
   shown, each row split by class; a name by reverse DNS, else by a command line, else the address;
@@ -1238,7 +1240,7 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
   for every class mix (up to 15). While names are pending the page reads `/api/panels` again after
   3, 6, 12, 24 and 48 s. Not measured.
 
-#### RE-8 I/O by user
+#### RE-7 I/O by user
 
 - **Shows:** per user, with the class of their newest record: processes, disk and requested bytes
   read and written, network received and sent, I/O coverage; a cell opens IOCMDS for the user, a
@@ -1247,7 +1249,7 @@ The Resources sub-tab's own panels, then the I/O panels it shares with Risks' co
   union of the top 20 users on each of the four I/O counters. The class chips keep a user by that
   one class.
 
-#### RE-9 I/O distributions
+#### RE-8 I/O distributions
 
 - **Shows:** per class, quantiles of each process's own bytes read requested, read from disk,
   written requested and written to disk (RE-4's join).
@@ -1664,7 +1666,7 @@ by the work the code does.
    CPU-to-run ratios, the endpoints' addresses, the live tier's submissions.
 8. **Making and serving the panels.** Every held view's payload is made again each rebuild tick, a
    reducer per lock hold. Each `/api/panels` read copies the payload and names and ranks the
-   endpoints for every class mix (RE-7); a panels payload of 1.8 MB held the event loop for a quarter
+   endpoints for every class mix (RE-6); a panels payload of 1.8 MB held the event loop for a quarter
    of a second before serializing moved to the request's thread (`app.py`). Not measured since.
 9. **The live frame** (LV-1 to LV-3, LV-7, LV-19 to LV-23): one per distinct window per poll that
    brought records, cheap by design -- a bin's rows are cached until a record lands in it, and the
