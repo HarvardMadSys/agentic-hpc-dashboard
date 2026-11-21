@@ -1,4 +1,4 @@
-/* Purpose colours: the service's purposes, drawn as four kinds in four of the
+/* Purpose colours: the service's purposes, drawn as three kinds in three of the
  * page's series slots and one grey `other` -- never a generated hue.
  *
  * The service names a process's purpose finely (`_BUILTIN_PURPOSE` in
@@ -9,26 +9,27 @@
  * key than a ribbon needs, and two of their pairs could not be told apart under
  * colour-blind simulation (build and slurm monitor, file & search and compute).
  * So squeue and sbatch are both `slurm`, make and python both `build & compute`,
- * rg and rsync both `files & data`, and the agent's runtime joins git and the
- * editors in `other`. A run, a process and a tooltip still name the purpose
- * itself (`plbl`); only the swatch is the kind's.
+ * rg and rsync both `files & data`, and polling joins git, the agent's runtime
+ * and the editors in `other`: a poll loop of a thousand pgreps is most of a
+ * ribbon however little of the work it was, and it no longer paints it crimson.
+ * A run, a process and a tooltip still name the purpose itself (`plbl`); only
+ * the swatch is the kind's.
  *
- * A kind keeps its phase's colour (lib/phases.ts) where it can: waiting
- * crimson, building blue, exploring files green. Slurm takes the violet, not
- * the phases' purple, which is ΔE 3.4 from the blue under deuteranopia. Any two
- * runs can touch, so the four are validated on every pair: worst colour-blind
- * ΔE 10.9 (green and crimson, deutan), worst normal-vision ΔE 17.0 (blue and
- * violet), each at least 3:1 against the surface.
+ * A kind keeps its phase's colour (lib/phases.ts) where it can: building blue,
+ * exploring files green. Slurm takes the violet, not the phases' purple, which
+ * is ΔE 3.4 from the blue under deuteranopia. Any two runs can touch, so the
+ * three are validated on every pair: worst colour-blind ΔE 11.4 and worst
+ * normal-vision ΔE 17.0 (both blue and violet), each at least 3:1 against the
+ * surface.
  */
 import { table } from './lookup';
 
 /** A kind a purpose is drawn as. */
-export type PurposeKind = 'poll' | 'slurm' | 'compute' | 'files' | 'other';
+export type PurposeKind = 'slurm' | 'compute' | 'files' | 'other';
 
 /** The kinds, in the order they stack and are keyed: each its label, colour, the service's purposes it holds and
  *  what its swatch's tooltip says they are. `other` holds every purpose the others do not. */
 export const KINDS: [kind: PurposeKind, label: string, colour: string, holds: string[], tip: string][] = [
-  ['poll', 'poll / introspection', 'var(--s1)', ['poll'], 'poll / introspection: ps, pgrep, top, nvidia-smi, date, …'],
   [
     'slurm',
     'slurm',
@@ -52,10 +53,11 @@ export const KINDS: [kind: PurposeKind, label: string, colour: string, holds: st
   ],
   [
     'other',
-    'other (git, agent runtime, editor, …)',
+    'other (git, poll, agent runtime, …)',
     'var(--sg)',
     [],
-    'git, agent runtime (node, claude, codex, bwrap, …), editors, and every program with no purpose of its own',
+    'git, poll / introspection (ps, pgrep, top, nvidia-smi, …), agent runtime (node, claude, codex, bwrap, …), ' +
+      'editors, and every program with no purpose of its own',
   ],
 ];
 

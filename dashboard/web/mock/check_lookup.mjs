@@ -78,7 +78,7 @@ test('a purpose is coloured as its kind and named as itself, and the key holds e
   const U = await ui.load('lib/purposes.ts');
   // the service's purposes (rc_dashboard/normalize.py, _BUILTIN_PURPOSE), each to the kind it is drawn as
   const KIND = {
-    poll: 'poll',
+    poll: 'other',
     slurm_mon: 'slurm',
     slurm_sub: 'slurm',
     build: 'compute',
@@ -97,6 +97,7 @@ test('a purpose is coloured as its kind and named as itself, and the key holds e
   assert.equal(U.pcol('no-such-purpose'), 'var(--sg)');
   assert.equal(U.pcol(null), 'var(--sg)');
   // a run or a process still says which purpose it was, not only its kind
+  assert.equal(U.plbl('poll'), 'poll / introspection');
   assert.equal(U.plbl('slurm_sub'), 'slurm submit');
   assert.equal(U.plbl('data'), 'data move');
   assert.equal(U.plbl('git'), 'git');

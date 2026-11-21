@@ -1143,9 +1143,9 @@ and for how the page draws them
   least certain was attributed: said only where there is more than one, or the least certain was placed
   by a weaker rule than the agent itself or an ancestor), sandbox and approval. At the head of its
   Processes part, its purpose ribbon and tool tokens, each run opening the tree at its first record.
-  A run is coloured by its purpose's kind (`src/lib/purposes.ts`: poll / introspection, slurm,
-  build & compute, files & data, and a grey `other` for git, the agent's runtime, editors and the
-  rest) and named as its purpose; the key under them is the five kinds.
+  A run is coloured by its purpose's kind (`src/lib/purposes.ts`: slurm, build & compute, files &
+  data, and a grey `other` for git, polling, the agent's runtime, editors and the rest) and named as
+  its purpose; the key under them is those four.
 - **Computation:** SE-2's row (`tool_rle` cut to 60 runs, `purpose_rle` to 80, with their start
   times). The inspector's own copy is made under the lock by `_inspect`, whose `lookup` folds only
   the keys sharing the row's prefix when the window's fold is stale; the agent's other days come

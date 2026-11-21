@@ -172,11 +172,11 @@ They are research-integrity constraints; breaking one is a reporting error, not 
    its own single axis. `GroupBars`/`Lines` take one `ylabel` and have no second-axis
    option, so a dual axis is not expressible.
 3. **Colour** — Harvard palette, light only, tokens copied from the archived template.
-   Crimson `#A51C30` (`--s1`) is `agent`'s among the classes; outside them, the `poll` purpose
-   (`src/lib/purposes.ts`) and the `wait` phase (`src/lib/phases.ts`) wear it too. Eight series slots plus one grey
+   Crimson `#A51C30` (`--s1`) is `agent`'s among the classes; outside them, the `wait` phase
+   (`src/lib/phases.ts`) wears it too. Eight series slots plus one grey
    tail (`--sg`); the purpose table in `src/lib/purposes.ts` draws the service's purposes as
-   four kinds (poll / introspection, slurm, build & compute, files & data) in four of those
-   slots, and folds everything else (git, the agent's runtime, editors, ...) into the grey
+   three kinds (slurm, build & compute, files & data) in three of those slots, and folds
+   everything else (git, polling, the agent's runtime, editors, ...) into the grey
    `other` rather than inventing a hue. A run, a process and a tooltip still name the
    purpose itself; only the swatch is its kind's. A series that is not a
    class — a tool, or a direction such as sent and received — takes its hue from
@@ -485,5 +485,5 @@ old links wrote it). Search & export's own: `from`, `to`, `host`, `tool`, `purpo
   ignored rather than shown generically; Sessions reads `/api/trajectories`, not the panels'
   `trajectories`.
 - The `purposes` list returned by `/api/panels` is not consulted — the colour table of
-  four kinds and the grey tail is fixed in `src/lib/purposes.ts` so the palette cannot grow
+  three kinds and the grey tail is fixed in `src/lib/purposes.ts` so the palette cannot grow
   a hue at runtime. A new purpose folds into the grey `other` until the table names its kind.
