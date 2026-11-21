@@ -1182,7 +1182,7 @@ the count of what is wrong in it.
 
 ### Over the window
 
-**Login node response**, on Live under the window's CPU chart and zoomed with it, draws four of
+**Login node response**, on Resources under the window's CPU chart and zoomed with it, draws four of
 the node tier's numbers per host over the window: the time to start a process and to look up an
 account (the collector's own probes), the slowest NFS mount's read round trip, and the load. A
 spike there under the agents' CPU above it is what "do agents make the node slow for people?"
@@ -1204,11 +1204,11 @@ looks like.
 
 ## Day by day
 
-**Day by day**, on Live under *Who uses what*, is each class's processes, CPU and users per local
-day over everything the live tier holds -- retention, not the window -- from its own minute bins
-and roster (`LiveReducer.daily`), served in `/api/panels` as `trend`. It is not narrowed by the user
-or agent-type filter, and says so when one is set. Count and cost side by side, as every
-categorical panel, read as numbers or as each class's share of the day.
+**Day by day**, on the Trend tab under the roll-up table's year, is each class's processes, CPU
+and users per local day over everything the live tier holds -- retention, not the window -- from
+its own minute bins and roster (`LiveReducer.daily`), served in `/api/panels` as `trend`. It is not
+narrowed by the user or agent-type filter, and says so when one is set. Count and cost side by
+side, as every categorical panel, read as numbers or as each class's share of the day.
 
 - **Three kinds of day.** A day the collector wrote in has its numbers and `held`, the minutes of
   it that held a record, against `minutes`, those the tier could hold; a day it wrote nothing in
@@ -1222,9 +1222,10 @@ categorical panel, read as numbers or as each class's share of the day.
 
 **Trend** is a tab of its own: each class's processes, CPU, users and Slurm submissions per day,
 week or month, over up to a year -- 30, 90, 180 or 365 days -- with the users of each agent type
-and each login node's processes beside them. *Day by day* on Live answers the same question over
-what the live tier holds (retention, 7 days); this answers it over what the **roll-up table**
-holds, which outlives retention and the day-files (`rc_dashboard/rollup.py`).
+and each login node's processes beside them. *Day by day*, under the year on the same tab,
+answers the same question over what the live tier holds (retention, 7 days); the year answers it
+over what the **roll-up table** holds, which outlives retention and the day-files
+(`rc_dashboard/rollup.py`).
 
 **The table is filled as records are ingested.** Every exit and submit the live tier takes -- the
 tail's and the backfill's -- is summed into its local day beside it (`Aggregator.dispatch`), so it
