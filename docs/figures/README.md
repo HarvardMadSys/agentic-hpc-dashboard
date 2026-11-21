@@ -1493,7 +1493,7 @@ and I/O reducers (IN-8 to IN-11), drawn through `ResourcesTab part="internal"` a
 | IN-7 | when each process was checked | BUILD | `sandbox.sandbox_src` | `SandboxReducer.feed` · `tabs/SandboxTab.tsx:SandboxTab` |
 | IN-8 | per-process distributions | BUILD | `resources.by_class[c].quants`, `top`, `oncpu_set_aside` | `reducers/resources.py:ResourceReducer.feed`, `result`; `reducers/__init__.py:Quant` · `tabs/ResourcesTab.tsx:DistTable` |
 | IN-9 | faults, delays, and D-state | BUILD | `resources.by_class[c].faults`, `delays`, `dstate`; `impossible_waits` | `ResourceReducer.feed`; `reducers/__init__.py:Acc` · `tabs/ResourcesTab.tsx:FaultTable` |
-| IN-10 | requested bytes against disk bytes | BUILD | `resources.series.by_class[c]`; `io_process.by_class[c]` | `ResourceReducer.series`; `IoReducer.feed`, `result` · `tabs/RiskIoTab.tsx:RiskIoTab` |
+| IN-10 | requested bytes against disk bytes, per class | BUILD | `io_process.by_class[c]` | `IoReducer.feed`, `result` · `tabs/RiskIoTab.tsx:RiskIoTab` |
 | IN-11 | I/O distributions | BUILD | `io_process.by_class[c].quants` | `IoReducer.feed`; `Quant` · `tabs/RiskIoTab.tsx:RiskIoTab`, `components/Coverage.tsx:QuantCells` |
 
 Records for the sandbox panels, IN-1 to IN-7: `exit` (each counted once): `_sandbox` (four states), `_sandbox_src`,
@@ -1594,13 +1594,14 @@ them, for its launch (`_approval`, `_approval_detail`).
 
 #### IN-10 requested bytes against disk bytes
 
-- **Shows:** over the window, per class, the bytes read and written on disk (solid) against those
-  requested through `read()` and `write()` (dashed); a table per class of the processes, those with
-  any I/O, the four byte counts, the bytes the page cache served and the cache hit.
-- **Records:** as LV-14 (the series) and RE-3 (each process's own bytes).
-- **Computation:** none of its own: LV-14's series, and `IoReducer`'s per-class sums, where the cache
-  served is `max(0, rchar - rd)` and the hit its share of `rchar`.
-- **Cost:** its reducers'.
+- **Shows:** a table per class, over the window: the processes and those with any I/O, the bytes
+  requested through `read()` and `write()` against those read from and written to disk, the bytes
+  the page cache served and the cache hit. The same bytes over time are LV-14's charts, not drawn
+  again here.
+- **Records:** as RE-3 (each process's own bytes).
+- **Computation:** none of its own: `IoReducer`'s per-class sums, where the cache served is
+  `max(0, rchar - rd)` and the hit its share of `rchar`.
+- **Cost:** its reducer's.
 
 #### IN-11 I/O distributions
 
