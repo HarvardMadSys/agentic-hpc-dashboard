@@ -96,7 +96,7 @@ export function Attention({ P, cls, feeds }: { P: Panels; cls: Cls[]; feeds: Fee
       flags.push({
         key: `risk:${sc.id}`, kind: 'risk',
         what: sc.kind === 'credentials'
-          ? `${sc.title}: ${plural(by.agent, 'agent command line')}`
+          ? `${sc.title}: ${plural(by.agent, 'match', 'matches')} on agent command lines`
           : `${sc.title}: agents ran ${plural(by.agent, 'such command')}`,
         note: sc.kind === 'credentials' ? `${top.join(' · ')} · the values are never shown` : top.join(' · '),
         by, to: at('risk', slug(sc.title)), where: `Risks › ${sc.title}`,

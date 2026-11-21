@@ -232,11 +232,15 @@ export function securityChecks(P: Panels, cls: Cls[]): Check[] {
         .sort((a, b) => (b.classes?.agent ?? 0) - (a.classes?.agent ?? 0))
         .slice(0, 3)
         .map((r) => `${r.pattern} ×${fint(r.classes?.agent ?? 0)}`);
+      // Each rule counts its own matches, so one line with a Bearer header and
+      // a key in it is two: the sum is matches, as the Risks table calls them,
+      // and never a count of command lines.
       out.push({
         key: `cred:${sc.id}`, axis: 'exposure',
         state: n > 0 ? 'flag' : 'clear',
-        what: n > 0 ? `${sc.title}: ${plural(n, 'agent command line')}` : `${sc.title}: none on an agent’s`,
-        note: [...top, n > 0 ? 'the values are never shown' : null, scanned].filter(Boolean).join(' · '),
+        what: n > 0 ? `${sc.title}: ${plural(n, 'match', 'matches')} on agent command lines` : `${sc.title}: none on an agent’s`,
+        note: [...top, n > 0 ? 'a line can match more than one pattern · the values are never shown' : null, scanned]
+          .filter(Boolean).join(' · '),
         by, to: at('risk', slug(sc.title)), where: `Risks › ${sc.title}`,
       });
     }

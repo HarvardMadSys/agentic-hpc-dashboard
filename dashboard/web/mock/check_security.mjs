@@ -144,9 +144,10 @@ test('with the agent class filtered out, the agent checks say they were not appl
 test('credentials: the agent’s count leads, every class beside it, and none is said only of a reduced panel', () => {
   const hit = byKey(S.securityChecks({ ...FIX, risk: risk([KEY_ROW]) }, ALL))['cred:credentials'];
   assert.equal(hit.state, 'flag');
-  assert.equal(hit.what, 'Credentials on a command line: 2 agent command lines');
+  // each rule counts its own matches: a sum of them is never a count of command lines
+  assert.equal(hit.what, 'Credentials on a command line: 2 matches on agent command lines');
   assert.deepEqual(hit.by, { agent: 2, human: 1, ide: 0 });
-  assert.match(hit.note, /^OpenAI\/Anthropic-style key literal ×2 · the values are never shown · 41,102 command lines scanned$/);
+  assert.match(hit.note, /^OpenAI\/Anthropic-style key literal ×2 · a line can match more than one pattern · the values are never shown · 41,102 command lines scanned$/);
   assert.equal(hit.to.patch.tab, 'risk');
   assert.equal(hit.to.anchor, 'sec-credentials-on-a-command-line');
   const none = byKey(S.securityChecks({ ...FIX, risk: risk([]) }, ALL))['cred:credentials'];
