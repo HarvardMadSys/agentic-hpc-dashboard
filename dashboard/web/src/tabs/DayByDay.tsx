@@ -1,8 +1,9 @@
 /* Day by day -- each class per day, over every day the service holds (`trend`).
+ * On the Trend tab, under the roll-up table's year.
  *
  * "Is agent use growing, and where?" is not a question one window answers.
  * This is the live tier's own minute bins and roster summed per local day, so
- * it covers retention -- not the window picked above -- and is not narrowed by
+ * it covers retention -- whatever the window -- and is not narrowed by
  * the user or agent-type filter; the panel says both.
  *
  * Count and cost side by side, as every categorical panel: processes on one
@@ -103,7 +104,7 @@ export function DayByDay({ P, cls, who }: { P: Panels; cls: Cls[]; who: Who | nu
       emptyWhat={t._error ? `the days could not be read: ${t._error}` : 'the live tier holds no record yet'}
       header={
         <span className="wrapctl" style={{ gap: 6 }}>
-          <span className="pill" data-tip={`every day the service holds (${fint((t.retention_minutes ?? 0) / 1440)} days of retention), not the window picked above${t.tz ? `; days start at midnight, ${t.tz}` : ''}`}>
+          <span className="pill" data-tip={`every day the live tier holds (${fint((t.retention_minutes ?? 0) / 1440)} days of retention), whatever the window${t.tz ? `; days start at midnight, ${t.tz}` : ''}`}>
             {span}
           </span>
           {filtered && (

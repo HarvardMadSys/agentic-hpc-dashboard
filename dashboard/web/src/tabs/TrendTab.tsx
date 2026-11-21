@@ -29,6 +29,8 @@ import { SortTh } from '../components/SortTh';
 import { AGENT_TYPE_COL, AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, fint, fmt, pc } from '../lib/format';
 import type { Who } from '../lib/filters';
+import type { Panels } from '../lib/panels';
+import { DayByDay } from './DayByDay';
 import { useSort } from '../lib/useSort';
 
 type By = 'day' | 'week' | 'month';
@@ -184,7 +186,7 @@ function TrendChart({
   );
 }
 
-export function TrendTab({ cls, who }: { cls: Cls[]; who: Who | null }) {
+export function TrendTab({ P, cls, who }: { P: Panels; cls: Cls[]; who: Who | null }) {
   const [range, setRange] = useState('365');
   const [by, setBy] = useState<By>('week');
   const [read, setRead] = useState<Read>('abs');
@@ -400,6 +402,12 @@ export function TrendTab({ cls, who }: { cls: Cls[]; who: Who | null }) {
         </div>
         {d?.basis && <p className="nm" style={{ marginTop: 8 }}>{d.basis}</p>}
       </Panel>
+
+      {/* The same question from the live tier, day by day over its retention:
+          the days the service still holds records for, as bars, with how many
+          minutes of each it holds. Was Live's; it reads the window's panels
+          (`trend`), which carry every day held whatever the window. */}
+      <DayByDay P={P} cls={cls} who={who} />
     </div>
   );
 }

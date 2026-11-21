@@ -410,7 +410,7 @@ class SuggestionsTest(unittest.TestCase):
                            ("live_now.users", ("live", "Active users")),
                            ("live_now.hosts", ("live", "Login nodes right now")),
                            ("node", ("resources", "Login node health")),
-                           ("panels.trend", ("live", "Day by day")),
+                           ("panels.trend", ("trend", "Day by day")),
                            ("Resources · I/O", ("resources", "Resources")),
                            ("Risk & Warning", ("risk", "Risks")),
                            ("Trajectories", ("trajectories", "Sessions")),

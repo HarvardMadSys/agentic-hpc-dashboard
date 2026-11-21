@@ -57,6 +57,7 @@ interface Place {
 /** As App.tsx's TABS names them. */
 const TAB_LBL: Record<string, string> = table({
   live: 'Live',
+  trend: 'Trend',
   agents: 'Agents',
   trajectories: 'Sessions',
   resources: 'Resources',
@@ -108,7 +109,7 @@ const PLACES: [string, Place][] = [
   ['panels.workspace', { tab: 'agents', panel: 'Agents and their subagents', anchor: 'sec-agent-trees' }],
   ['panels.node.series', { tab: 'resources', panel: 'Login node response', anchor: 'sec-node-response' }],
   ['panels.node', { tab: 'resources', panel: 'Login node health', anchor: 'sec-node-health' }],
-  ['panels.trend', { tab: 'live', panel: 'Day by day', anchor: 'sec-day-by-day' }],
+  ['panels.trend', { tab: 'trend', panel: 'Day by day', anchor: 'sec-day-by-day' }],
   ['live_now.users', { tab: 'live', panel: 'Active users', anchor: 'live-users' }],
   ['live_now.hosts', { tab: 'live', panel: 'Login nodes right now', titled: 'right now' }],
   ['live_now.submits', { tab: 'slurm', panel: 'Latest submissions' }],

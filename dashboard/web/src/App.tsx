@@ -512,7 +512,7 @@ export default function App() {
           />
         );
       case 'trend':
-        return <TrendTab cls={cls} who={who} />;
+        return <TrendTab P={P} cls={cls} who={who} />;
       case 'resources':
         return <ResourcesTab P={P} cls={cls} live={live.live} />;
       case 'risk':

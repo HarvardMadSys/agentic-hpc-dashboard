@@ -20,7 +20,6 @@ import { pcol } from '../lib/purposes';
 import { ActiveUsers } from './LiveUsers';
 import { ByUser, distinct } from '../components/ByUser';
 import { WindowPlates } from '../components/WindowPlates';
-import { DayByDay } from './DayByDay';
 import { Attention } from './Attention';
 import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
@@ -379,9 +378,6 @@ export const LiveTab = memo(function LiveTab({
 
         {/* what happened, then who did it: the window's shares, in every unit */}
         {whoUses && <div className="span2">{whoUses}</div>}
-
-        {/* the same question over days: every day the service holds */}
-        <DayByDay P={P} cls={cls} who={who ?? null} />
 
         <ActiveUsers
           U={U}
