@@ -47,7 +47,8 @@ export function ClassFilter({
           </button>
         );
       })}
-      {extra}
+      {/* no box of its own on a wide screen; on a phone, a row of its own (styles.css) */}
+      {extra && <span className="filters-extra">{extra}</span>}
     </div>
   );
 }
