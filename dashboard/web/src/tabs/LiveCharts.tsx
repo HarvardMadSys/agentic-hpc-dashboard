@@ -271,7 +271,7 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
         span
         empty={!hasSeries}
         emptyWhat="no process exited in the window for the selection"
-        header={<span className="pill" data-tip="both charts on this panel are binned this finely; drag on either to zoom both, and the charts under them">{binEye}</span>}
+        header={<span className="pill" data-tip="both charts on this panel are binned this finely; scroll on either to zoom both, and the charts under them with them">{binEye}</span>}
       >
         <div className="pair-row">
           <div>
