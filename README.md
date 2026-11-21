@@ -5,49 +5,50 @@
   </picture>
 </p>
 
-# agentic-hpc-dashboard
-
-**What do AI coding agents actually do on a shared HPC login node?** This repository
-measures it. A collector records every process that runs on each login node, started by
-agents and people alike, and a dashboard, **Agent Observatory**, shows the result live: who
-ran what, and how much of the node's CPU, memory, disk, network and scheduler it took.
-Nothing on the page is estimated or made up; what was not measured says *not measured*.
-
-<p>
-  <a href="https://madsys.seas.harvard.edu/"><img src="dashboard/web/public/logos/madsys.png" alt="Harvard University MaDSys: Measurement and Design of Systems" height="64"></a>
+<p align="center">
+  <strong>What do AI coding agents actually do on a shared HPC login node?</strong>
 </p>
 
-<p>
-  <a href="https://seas.harvard.edu/"><img src="dashboard/web/public/logos/harvard-seas.svg" alt="Harvard John A. Paulson School of Engineering and Applied Sciences" height="44"></a>
-  &nbsp;&nbsp;
-  <a href="https://www.rc.fas.harvard.edu/"><img src="dashboard/web/public/logos/fasrc.png" alt="FAS Research Computing, Harvard University" height="32"></a>
+<p align="center">
+  <a href="https://madsys.seas.harvard.edu/"><img src="dashboard/web/public/logos/madsys.png" alt="Harvard University MaDSys: Measurement and Design of Systems" height="52" align="middle"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://seas.harvard.edu/"><img src="dashboard/web/public/logos/harvard-seas.svg" alt="Harvard John A. Paulson School of Engineering and Applied Sciences" height="36" align="middle"></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.rc.fas.harvard.edu/"><img src="dashboard/web/public/logos/fasrc.png" alt="FAS Research Computing, Harvard University" height="26" align="middle"></a>
 </p>
 
-**Contents:** [How it works](#how-it-works) · [What it records](#what-it-records) ·
-[What the dashboard shows](#what-the-dashboard-shows) · [Quick start](#quick-start) ·
-[Configuration](#configuration) · [Data and privacy](#data-and-privacy) ·
-[Repository layout](#repository-layout) · [Documentation map](#documentation-map) ·
-[Development](#development) · [The rules both halves obey](#the-rules-both-halves-obey) ·
-[Requirements](#requirements)
+<p align="center">
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#data-and-privacy">Data and privacy</a> ·
+  <a href="#documentation-map">Documentation</a> ·
+  <a href="#development">Development</a>
+</p>
+
+---
+
+This repository measures what coding agents and people do on shared HPC login nodes. A
+collector records every process that runs on each node, and a dashboard, **Agent
+Observatory**, shows the result live: who ran what, and how much of the node's CPU, memory,
+disk, network and scheduler it took. Nothing on the page is estimated or made up; what was
+not measured says *not measured*.
 
 ## How it works
 
 ```mermaid
-flowchart LR
-    subgraph login["each login node"]
+flowchart TB
+    subgraph login["on each login node"]
+        direction LR
         ebpf["eBPF tier, as root:<br/>every process, as it exits"]
         nodetier["node tier, as any user:<br/>node health, every 5 minutes"]
-        files[("JSONL day-files,<br/>one folder per day")]
-        ebpf --> files
-        nodetier --> files
     end
-    subgraph host["the dashboard's host"]
-        svc["rc_dashboard,<br/>a FastAPI service"]
-        pq[("Parquet copy<br/>of sealed days")]
-        svc --- pq
-    end
+    files[("JSONL day-files,<br/>one folder per day")]
+    svc["rc_dashboard, on the dashboard's host:<br/>aggregates over any window,<br/>sealed days kept as Parquet"]
+    page["Agent Observatory,<br/>in your browser"]
+    login --> files
     files -->|"read in place, from a shared mount,<br/>or streamed over ssh by fleet/"| svc
-    svc -->|"HTTP and WebSocket,<br/>behind a password"| page["Agent Observatory,<br/>in your browser"]
+    svc -->|"HTTP and WebSocket,<br/>behind a password"| page
 ```
 
 1. **The collector**, `ebpfm` ([`collector/`](collector/README.md)), runs on each login node
