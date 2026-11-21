@@ -16,8 +16,8 @@
  *   counted (`nav` in rc_dashboard/proctree.py), so a poll loop the tree shows
  *   as one counted row still shows here as the activity it was.
  *
- * For an agent whose commands are read (lib/phases.ts) the chart also says what
- * the agent was doing, in the same picture and on the same axis. Each phase is a
+ * For every session (lib/phases.ts: an agent's tool calls, or a terminal's commands) the chart also says what
+ * the session was doing, in the same picture and on the same axis. Each phase is a
  * band as tall as the bars, tinted in its colour behind them and named at its top
  * where the name fits. A guess is hatched, a guessed slice of any phase is hatched
  * where it lies, and idle has no tint but a dashed outline. A session running now
@@ -76,6 +76,7 @@ import {
   LABEL_PAD,
   LEVELS,
   chartLevels,
+  driverOf,
   edgeLabel,
   edgeSpan,
   edgeTip,
@@ -98,7 +99,7 @@ import {
 import type { LegendEntry, Level } from '../lib/phases';
 import { KINDS, klbl, pcol, pkind } from '../lib/purposes';
 import type { PurposeKind } from '../lib/purposes';
-import { TASKS_BASIS, laneClause, taskAtX, taskBlocks, taskTip } from '../lib/tasks';
+import { laneClause, taskAtX, taskBlocks, taskTip, tasksBasis } from '../lib/tasks';
 
 /** Purposes stack by the kind they are coloured as (lib/purposes.ts), so a bar has a segment per swatch. */
 const ORDER: PurposeKind[] = KINDS.map(([k]) => k);
@@ -316,15 +317,16 @@ function SessionTrack({
 
 /* ---------------------------------------------------------------- the chart */
 
-/** The basis line above the chart (`TASKS_BASIS`), which covers the tasks and the phases under them. Its first word is
- *  the glossary's `tasks`. */
-function BasisRow() {
-  const at = TASKS_BASIS.indexOf(' · ');
+/** The basis line above the chart (`TASKS_BASIS`, or for a session no agent ran `TERMINAL_TASKS_BASIS`: `tasksBasis`),
+ *  which covers the tasks and the phases under them. Its first word is the glossary's `tasks`. */
+function BasisRow({ block }: { block: PhaseBlock }) {
+  const basis = tasksBasis(block);
+  const at = basis.indexOf(' · ');
   return (
     <div className="tn-cap tn-basis">
       <span>
-        <Term k="tasks">{TASKS_BASIS.slice(0, at)}</Term>
-        {TASKS_BASIS.slice(at)}
+        <Term k="tasks">{basis.slice(0, at)}</Term>
+        {basis.slice(at)}
       </span>
     </div>
   );
@@ -796,7 +798,7 @@ function Strip({
     const lines: string[] = [];
     const pi = bands ? phaseAt(list, t) : -1;
     if (pi >= 0) {
-      lines.push(phaseTip(list[pi]));
+      lines.push(phaseTip(list[pi], driverOf(phases)));
       const sl = sliceAt(list[pi], t);
       if (sl) lines.push(sliceTip(list[pi], sl[0], sl[1]));
     } else if (edge && now && t >= edge.a && t <= edge.b) {
@@ -852,7 +854,7 @@ function Strip({
         hint="scroll to zoom · click to open the tree there"
         reset={() => setView(null)}
       />
-      {merged && <BasisRow />}
+      {merged && phases && <BasisRow block={phases} />}
       <div className="tn-plot">
         {levels.map((level) => (
           <div
@@ -936,7 +938,7 @@ function Strip({
       <div className="tn-note">
         <span>{caption}</span>
         {phases && <span className="sep">{' · '}</span>}
-        {phases && <span className="tn-hk-text">{housekeepingText(phases.housekeeping)}</span>}
+        {phases && <span className="tn-hk-text">{housekeepingText(phases.housekeeping, driverOf(phases))}</span>}
       </div>
       {zoomed && (
         <ZoomMap

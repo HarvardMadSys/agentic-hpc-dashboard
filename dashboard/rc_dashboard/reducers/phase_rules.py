@@ -88,18 +88,23 @@ A record cut short (`args_truncated`) is read from what was recorded; these func
 it was cut. Every rule reads text, so a command held in a variable that no rule above reads, a
 function defined elsewhere, or a script it ran is only as named as its first word.
 
-Which of an agent's processes are tool calls (`parent_is_agent`, `classify_direct`, `call_text`):
+Which processes are calls (`parent_is_agent`, `classify_direct`, `classify_terminal`, `call_text`):
 
-A tool call is one command the model asked for, and whatever runs under it is part of it, so only
-an agent's direct children are read. From schema 8 a record names its agent's pid, and a direct
-child is a process whose parent that is, unless the process index holds that pid and says it is a
-tool call's process: a tool shell that outlived its agent is its own `agent_pid`, and what its loop
-runs is its call's. Through schema 7 that pid is the nearest process the classifier tagged, which
-is a tool shell for everything the shell ran, so the parent's role is asked of the index, and the
-tree root stands in when it lacks it. A direct child is a call, the agent's own housekeeping, or
-neither: an agent type outside PHASE_AGENTS has no recognized calls, because a wrong reading is
-worse than none. It is read from argv on every schema, since a schema-8 tool shell is untagged and
-has no `_role`.
+A call is one command run for whoever drives a session, and whatever runs under it is part of it.
+Two things run them: an agent runtime, whose direct children are read, and a shell a person types
+into, whose jobs are. Every session is read, of every class and every agent type.
+
+An agent's direct children. A tool call is one command the model asked for. From schema 8 a
+record names its agent's pid, and a direct child is a process whose parent that is, unless the
+process index holds that pid and says it is a tool call's process: a tool shell that outlived its
+agent is its own `agent_pid`, and what its loop runs is its call's. Through schema 7 that pid is
+the nearest process the classifier tagged, which is a tool shell for everything the shell ran, so
+the parent's role is asked of the index, and the tree root stands in when it lacks it. A direct
+child is a call or the agent's own housekeeping. Claude Code and Codex have rules of their own
+(RULED_AGENTS); any other agent is read by the general rule, Codex's with only the chores any agent
+runs; and an editor's server, whose tree the collector tags as it tags an agent's, runs nothing
+for anyone directly. It is read from argv on every schema, since a schema-8 tool shell is untagged
+and has no `_role`.
 
   Claude Code's Bash tool   a shell whose argv names a shell snapshot or, with none, is Claude's own
                             cwd capture (`eval '<cmd>' ... pwd -P >| /tmp/claude-<id>-cwd`):
@@ -130,6 +135,63 @@ has no `_role`.
                             call). A row is a claim that the model did not ask for it. A `cat`
                             whose argv was not recorded is a `bare` call here, and the reducer
                             gives it to the app by when it ran (`cat_without_argv`).
+  any other agent           Copilot, a Cursor or Windsurf agent, a sandbox the collector keyed on
+                            its own (schema 7's `bwrap`), and any type it learns later: as Codex,
+                            any direct child, or the command under a sandbox wrapper, a shell given
+                            a command string a `shell` call and anything else a `bare` one. Its
+                            housekeeping is the agent's own executable, run as a probe (its
+                            `--version`, `auth`), a client, a server, or a helper of its own
+                            (`roles.agent_exe`, by its `roles.role_of` role), a login shell's
+                            startup helpers, and `git --version`.
+  an editor's server        VS Code's, Cursor's, or Windsurf's (IDE_AGENT_TYPES), when the index
+                            does not say the root is an agent's runtime: each direct child is the
+                            editor's own (its extension host, terminal host, file watcher, and what
+                            they run), named by its program. Its terminals' commands are read as
+                            any terminal's (below); what the editor runs itself (its source
+                            control's `git status`, its search's `rg`) is never a call.
+
+A terminal's jobs (`classify_terminal`). A shell a person types into runs each command line as a
+job: a process group of its own, led by the job's first process, inside the terminal's session,
+which the shell leads (sshd, a tmux pane, and an editor's terminal host each start the shell as its
+session's leader). The collector records each process's group and session (`pgrp`, `sid`), so a
+session no agent runs is read from them a record at a time, and an editor's terminal is too:
+
+  a job                     a process that leads its own group in a session it does not lead:
+                            one command line run from a terminal, typed or sent by an editor's
+                            assistant, with everything under it. A later stage of its pipeline,
+                            a child of the session's leader in the job's group, is a call of its
+                            own, beside it in one step. A forked subshell that leads a job (`( cd
+                            x && make )`, no exec, its argv its parent's) is a `subshell` call,
+                            named by what ran under it as a sandbox wrapper's call is.
+  a command in a session    a process that leads its session and is no shell a person types into:
+                            `ssh host cmd`, `setsid cmd`, the command of `tmux new -d cmd`.
+  a shell                   one that reads what it runs from its terminal (`interactive_shell`): a
+                            login shell (`-bash`), or one given no command string, no script, and
+                            no `-s`, as VS Code starts one (`bash --init-file .../shellIntegration-
+                            bash.sh`). Never a call: it ran the whole time. A nested one, a `bash`
+                            typed at the prompt, is a job's shell, and its own jobs are calls. So is
+                            a job that only starts one (`su`, `sudo -i`, `apptainer shell`).
+  the shell's own           a process a session's leader ran in its own group, on a terminal: its
+                            startup files' helpers, its prompt's `git rev-parse` and `starship`,
+                            and what a typed `module load` or `conda activate` runs, shell functions
+                            whose programs run in the shell's group (setup, as a call's `cd` is).
+                            Housekeeping by shape: `login shell startup`, `prompt`, or the program.
+  not a call                a terminal multiplexer's client or server (`tmux`, `screen`), a daemon
+                            that leads a session after a fork with no exec, and sshd and its kin:
+                            housekeeping.
+  part of a call            anything else: what runs below a job's first process is the job's.
+
+What runs below a job's first process records that it did (`in_job`): its group is neither its own
+nor its session's, or, with no terminal and no agent above it, it is the group of a session a
+command leads. A command still running is known by those, so a session no agent ran reads as a call
+still running only what waits under a command, never what waits under the shell itself or under an
+editor's server. A record whose group and session were not kept (a collector without the feature)
+is part of whatever ran it, so a session no agent ran then has no calls.
+
+What this misreads: a command that leads its own session on a terminal (`ssh -t host cmd`) runs its
+children in its own group there, as a shell's prompt does, so they are housekeeping and not part of
+it; and a program that puts itself in a group of its own (GNU `timeout` does) is a job of its own
+when a script in a terminal runs it, a call beside the script's.
 
 The Codex fs helper (`codex --codex-run-as-fs-helper`) is a `bare` call. The sandbox wrappers
 above it carry the flag too, since it is the command they wrap, and `is_fs_helper` is false for
@@ -176,9 +238,10 @@ import shlex
 import threading
 import zlib
 
+from ..normalize import IDE_AGENT_TYPES
 from ..procindex import _NO_PARENT
 from ..roles import (_AGENT_EXES, _EMBEDDED, _SANDBOX_PREFIX, _SHELLS, _TOOL_SHELL, _VERSION_EXE,
-                     role_of)
+                     agent_exe, role_of)
 
 # In priority order: a call that holds several commands takes the first category any of them has.
 CATS = ("test", "slurm", "run", "build", "edit", "git", "wait", "explore", "unknown")
@@ -205,7 +268,9 @@ _BUILD = ("cmake ninja gcc g++ cc c++ clang clang++ gfortran mpicc mpicxx mpic++
           "autoreconf configure meson scons latex pdflatex xelatex lualatex luatex latexmk bibtex "
           "dvips dvipng gdown aria2c")
 _EDIT = ("cp mv rm rmdir mkdir touch chmod chown chgrp ln patch truncate unlink shred install "
-         "sudoedit")
+         "sudoedit "
+         # the editors a person runs in a terminal, and a model now and then, scripted (`ed -s`)
+         "vi vim nvim nano emacs emacsclient micro joe pico kak hx ne mcedit ed")
 _WAIT = "sleep wait watch pgrep pidof ps inotifywait"
 _GIT = "gh"                         # `git` itself is read by its subcommand
 _EXPLORE = ("ls ll la dir cat head tail nl less more bat rg grep egrep fgrep zgrep ugrep ag ack "
@@ -218,7 +283,9 @@ _EXPLORE = ("ls ll la dir cat head tail nl less more bat rg grep egrep fgrep zgr
             "stty tput clear seq shuf fold bc expr rev tac sha1sum sha224sum sha384sum sha512sum "
             "b2sum shasum pdftotext pdfinfo pdftoppm pdfimages pdftocairo ffprobe identify "
             "kpsewhich zcat bzcat xzcat tar unzip pkill killall mktemp ss netstat ip lsof findmnt "
-            "dig whois nslookup host ping jobstats who w users last lastlog loginctl logger getopt")
+            "dig whois nslookup host ping jobstats who w users last lastlog loginctl logger getopt "
+            # what a person reads in a terminal: the manuals, and the process monitors
+            "man info tldr btop atop nvtop glances")
 # Setup changes the shell or the environment and does nothing a phase could name.
 _SETUP = frozenset(
     "cd pushd popd export source . module ml set unset setopt unsetopt shopt alias unalias umask "
@@ -1434,7 +1501,12 @@ def _cached(fn=None, *, maxsize=65536, text_max=CACHED_TEXT):
 
     @functools.wraps(fn)
     def call(*args):
-        if sum(len(a) for a in args if isinstance(a, str)) <= text_max:
+        # the texts' length, without a generator: this runs for every record that joins an entry
+        n = 0
+        for a in args:
+            if type(a) is str:
+                n += len(a)
+        if n <= text_max:
             return cache(*args)
         key = _digest(args)
         with lock:
@@ -1542,7 +1614,9 @@ def norm_hash(text):
 
 
 # ------------------------------------------------------------------ which processes are tool calls
-PHASE_AGENTS = frozenset({"claude_code", "codex"})          # agent types whose calls are recognized
+# The agent types whose direct children have rules of their own (`classify_direct`). Every other
+# agent's are read by the general rule (`_agent_call`), and an editor's server's are its own.
+RULED_AGENTS = frozenset({"claude_code", "codex"})
 
 # The agent's executable by name, as `roles.role_of` reads it, and `claude.exe`, which `roles.py`
 # does not know: Claude's binary under that file name. On boslogin06 its own argv names
@@ -1669,6 +1743,7 @@ def _is_sandbox(command, argv0):
     return command.startswith(_SANDBOX_PREFIX) or argv0 in _SANDBOX_ARGV0
 
 
+@_cached(maxsize=16384)
 def login_helper(command, args):
     """Whether a process is a login shell's startup helper, which a call runs though the model asked
     for no such thing: by its whole argv (R51's `_LOGIN_STARTUP`, and `_PROFILE_HELPERS`), or by
@@ -1811,9 +1886,11 @@ def _no_command(command, args):
     return True
 
 
-def classify_direct(rec, agent_type):
-    """What a direct child of an agent is: `("call", kind)`, `("housekeeping", shape)`, or
-    `("none", "")` for an `agent_type` outside PHASE_AGENTS, whose calls are not recognized.
+def classify_direct(rec, agent_type, root_role=None):
+    """What a direct child of an agent is: `("call", kind)` or `("housekeeping", shape)`.
+    `root_role` is the role the process index gives the agent's own process (`roles.role_of`), or
+    None where it has none: in a tree of an editor's type, a root that is an agent's runtime (a
+    Cursor agent's CLI) is read as an agent, and an editor's server is not.
 
     The kinds of call:
       bash      Claude Code's Bash tool: a shell whose argv names a shell snapshot or, with none,
@@ -1821,8 +1898,8 @@ def classify_direct(rec, agent_type):
       search    Claude's Grep or Glob: its binary re-run as `rg`, `ugrep`, or `bfs`
       wrapper   the sandbox that confines a call (`codex-linux-sandbox`, `bwrap`); the call is what
                 runs under it, so its text is that command's
-      shell     Codex: a shell given a command string
-      bare      Codex: any other command, run with no shell
+      shell     Codex, or any other agent: a shell given a command string
+      bare      Codex, or any other agent: any other command, run with no shell
 
     Every other direct child of Claude is housekeeping, named by its program (hooks, the desktop
     app's `git`, and its `realpath`), except a shell whose argv was not kept, or was kept only as
@@ -1834,11 +1911,12 @@ def classify_direct(rec, agent_type):
     process: they included shells that tool shells started.) A shell that kept a word past its
     options (a hook, `bash hooks/x.sh`) stays housekeeping. Codex's own commands are tested first
     (`_codex_chore`), and what is left is the model's: Codex runs most of what the model asks for
-    without a shell, and one with no argv is already an unknown `bare` call.
+    without a shell, and one with no argv is already an unknown `bare` call. Any other agent is read
+    as Codex is, with only the chores any agent runs (`_agent_call`). An editor's server runs
+    nothing for anyone directly: each direct child of it is the editor's own, named by its
+    program, and the commands in its terminals are read as any terminal's (`classify_terminal`).
 
     Reads argv, so it does not depend on the record's `_role`, which a schema-8 tool shell lacks."""
-    if agent_type not in PHASE_AGENTS:
-        return ("none", "")
     command, args, argv0 = _argv(rec)
     if agent_type == "claude_code":
         if command in _SHELLS and (_TOOL_SHELL.search(args) or _CLAUDE_CWD.search(args)):
@@ -1850,13 +1928,198 @@ def classify_direct(rec, agent_type):
         if _is_sandbox(command, argv0):
             return ("call", "wrapper")
         return ("housekeeping", os.path.basename(command) or "unnamed")
-    text = shell_text(command, args)
-    chore = _codex_chore(command, args, text)
-    if chore:
-        return ("housekeeping", chore)
+    if agent_type == "codex":
+        text = shell_text(command, args)
+        chore = _codex_chore(command, args, text)
+        if chore:
+            return ("housekeeping", chore)
+        if _is_sandbox(command, argv0):
+            return ("call", "wrapper")
+        return ("call", "bare" if text is None else "shell")
+    if agent_type in IDE_AGENT_TYPES and root_role != "agent":
+        return ("housekeeping", program_name(command) or "unnamed")
+    return _agent_call(command, args, argv0, agent_type)
+
+
+def _agent_call(command, args, argv0, agent_type):
+    """A direct child of an agent with no rules of its own (`classify_direct`), read as Codex's
+    are, with only the chores any agent runs: the agent's own executable, run as a probe
+    (`--version`, `auth`), a client, a server, or a helper of its own (`roles.agent_exe`), is
+    housekeeping by its role, and so are a login shell's startup helpers and `git --version`. A
+    sandbox wrapper is a `wrapper` call, a shell given a command string a `shell` call, and any
+    other command a `bare` one, as the model asked for it."""
+    if agent_exe(command, args):
+        return ("housekeeping", role_of(agent_type, command, args))
+    flat = " ".join(args.split())
+    if login_helper(command, args):
+        return ("housekeeping", "login shell startup")
+    if _DAEMON_CHORES[0][1].match(flat):
+        return ("housekeeping", _DAEMON_CHORES[0][0])
     if _is_sandbox(command, argv0):
         return ("call", "wrapper")
-    return ("call", "bare" if text is None else "shell")
+    return ("call", "bare" if shell_text(command, args) is None else "shell")
+
+
+# ------------------------------------------------------------------ commands run from a terminal
+# The shells a person types into, by name: the ones `roles` knows, and the others a login node has.
+_TERMINAL_SHELLS = _SHELLS | frozenset({"ash", "ksh", "mksh", "pdksh", "csh", "tcsh", "elvish",
+                                        "nu", "xonsh"})
+# A terminal multiplexer, client or server: its panes' shells lead sessions of their own, and their
+# jobs are read as any terminal's. Housekeeping, never a call, as a job or as a session's leader.
+_MULTIPLEXERS = frozenset({"tmux", "screen", "byobu", "zellij", "dtach", "abduco"})
+# What leads a session and runs nothing a person typed: sshd's own processes, the user's systemd and
+# its kin, and the agents of a login.
+_SESSION_DAEMONS = frozenset({"sshd", "systemd", "(sd-pam)", "dbus-daemon", "dbus-broker",
+                              "ssh-agent", "gpg-agent", "mosh-server", "sftp-server", "login"})
+# A job that only starts another shell for a person to type into: `su` and `sudo -i`, `sudo -s`, or
+# `sudo su` with no command, an Apptainer or Singularity shell, `newgrp`. Its own jobs are read as
+# any shell's, and it ran the whole time, so it is no call; a command it was given (`su -c ...`,
+# `sudo -i make`) makes it one.
+_SHELL_STARTER = re.compile(
+    r"^(?:\S*/)?(?:su(?:\s+(?:-|-l|--login|-m|-p|--preserve-environment|-s\s+\S+|[A-Za-z_][\w.-]*))*"
+    r"|sudo\s+(?:-[A-Za-z]*[is][A-Za-z]*u\s+\S+|-[A-Za-z]*[is][A-Za-z]*(?:\s+-u\s*\S+)?)"
+    r"|sudo\s+su(?:\s+(?:-|-l|--login|[A-Za-z_][\w.-]*))*"
+    r"|(?:apptainer|singularity)\s+shell(?:\s+\S+)*"
+    r"|newgrp(?:\s+\S+)?)$")
+# What a prompt runs before it is drawn, to say where it is: git's plumbing (`__git_ps1`, the git
+# prompts of zsh and fish, VS Code's shell integration), and the prompt and environment tools that
+# hook every prompt. Run in the shell's own group, they are its housekeeping.
+_PROMPT_GIT = re.compile(
+    r"^(?:\S*/)?git(?:\s+(?:-c\s+\S+|-C\s+\S+|--no-optional-locks|--no-pager))*\s+"
+    r"(?:rev-parse|symbolic-ref|describe|rev-list|for-each-ref|ls-files|diff-index|diff-files"
+    r"|update-index|stash\s+list|config\s+--get|branch\s+--show-current"
+    r"|status\s+(?:--porcelain|-s\b|--short|-z))")
+_PROMPT_TOOLS = frozenset({"starship", "oh-my-posh", "powerline-shell", "powerline-go",
+                           "liquidprompt", "direnv", "pyenv", "rbenv", "nodenv", "goenv", "jenv",
+                           "asdf", "mise", "rtx", "zoxide", "atuin", "mcfly", "thefuck"})
+
+
+def interactive_shell(command, args):
+    """True for a shell that reads what it runs from its terminal: a login shell (`-bash`, as sshd
+    and login start one), or a shell given neither a command string (`-c`), nor a script, nor `-s`
+    (`bash`, `bash -l`, `zsh -i`, `fish`, and VS Code's `bash --init-file .../shellIntegration-
+    bash.sh`). False for any other program, and for a shell whose argv was not kept: nothing says
+    what it read."""
+    words = (args or "").split()
+    if not words:
+        return False
+    first = os.path.basename(words[0])
+    if first.startswith("-") and first[1:] in _TERMINAL_SHELLS:
+        return True
+    if first not in _TERMINAL_SHELLS and os.path.basename(command or "") not in _TERMINAL_SHELLS:
+        return False
+    skip = False
+    for w in words[1:]:
+        if skip:
+            skip = False
+        elif w == "--":
+            continue
+        elif w.startswith("--"):
+            skip = w in _SHELL_VALUE_OPTS
+        elif w[:1] in ("-", "+") and len(w) > 1:
+            if "c" in w[1:] or "s" in w[1:]:
+                return False                        # a command string, or a script on stdin
+            skip = w in _SHELL_VALUE_OPTS
+        else:
+            return False                            # a script
+    return True
+
+
+def groups_of(rec):
+    """`(pid, pgrp, sid)` of a record when all three were kept and name real processes, else None:
+    a collector without the feature writes none of the two (`ebpf_trace` PIDS_BLOCKS). A caller that
+    asks `classify_terminal` and `in_job` of one record reads them once and gives them to both."""
+    pid, pgrp, leader = rec.get("pid"), rec.get("pgrp"), rec.get("sid")
+    if pid is None or pgrp is None or leader is None or pgrp <= 0 or leader <= 0:
+        return None
+    return pid, pgrp, leader
+
+
+def in_job(rec, groups=None):
+    """True for a process that runs inside a command still running in a session no agent runs,
+    below the command's first process: inside a job (its group is neither its own nor its
+    session's), or, with no terminal and no agent or editor's tree above it, in the group of a
+    session a command leads (`ssh host cmd`, a cron job), which a shell a person types into never
+    is on its own terminal. Its parent is that command or part of it, a call still running for as
+    long as its own record has not come (`PendingJoin` P_JOB). `groups` is `groups_of(rec)`, when
+    the caller has read it."""
+    g = groups_of(rec) if groups is None else groups
+    if g is None:
+        return False
+    pid, pgrp, leader = g
+    if pgrp != pid and pgrp != leader:
+        return True
+    return (pgrp == leader and pid != leader and not rec.get("tty")
+            and rec.get("agent_pid") is None)
+
+
+def _job_kind(command, args, forked):
+    """The kind of call a terminal's job is: `subshell` for a forked subshell, named by what ran
+    under it; `shell` for a shell given a command string, read as shell text; `job` for any other
+    command, read as one argv."""
+    if forked:
+        return "subshell"
+    return "job" if shell_text(command, args) is None else "shell"
+
+
+def _shell_own(command, args):
+    """The housekeeping shape of a process a terminal's shell ran in its own group: `login shell
+    startup` for its startup files' helpers (`login_helper`), `prompt` for what its prompt runs,
+    else its program."""
+    if login_helper(command, args):
+        return "login shell startup"
+    name = program_name(command)
+    if name in _PROMPT_TOOLS or _PROMPT_GIT.match(" ".join((args or "").split())):
+        return "prompt"
+    return name or "unnamed"
+
+
+def classify_terminal(rec, groups=None):
+    """What a process in a session no agent runs is, from the groups the collector recorded
+    (`pgrp`, `sid`): `("call", kind)`, `("housekeeping", shape)`, or None for a process that is
+    part of whatever ran it, and for one whose groups were not kept. The module docstring says
+    why each is what it is. `groups` is `groups_of(rec)`, when the caller has read it. A process
+    that leads neither its session nor a group, and whose parent does not lead its session, is
+    part of what ran it, known before its argv is read: most records of a busy terminal are.
+
+    The kinds of call:
+      job       a command line run from a terminal: a job's first process, a later stage of its
+                pipeline, or a command that leads a session of its own; read as one argv
+      shell     the same, a shell given a command string (`bash -c ...`); read as shell text
+      subshell  a forked subshell that leads a job (`( cd x && make )`): named by what ran under
+                it, as a sandbox wrapper's call is"""
+    g = groups_of(rec) if groups is None else groups
+    if g is None:
+        return None
+    pid, pgrp, leader = g
+    if pid != leader and pgrp != pid and rec.get("ppid") != leader:
+        return None
+    command, args, _ = _argv(rec)
+    name = os.path.basename(command or "")
+    forked = rec.get("argv_source") == "inherit" or bool(rec.get("fork_only"))
+    if pid == leader:
+        if name in _MULTIPLEXERS:
+            return ("housekeeping", "terminal multiplexer")
+        if forked or name in _SESSION_DAEMONS:
+            return ("housekeeping", "daemon")
+        if interactive_shell(command, args):
+            return ("housekeeping", "interactive shell")
+        return ("call", _job_kind(command, args, False))
+    if pgrp == pid:
+        if not forked:
+            if interactive_shell(command, args):
+                return ("housekeeping", "interactive shell")
+            if name in _MULTIPLEXERS:
+                return ("housekeeping", "terminal multiplexer")
+            if _SHELL_STARTER.match(" ".join(args.split())):
+                return ("housekeeping", "nested shell")
+        return ("call", _job_kind(command, args, forked))
+    if rec.get("ppid") == leader:
+        if pgrp != leader:
+            return ("call", _job_kind(command, args, forked))       # a later stage of a pipeline
+        if rec.get("tty"):
+            return ("housekeeping", _shell_own(command, args))
+    return None
 
 
 def is_fs_helper(rec):
@@ -1878,13 +2141,14 @@ def cat_without_argv(rec):
 
 def call_text(rec, kind):
     """The command a call ran, from the record's own argv, or None: the eval body of Claude's Bash
-    tool (`bash`), a shell's command string (`shell`), or the whole argv (`search`, `bare`). A
-    `wrapper` has none of its own, its text is its payload's, and neither has a record that kept
-    no command: an empty argv, a snapshot script that runs nothing, or a quote cut off."""
+    tool (`bash`), a shell's command string (`shell`), or the whole argv (`search`, `bare`, a
+    terminal's `job`). A `wrapper` or a `subshell` has none of its own, its text is its payload's,
+    and neither has a record that kept no command: an empty argv, a snapshot script that runs
+    nothing, or a quote cut off."""
     command, args, _ = _argv(rec)
     if kind in ("bash", "shell"):
         text = shell_text(command, args)
-    elif kind in ("search", "bare"):
+    elif kind in ("search", "bare", "job"):
         text = args
     else:
         return None

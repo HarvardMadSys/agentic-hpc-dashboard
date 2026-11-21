@@ -17,10 +17,10 @@
  *   - an `exited before read` (key `denied`) slice, distinct from `unsandboxed`,
  *     and a session whose every sandbox attempt failed
  *   - a trajectory list dominated by one user
- *   - agent rows with phases: every kind, guesses, a cut call log, a running
- *     row for each live edge (`running`, `idle`, `unknown`), and rows that
- *     carry `{unavailable}`: an agent type the service does not read, a person,
- *     and an IDE
+ *   - rows with phases, every one: every kind, guesses, a cut call log, a
+ *     running row for each live edge (`running`, `idle`, `unknown`); an agent
+ *     of a type with no rules of its own (Copilot), read by the general rule;
+ *     and a person and an IDE, read from their terminals (`driver: terminal`)
  *   - tasks above the phases: labels quoted from a commit, a log entry, and a
  *     pull request, and built from names; a lone stretch; gaps with a call the
  *     agent moved past still running, with a call still running that has no
@@ -653,12 +653,14 @@ const surfaceOf = (i, agentType) => {
  * the `sid` of the day that holds its start (`trajectories.day_of`). One task runs
  * across midnight. */
 const BASIS = 'read from the commands the agent ran and the words it wrote in them'; // `phase_segment.BASIS`
+// `trajectories.TERMINAL_BASIS`: what a block says it was read from where no agent ran the session
+const TERMINAL_BASIS = 'read from the commands run in its terminals and the words typed in them';
 const CUT_GAP_S = 3600; // `phase_tasks.DEFAULTS.gap_s`: a gap this long with nothing the agent waits on cuts a task
 const NEVER_EXITED = 'under a process that never exited';
-const PHASES_UNAVAILABLE = 'phases not available for this agent type';
-/* The agent types whose commands the service reads (`phase_rules.PHASE_AGENTS`). Every other row, an agent
- * of another type, a person, and an IDE alike, is sent `{unavailable}` and a null `n_calls`. */
-const PHASE_AGENTS = new Set(['claude_code', 'codex']);
+/* Whose calls a row's block is read from (`PhaseBlock.driver`): an agent's, by its own rules or the general rule any
+ * other agent is read by, and where no agent ran the session (a person, an IDE), its terminals' commands. Every row has
+ * a block. */
+const driverOf = (cls) => (cls === 'agent' ? 'agent' : 'terminal');
 const PHASE_SCRIPTS = [
   // reading, a guess, a test loop whose pauses are guessed, and a run that begins at a guess. The first task is
   // quoted from the commit that closes it, the second is built from names
@@ -938,7 +940,7 @@ const DID = { explore: 'explored code and files', develop: 'edited and tested co
 /* A duration as the page writes it (`dur`, src/lib/format.ts), for the durations a summary holds. */
 const durWords = (s) =>
   s < 90 ? `${s.toFixed(s < 10 ? 1 : 0)} s` : s < 5400 ? `${(s / 60).toFixed(s < 600 ? 1 : 0)} min` : s < 172800 ? `${(s / 3600).toFixed(s < 36000 ? 1 : 0)} h` : `${(s / 86400).toFixed(1)} d`;
-function sessionKind(list, nCalls, tasks) {
+function sessionKind(list, nCalls, tasks, driver = 'agent') {
   const time = {};
   let unrecorded = 0;
   let waited = 0;
@@ -976,14 +978,15 @@ function sessionKind(list, nCalls, tasks) {
   return {
     category,
     uses: uses.map((u) => [u, share(u)]),
-    summary: `${what} ${nCalls.toLocaleString('en-US')} tool calls${k > 1 ? ` in ${k} tasks` : ''}.`,
+    summary: `${what} ${nCalls.toLocaleString('en-US')} ${driver === 'terminal' ? 'commands' : 'tool calls'}${k > 1 ? ` in ${k} tasks` : ''}.`,
   };
 }
 
-/* `n_calls` and `phases` for the agent row `i`, whose session ran `[first, last]`. `live` is its
+/* `n_calls` and `phases` for the row `i`, whose session ran `[first, last]`. `live` is its
  * place among the running rows, or -1. `script` is `{specs, headline}` for a session that is no
- * row's own (`DAY_PAIR`), else the script of its place among the rows. */
-function phaseFields(i, first, last, live, script = null) {
+ * row's own (`DAY_PAIR`), else the script of its place among the rows. `driver` is whose calls
+ * they are: an agent's, or a session's terminals' where no agent ran it. */
+function phaseFields(i, first, last, live, script = null, driver = 'agent') {
   const t0 = first + 12;
   const cutLog = i === 2; // the log held the first of its calls and counted the rest
   const t1 = cutLog ? t0 + (last - t0) * 0.7 : last;
@@ -1005,7 +1008,8 @@ function phaseFields(i, first, last, live, script = null) {
     n_calls,
     phases: {
       v: 2,
-      basis: BASIS,
+      basis: driver === 'terminal' ? TERMINAL_BASIS : BASIS,
+      driver,
       n_calls,
       cut,
       cut_at,
@@ -1014,7 +1018,7 @@ function phaseFields(i, first, last, live, script = null) {
       list,
       tasks,
       headline: script ? script.headline : PHASE_HEADLINES[k],
-      ...sessionKind(list, n_calls, tasks),
+      ...sessionKind(list, n_calls, tasks, driver),
     },
   };
 }
@@ -1080,7 +1084,8 @@ function trajectories(nowEpoch) {
       ['slurm_sub', 1],
       ['poll', 12 + ((i * 7) % 40)],
     ];
-    // Row 3 is an agent of a type the service does not read (Copilot); Claude Code and Codex alternate on the rest.
+    // Row 3 is an agent with no rules of its own (Copilot), read by the general rule; Claude Code and Codex alternate on
+    // the rest.
     const agentType = day ? 'claude_code' : cls === 'agent' ? (i === 3 ? 'copilot' : i % 3 ? 'claude_code' : 'codex') : cls === 'ide' ? (i === 4 ? 'cursor' : 'vscode') : null;
     rows[sid] = {
       sid,
@@ -1112,16 +1117,11 @@ function trajectories(nowEpoch) {
       tool_rle: runs,
       chain_truncated: i % 6 === 0,
       purpose_rle: purposeRuns,
-      // An agent of a type the service reads carries its phases. Every other row, the Copilot
-      // row (3), a person, and an IDE (the Cursor row among them), carries `{unavailable}` and a
-      // null `n_calls`, as the service sends it (tests/test_traj_phases.py); the page notes it
-      // under an agent's row alone, so a person's row and an IDE's read as they always did (R41).
-      // The two days of one agent serve the one block, each with the count of its own day.
-      ...(day
-        ? { n_calls: day.n_calls, phases: pair.phases }
-        : PHASE_AGENTS.has(agentType)
-          ? phaseFields(i, first, last, live)
-          : { n_calls: null, phases: { unavailable: PHASES_UNAVAILABLE } }),
+      // Every row carries its phases, as the service sends them (tests/test_traj_phases.py): an
+      // agent's tool calls, the Copilot row's (3) by the general rule, and a person's and an
+      // IDE's (the Cursor row among them) commands, read from their terminals. The two days of
+      // one agent serve the one block, each with the count of its own day.
+      ...(day ? { n_calls: day.n_calls, phases: pair.phases } : phaseFields(i, first, last, live, null, driverOf(cls))),
     };
     sids.push(sid);
   }
@@ -1602,7 +1602,8 @@ function portraitSessions(traj) {
     const head = rows[0];
     const first = Math.min(...rows.map((r) => r.first));
     const last = Math.max(...rows.map((r) => r.last));
-    const read = PHASE_AGENTS.has(head.agent_type);
+    // every agent's calls are read (`portraits._session`): Claude Code and Codex by their own rules, any other by the general rule
+    const read = block != null;
     const cats = {};
     const phaseS = {};
     const minutes = new Set();

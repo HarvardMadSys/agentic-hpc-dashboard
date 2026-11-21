@@ -31,7 +31,7 @@
  * window's start, whether or not the table ranks it. Where the window does not
  * hold that row, it opens nothing, and the pick is made on the open row.
  *
- * A row of an agent whose commands are read says what kind of session it was, a
+ * Every row's commands are read, an agent's and a person's or an editor's alike, and its row says what kind of session it was, a
  * chip beside where it was driven from (components/CategoryChip.tsx): the use that
  * holds half its work, `mixed`, or what it had none of, with its summary on hover.
  * It says what the agent was doing too
@@ -62,7 +62,7 @@ import { sessionName } from '../lib/sessions';
 import { DASH, ago, dur, fint, mb, pc } from '../lib/format';
 import { serverNow } from '../lib/clock';
 import { useClockPinned, useNow } from '../lib/useNow';
-import { bandAxis, isBlock, phasesUnread, sequenceLine } from '../lib/phases';
+import { bandAxis, calls, driverOf, edgeLabel, isBlock, phasesUnread, runningUnread, sequenceLine } from '../lib/phases';
 import { pcol, plbl } from '../lib/purposes';
 import { dayInWindow, taskSequence, windowStart } from '../lib/tasks';
 import { surfaceSplit } from '../lib/surfaces';
@@ -96,8 +96,9 @@ const RANK_TIP: Record<TrajRank, string> = {
   distinct_tools: 'the sessions that ran the most different tools first',
 };
 
-/** Whether the row's stat line counts tool calls, not processes: its phases are read. A null count is not
- *  counted (R34), which is not none, so such a row keeps its processes. */
+/** Whether the row's stat line counts calls, not processes: its phases are read, as every row's are (an agent's tool
+ *  calls, or the commands its terminals ran). A null count, from a service that read agents alone, is not counted (R34),
+ *  which is not none, so such a row keeps its processes. */
 const countsCalls = (r: TrajRow): boolean => isBlock(r.phases) && r.n_calls != null;
 
 /** What the ranking adds to a row, where the row does not already say it. */
@@ -142,7 +143,7 @@ const BAND_H = 7;
 
 /** The ribbon of a row.
  *
- *  An agent whose commands are read gets its phases: a band, and under it a line. The line names its tasks
+ *  A row whose commands are read, which every row's are, gets its phases: a band, and under it a line. The line names its tasks
  *  (`taskSequence`: the first two, and a count of the rest) where its block has any, and ticks on the band
  *  mark where each task or lone stretch after the first begins. A block with none, as one of the first
  *  version, keeps the order the phases came in, in words (`sequenceLine`). Either line is two lines at most,
@@ -150,10 +151,11 @@ const BAND_H = 7;
  *  over several days is a row to a day, and each serves the one block, so each draws the whole session's
  *  band and says its tasks.
  *  The band runs from the session's first record to its last phase's end, and a running session's on to now
- *  (`nowS`, on the service's clock), where the census's word on what is running ends it. Any other row keeps
- *  the purpose of each process, run by run, and an AGENT whose type is not recognized says so under it. A
- *  person or an IDE row says nothing: the service sends them `{unavailable}` too, but no phase was ever on
- *  offer for them (R41).
+ *  (`nowS`, on the service's clock), where the census's word on what is running ends it; a session running now
+ *  whose first call has not ended is that edge alone (`runningUnread`). A row with no phase that is not running
+ *  keeps the purpose of each process, run by run. A row an older service did not read (it read Claude Code and
+ *  Codex alone, and sent the rest `{unavailable}`) says so under an AGENT, and a person or an IDE row says
+ *  nothing (R41).
  *
  *  Drawn by `SessionItem`, which renders again with every live frame where the band runs on to now, and whenever
  *  the clock's pin flips: an unknown edge is worded by `clockPinned()`, a plain flag that frame sets (lib/useNow.ts). */
@@ -162,11 +164,14 @@ function RowRibbon({ r, nowS }: { r: TrajRow; nowS: number }) {
   const block = isBlock(ph) ? ph : null;
   // the session's own axis, which the inspector's map of the whole session is drawn on too (`bandAxis`)
   const axis = block ? bandAxis(block.list, r.first, r.running?.now ? nowS : null) : null;
-  if (block?.list.length && axis) {
+  const edge = r.running?.now ?? null;
+  // a session running now whose first call has not ended has no phase yet: its band is its live edge alone, from its
+  // first record (`runningUnread`), and its line says what runs
+  if (block && axis && (block.list.length || runningUnread(block, edge))) {
     const { list } = block;
-    const edge = r.running?.now ?? null;
     // its tasks, and where the block names none, its phases: `taskSequence` is empty for a block with no task
-    const line = taskSequence(block) || sequenceLine(list, edge);
+    // with no phase yet, the edge's own name: `running now · python, srun`
+    const line = taskSequence(block) || (list.length ? sequenceLine(list, edge) : edgeLabel(edge));
     return (
       <>
         <PhaseBand
@@ -180,6 +185,7 @@ function RowRibbon({ r, nowS }: { r: TrajRow; nowS: number }) {
           H={BAND_H}
           now={edge}
           nowAt={nowS}
+          driver={driverOf(block)}
         />
         {/* clamped to two lines (`.tj-seq`), so two long quotes make no tall row, and all of it is in its hover, a wide one */}
         <span className="tj-seq" data-tip={line} data-tip-wide>
@@ -215,29 +221,30 @@ const SessionItem = memo(function SessionItem({
   onOpen: (sid: string) => void;
 }) {
   const ph = r.phases;
-  const edge = isBlock(ph) && ph.list.length > 0 && r.running?.now != null;
+  // a band that runs on to now, a session with no phase yet included (`runningUnread`)
+  const edge = isBlock(ph) && r.running?.now != null;
   const now = useNow(rank === 'recent' || edge);
   useClockPinned();
   const nm = sessionName(r);
   const extra = rankLine(r, rank, now);
-  // an agent whose commands are read is counted in tool calls; any other row, in processes
-  const calls = countsCalls(r);
-  const count = calls
-    ? `${fint(r.n_calls)} tool ${r.n_calls === 1 ? 'call' : 'calls'}`
-    : `${fint(r.n_events)} processes`;
+  // a row whose commands are read is counted in its calls, tool calls or commands by who ran it (`driver`); a row of a
+  // service that did not read it, in processes
+  const counted = countsCalls(r);
+  const count = counted && isBlock(ph) ? calls(r.n_calls ?? 0, driverOf(ph)) : `${fint(r.n_events)} processes`;
   return (
     <button
       data-sid={r.sid}
       className={`tj-item${on ? ' on' : ''}`}
       style={{ borderLeftColor: on ? undefined : CLS_COL[r.actor3 ?? 'unlabeled'] }}
       onClick={() => onOpen(r.sid)}
-      data-tip={`${r.sid}${calls ? `\n${fint(r.n_events)} processes` : ''}\nclick to open its process tree`}
+      data-tip={`${r.sid}${counted ? `\n${fint(r.n_events)} processes` : ''}\nclick to open its process tree`}
     >
       <span className="tj-item-h">
         <b>{nm.key}</b>
         <span className="tj-date">{nm.date}</span>
         <SurfaceChip s={r.surface} detail={r.surface_detail} />
-        <CategoryChip of={isBlock(ph) ? ph : null} />
+        {/* no chip for a session whose calls are running and none has ended: `no tool calls` would be wrong */}
+        <CategoryChip of={isBlock(ph) && !runningUnread(ph, r.running?.now) ? ph : null} />
         {r.running && (
           <span className="tj-live" data-tip={liveTip(r)}>
             <i className="ld" />

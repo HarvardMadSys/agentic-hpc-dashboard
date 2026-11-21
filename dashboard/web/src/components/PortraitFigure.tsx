@@ -334,7 +334,7 @@ export function PortraitFigure({
   const uses = row.calls == null ? [] : l.uses.slice(0, 3);
   const shelfTip =
     row.calls == null
-      ? 'the shelf: what their agents do is not read; the service reads the commands of Claude Code and Codex'
+      ? 'the shelf: what their agents do is not read; this service read the commands of Claude Code and Codex alone'
       : !l.uses.length
         ? `the shelf: too few actions to say what they are for (${fint(l.actions)})`
         : `the shelf: what the agents’ actions are for, the top ${uses.length === 1 ? 'one' : uses.length === 2 ? 'two' : 'three'}, each icon’s area its share of ${plural(l.actions, 'action')}`;

@@ -51,20 +51,23 @@ task it started on. Neither sees the model's context; both are labelled proxies.
   mix of the first and the last third of the session's processes. Null below
   MIN_DRIFT_N processes: a third of a handful is noise, not a finding.
 
-Each agent row also carries `phases`: what the agent was doing, as a handful of
-labelled stretches read from the commands it ran, and `n_calls`, its tool calls.
-Which processes are calls and what each one is is `phase_rules`; the bounded
-call log a session holds and the join below are `phase_log`; the cutting into
+Each row also carries `phases`: what its session was doing, as a handful of
+labelled stretches read from the commands it ran, and `n_calls`, its calls.
+Every row is read, of every class and every agent type. Which processes are
+calls and what each one is is `phase_rules`: an agent's are its runtime's
+direct children, by the agent's own rules or the general rule any agent is
+read by, and any other session's (a person's, an editor's) are the jobs its
+terminals' shells ran, known by the process groups the collector records. The
+block says which it read (`driver`: `agent` or `terminal`). The bounded call
+log a session holds and the join below are `phase_log`; the cutting into
 phases is `phase_segment`, when a row is built. Above the phases are `tasks`:
 the session cut by what it worked on (`phase_tasks`), each named from the
-agent's own words or from the names in its commands, and a `headline` for the
-session. A row is cut into tasks, then into phases at their boundaries, then
-named, in one pass (`phase_block`). The block then says what kind of session
-it was, a `category` and the `uses` of its work it rests on, and the session in
-a few sentences, a `summary` (`phase_summary`), read from the same phases and
-calls. A row whose calls are not
-recognized (an agent type outside PHASE_AGENTS, a person, an IDE) says so, and
-its `n_calls` is null: not recognized is not none.
+words written in its commands or from the names in them, and a `headline` for
+the session. A row is cut into tasks, then into phases at their boundaries,
+then named, in one pass (`phase_block`). The block then says what kind of
+session it was, a `category` and the `uses` of its work it rests on, and the
+session in a few sentences, a `summary` (`phase_summary`), read from the same
+phases and calls.
 
 A row is one local day, since its session id carries the day, and an agent that
 works past midnight has a row for each. Those rows serve one block, cut from the
@@ -148,14 +151,16 @@ from ..procindex import VIA
 from ..redact import redact
 
 from . import pct
-from .phase_log import (NO_ARGV, OPEN, P_CATS, P_CMDS, P_FIRST, P_HELP, P_LAST, P_N, P_SID,
-                        P_SINCE, P_SINCE_N, P_TEXT, P_WROTE, PAST_SLACK_S, PREV, START_SLACK_S,
-                        TAGS, WROTE, PendingJoin, PhaseLog, fold_entry)
+from .phase_log import (NO_ARGV, OPEN, P_CATS, P_CMDS, P_FIRST, P_HELP, P_JOB, P_LAST, P_N,
+                        P_SID, P_SINCE, P_SINCE_N, P_TEXT, P_WROTE, PAST_SLACK_S, PREV,
+                        START_SLACK_S, TAGS, WROTE, PendingJoin, PhaseLog, fold_entry)
 from .phase_names import tagset
-from .phase_rules import (_TOOL_CALL_ROLES, APP_READ, CATS, PHASE_AGENTS, _argv, _is_sandbox,
+from .phase_rules import (_FS_HELPER, _TOOL_CALL_ROLES, APP_READ, CATS, RULED_AGENTS, _argv,
+                          _is_sandbox,
                           call_text, cat_without_argv, category_of, category_of_argv,
-                          classify_direct, codex_chore_of, is_fs_helper, is_sandbox_probe,
-                          login_helper, norm_hash, parent_is_agent, program_name, shell_text)
+                          classify_direct, classify_terminal, codex_chore_of, groups_of, in_job,
+                          is_fs_helper, is_sandbox_probe, login_helper, norm_hash,
+                          parent_is_agent, program_name, shell_text)
 from .phase_segment import (DEFAULTS as PHASE_DEFAULTS, NEVER_EXITED, SEEN_SHOWN, prepared,
                             segment)
 from .phase_summary import DEFAULTS as SUMMARY_DEFAULTS, summarize
@@ -195,7 +200,9 @@ OTHER = "other"
 PREVIEW = 220               # as proctree.PREVIEW: characters of a command shown, masked first
 RAW_KEEP = 1024             # as proctree.RAW_KEEP: characters held raw until masked
 PHASE_CACHE_MAX = 4096      # phase blocks kept between reads
-UNAVAILABLE = "phases not available for this agent type"
+# What a block says it was read from, where no agent ran the session: its terminals' jobs (`basis`;
+# an agent's block says `phase_segment.BASIS`).
+TERMINAL_BASIS = "read from the commands run in its terminals and the words typed in them"
 # A home directory: `/home/<x>`, or `/n/home<NN>/<x>` on FAS RC. It names a user, and no project
 # (`project_of`).
 _HOME_DIR = re.compile(r"/(?:home|n/home\d+)/[^/]+")
@@ -830,6 +837,9 @@ class TrajectoryReducer:
         self.tag_overflow = 0
         self.phase_reparented = 0   # records under no parent (ppid 0 or 1): not placed
         self.phase_unread = 0       # records a root held to its own exit: its housekeeping
+        # records of a session no agent runs whose process groups were not kept: nothing says
+        # which was a job, so none is read, nor held for a later record (`classify_terminal`)
+        self.phase_ungrouped = 0
         # The earliest day row's sid -> (key, phase block, each day row's own calls), for the day
         # rows of an agent the block joins (`phase_block`); the pending join by session: (the
         # entries it indexes, (records fed, entries), the index); and the folded rows by agent:
@@ -871,16 +881,18 @@ class TrajectoryReducer:
         s.add(rec, now, io)
         self.fed += 1
         self._track(s, rec)
-        if s.cls == "agent":
-            self._phase(s, rec)
+        self._phase(s, rec)
 
     # ---------------------------------------------------------------- phases
     def _phase(self, s, rec):
-        """One exit of an agent session, read bottom up (the module docstring).
+        """One exit of a session, read bottom up (the module docstring).
 
-        A direct child of the agent is a call or the agent's own chore, and
-        takes what ran under it. Anything else joins its parent's pending
-        entry, unless it outlived a call it belongs to. Every path notes where
+        A direct child of an agent is a call or the agent's own chore, and
+        takes what ran under it. In a session no agent runs, and in an editor's
+        terminal, a job a terminal's shell started is a call, and the shell's
+        own commands are its chores (`classify_terminal`). Anything else joins
+        its parent's pending entry, unless it outlived a call it belongs to.
+        Every path notes where
         the process went (`_went`), for a child recorded after it. Times are
         never None in the log or the join: a record with none is left out
         here, and `Session.add` has counted it (`no_ts`); what ran under it,
@@ -920,11 +932,11 @@ class TrajectoryReducer:
             return
         kids = self.pend.pop(host, pid, start) if pid is not None else None
         # Schema 7 tags a sandbox wrapper `bwrap`: the session's own type is
-        # asked when the record's is not one whose calls are recognized.
+        # asked when the record's is not one with rules of its own.
         at = rec.get("agent_type")
-        at = at if at in PHASE_AGENTS else s.agent_type
+        at = at if at in RULED_AGENTS else s.agent_type
         if orphan or parent_is_agent(rec, self.procs):
-            kind, what = classify_direct(rec, at)
+            kind, what = classify_direct(rec, at, self._parent_role(rec))
             if kind == "call" and what == "wrapper" and kids and is_sandbox_probe(kids[P_TEXT]):
                 self._housekeeping(s, "sandbox probe", t0, 1 + kids[P_N])
                 self._went(host, pid, start, end, "hk", "sandbox probe")
@@ -941,9 +953,35 @@ class TrajectoryReducer:
                 if what == APP_READ:
                     self._app_read(s, t0)
                 self._went(host, pid, start, end, "hk", what)
-            else:                           # an agent whose calls are not read
+            else:                           # placed nowhere: no rule says so today
                 self._went(host, pid, start, end, "none", None)
             return
+        groups = None
+        if s.cls != "agent":
+            # No agent runs it, or it is an editor's: its terminals' jobs are its
+            # calls, and what a shell runs for itself is housekeeping. With its
+            # groups not kept nothing says which was a job: none is read, and
+            # nothing is held for a record after it, so a collector without the
+            # feature costs the join nothing.
+            groups = groups_of(rec)
+            if groups is None:
+                self.phase_ungrouped += 1 + (kids[P_N] if kids else 0)
+                return
+            got = classify_terminal(rec, groups)
+            if got is not None:
+                kind, what = got
+                if kind == "call" and what == "subshell" and not kids:
+                    kind, what = "housekeeping", "subshell"     # it ran no program
+                if kind == "call":
+                    self._call(s, rec, what, t0, end, kids)
+                    self._went(host, pid, start, end, "call", pid)
+                else:
+                    # a shell that ran the whole time: what it held, in no minute
+                    self._housekeeping(s, what, t0, 1)
+                    if kids is not None:
+                        self._by_program(s, kids)
+                    self._went(host, pid, start, end, "hk", what)
+                return
         ppid = rec.get("ppid")
         if ppid in _NO_PARENT:
             self.phase_reparented += 1 + (kids[P_N] if kids else 0)
@@ -952,13 +990,24 @@ class TrajectoryReducer:
         if self._ran_past(s, ppid, end, start):
             self._went(host, pid, start, end, "call", ppid)
             return
-        item = self._leaf(rec, t0, end, s.sid)
+        # what runs inside a command of a terminal says so, for the calls still running a row
+        # no agent ran reads (P_JOB); an agent's row reads its own way, and is not asked
+        item = self._leaf(rec, t0, end, s.sid, groups is not None and in_job(rec, groups))
         if kids is not None:
             fold_entry(item, kids)          # its own argv first: a wrapper has none
         if self._late(s, host, pid, ppid, start, end, t0, item):
             return
         self.pend.push(host, ppid, item)
         self._went(host, pid, start, end, "pend", ppid)
+
+    def _parent_role(self, rec):
+        """The role the process index gives a direct child's parent, its agent's own process
+        (`roles.role_of`), or None where the index has none: what tells a Cursor agent's runtime
+        from Cursor's editor server, whose trees carry one type (`classify_direct`)."""
+        if self.procs is None:
+            return None
+        held = self.procs.get(rec.get("host"), rec.get("ppid"))
+        return held[1] if held else None
 
     def _went(self, host, pid, start, end, where, what):
         """Note where a process that ran from `start` to `end` went when its own
@@ -1072,18 +1121,23 @@ class TrajectoryReducer:
         return True
 
     def _call(self, s, rec, kind, t0, end, kids):
-        """Hold a direct child's tool call. A shell's command is shell text; an
-        argv (Claude's Grep, a bare Codex command) is one command; a wrapper's
-        call is the command it ran, from what ran under it. Its text is masked
-        once, and that is what its preview is cut from and what its names and
-        the agent's own words are read from (`tagset`)."""
+        """Hold a call: a direct child of an agent, or a terminal's job. A
+        shell's command is shell text; an argv (Claude's Grep, a bare Codex
+        command, a job typed at a prompt) is one command; a wrapper's call, and
+        a forked subshell's, is the command it ran, from what ran under it. Its
+        text is masked once, and that is what its preview is cut from and what
+        its names and the words written in it are read from (`tagset`)."""
         flags = 0
-        if kind == "wrapper":
+        if kind in ("wrapper", "subshell"):
             text, cat, flags = _payload(kids[P_TEXT] if kids else None,
                                         bool(kids and kids[P_WROTE]))
         elif kind in ("bash", "shell"):
             text = call_text(rec, kind)
             cat = category_of(text)
+        elif kind == "job":
+            text = call_text(rec, kind)
+            command, args, _ = _argv(rec)
+            cat = category_of_argv(command, args)
         else:
             text = call_text(rec, kind)
             if is_fs_helper(rec):
@@ -1167,23 +1221,26 @@ class TrajectoryReducer:
         return True
 
     @staticmethod
-    def _leaf(rec, t0, end, sid):
+    def _leaf(rec, t0, end, sid, job=False):
         """The pending entry for one process: its argv, cut to RAW_KEEP, and
         what it is as a command; a sandbox wrapper has none of its own. Its
         program goes in the entry's program list by its basename, as loop
         detection reads it, a login shell's startup helper too, which is
-        counted apart (`login_helper`, P_HELP) for `seen` to leave out (R72)."""
+        counted apart (`login_helper`, P_HELP) for `seen` to leave out (R72).
+        `job` says whether it ran inside a command still running in a
+        terminal's session (`in_job`, P_JOB), which a session no agent runs
+        reads its calls still running from."""
         command, args, argv0 = _argv(rec)
         wrote = False
         if _is_sandbox(command, argv0):
             text, cat = None, "unknown"
-        elif is_fs_helper(rec):
+        elif _FS_HELPER in args:            # `is_fs_helper`: no sandbox, which the line above takes
             wrote = _wrote(rec)
             text, cat = args[:RAW_KEEP].strip() or None, ("edit" if wrote else "unknown")
         else:
             text, cat = args[:RAW_KEEP].strip() or None, category_of_argv(command, args)
         return PendingJoin.leaf(t0, end, cat, os.path.basename(command) or None, text, wrote, sid,
-                                helper=login_helper(command, args))
+                                helper=login_helper(command, args), job=job)
 
     def _intern_preview(self, masked, count=True):
         """The id of the preview of `masked`, a command's text already masked
@@ -1243,8 +1300,10 @@ class TrajectoryReducer:
         """The row's phases (`phase_segment.segment`) and the tasks above them
         (`phase_tasks`) from the calls its log holds and the calls still
         running under its collector keys, `members`, and those of the same
-        agent's rows on other days (below); `{unavailable}` for a row whose
-        calls are not recognized.
+        agent's rows on other days (below). Every row has one, of every class
+        and agent type: `driver` says whether an agent's calls were read
+        (`agent`) or, where no agent ran the session, its terminals' jobs
+        (`terminal`), and `basis` says it in words.
 
         The calls are cut into tasks first, the phases are cut at the tasks'
         boundaries, and the tasks are then named and each phase marked with
@@ -1309,11 +1368,8 @@ class TrajectoryReducer:
 
     def _phases(self, s, members, fresh=True):
         """`(block, n_calls)`: `phase_block`, and the calls of row `s` alone,
-        which `_row` serves as the row's own. `n_calls` is None for a row whose
-        calls are not recognized, and the block's own for a row of one day. The
-        counts of the rows of a block add up to the block's."""
-        if s.cls != "agent" or s.agent_type not in PHASE_AGENTS:
-            return {"unavailable": UNAVAILABLE}, None
+        which `_row` serves as the row's own: the block's own for a row of one
+        day. The counts of the rows of a block add up to the block's."""
         parts = [(r, m, self._pending_of(m)) for r, m in self._day_rows(s, members, fresh)]
         key = (tuple((r.sid, r.n, len(r.phase.calls), len(m), len(e), sum(x[P_N] for x in e),
                       max((x[P_LAST] for x in e), default=None))
@@ -1331,19 +1387,19 @@ class TrajectoryReducer:
         """`[(row, members)]`, the day rows whose calls make one block with row
         `s` (`phase_block`), in time order, `s` among them with its `members`.
         The others are the current fold's rows of the same agent
-        (`_agent_key`) that have a time and whose calls are read. The fold is
-        made if it is stale (`folded`), as `result` makes it before it reads a
-        row -- unless `fresh` is False, when the last fold is taken as it is
+        (`_agent_key`) that have a time and are of its class: an editor's
+        server keyed on its pid joins its own days as an agent does. The fold
+        is made if it is stale (`folded`), as `result` makes it before it reads
+        a row -- unless `fresh` is False, when the last fold is taken as it is
         (`_agent_days`). `s` alone when it is not keyed on an agent or has no
-        time."""
+        time: a person's login is a row to a day."""
         rows = [(s, members)]
         key = _agent_key(s)
         if key is not None and s.first is not None:
             others = self._agent_days(fresh).get(key, ())
             held = self._fold_cache[2]      # after the line above, which makes the fold if need be
             rows += [(r, held.get(r.sid) or [r.sid]) for r, _via, _k in others
-                     if r.sid != s.sid and r.first is not None and r.cls == "agent"
-                     and r.agent_type in PHASE_AGENTS]
+                     if r.sid != s.sid and r.first is not None and r.cls == s.cls]
             rows.sort(key=lambda row: (row[0].first, row[0].sid))
         return rows
 
@@ -1353,8 +1409,15 @@ class TrajectoryReducer:
         calls are its own. The calls are those of the rows' logs, the log of a
         row of one day itself and of more a fold of them, and the open ones
         among the pending entries, each read as of the session's last record.
-        Nothing is changed but what the block holds."""
+        Nothing is changed but what the block holds.
+
+        A session no agent runs (`terminal`) reads as a call still running only
+        what waits under a command its terminal ran (P_JOB), and says so: its
+        `driver` is `terminal` and its `basis` TERMINAL_BASIS. Editing is
+        guessed as in an agent's: a person who edits in an editor's window and
+        tests in its terminal leaves no command for the edit either."""
         first = parts[0][0]
+        terminal = first.cls != "agent"
         p = self.phase_params
         if len(parts) == 1:
             log, last = first.phase, first.last
@@ -1365,7 +1428,7 @@ class TrajectoryReducer:
             last = max(r.last for r, _m, _e in parts)
         calls, extra, own = list(log.calls), 0, {}
         for r, _m, entries in parts:
-            opened, hidden = self._open_calls(first.agent_type, last, entries)
+            opened, hidden = self._open_calls(first.agent_type, last, entries, terminal)
             calls += opened
             extra += hidden
             # less what the fold gave the app: a read of another day's came close to it
@@ -1377,6 +1440,9 @@ class TrajectoryReducer:
         block = segment(calls, log, self._previews, p, guess=True,
                         extra_hk={NEVER_EXITED: extra} if extra else None, prepared=prep,
                         cuts=[x.t0 for x in spans[1:]])
+        block["driver"] = "terminal" if terminal else "agent"
+        if terminal:
+            block["basis"] = TERMINAL_BASIS
         block["tasks"], block["headline"] = name_tasks(
             spans, block, prep, self._tagsets, self._previews, self.task_params,
             self.project_of(first, prep[0]), log.cut_at, step_s,
@@ -1445,20 +1511,26 @@ class TrajectoryReducer:
         2026-10-28 the hourly update check (`sh -s`) ran under a process that
         never exited in three sessions and a probe, and was read as a call
         running for up to 23 hours (1447670) when nothing the model asked for
-        ran at all."""
+        ran at all.
+
+        In a row no agent ran, only an entry under a command its terminal ran
+        (P_JOB) can be a call still running: what waits under the shell itself
+        is its own, and what waits under an editor's server the editor's."""
         opened, extra = self._open_calls(
-            s.agent_type, s.last, self._pending_of(members) if pending is None else pending)
+            s.agent_type, s.last, self._pending_of(members) if pending is None else pending,
+            s.cls != "agent")
         return list(s.phase.calls) + opened, extra
 
-    def _open_calls(self, agent_type, last, pending):
+    def _open_calls(self, agent_type, last, pending, terminal=False):
         """`(opened, extra)`, as `phase_calls` reads the pending entries `pending`
         of a session of `agent_type` whose last record is at `last`: the calls
-        still running, and how many commands are no call."""
+        still running, and how many commands are no call. `terminal` for a
+        session no agent runs, which reads only entries under a command (P_JOB)."""
         p = self.phase_params
         opened, extra = [], 0
         codex = agent_type == "codex"
         for e in pending:
-            if codex and codex_chore_of(e[P_TEXT]):
+            if (codex and codex_chore_of(e[P_TEXT])) or (terminal and not e[P_JOB]):
                 extra += e[P_N]
                 continue
             # One stretch: its children have been busy since its first, or for `idle_s` at least.
@@ -1655,6 +1727,7 @@ class TrajectoryReducer:
         self.tag_overflow += o.tag_overflow
         self.phase_reparented += o.phase_reparented
         self.phase_unread += o.phase_unread
+        self.phase_ungrouped += o.phase_ungrouped
 
     def _intern_purpose(self, p):
         pid = self._purpose_id.get(p)
@@ -2120,6 +2193,7 @@ class TrajectoryReducer:
                        "phase_untimed": self.phase_untimed,
                        "phase_reparented": self.phase_reparented,
                        "phase_unread": self.phase_unread,
+                       "phase_ungrouped": self.phase_ungrouped,
                        "preview_overflow": self.preview_overflow,
                        "phase_tag_overflow": self.tag_overflow},
             "basis": {
@@ -2147,13 +2221,19 @@ class TrajectoryReducer:
                            "the rest (scripts probing `codex --version`) are `probes`. "
                            "wait_pct is the share of tool calls whose purpose is poll "
                            "or slurm_mon (ps, pgrep, sleep loops; squeue, sacct).",
-                "phases": "per agent row, read from the commands the agent ran: its tool calls "
-                          "named by phase_rules and cut into phases by phase_segment, none "
-                          "across the boundary of a task (below), with the calls still "
-                          "running under a process that has not exited. "
-                          "Unavailable, with n_calls null, where an agent type's calls are "
-                          "not recognized; housekeeping is the agent's own commands, counted "
-                          "apart. An agent that worked on more than one day has a row for "
+                "phases": "per row, of every class and agent type, read from the commands "
+                          "its session ran: an agent's tool calls (its runtime's direct "
+                          "children, by the agent's own rules or the general rule any other "
+                          "agent is read by), or, where no agent ran it, the jobs its "
+                          "terminals' shells ran, known by the process groups the collector "
+                          "records (driver says which). Calls are named by phase_rules and "
+                          "cut into phases by phase_segment, none across the boundary of a "
+                          "task (below), with the calls still running under a process that "
+                          "has not exited. Housekeeping is what the agent, the shell, or the "
+                          "editor ran for itself, counted apart. A record whose process "
+                          "groups were not kept is part of whatever ran it, so a session no "
+                          "agent ran then has no calls. An agent that worked on more than one "
+                          "day has a row for "
                           "each, and each shows one block, cut as a single session from the "
                           "calls of all those rows in the window: the block's n_calls counts "
                           "the session's calls, a row's own n_calls its day's, days lists the "

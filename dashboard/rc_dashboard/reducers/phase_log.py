@@ -59,9 +59,13 @@ PendingJoin: what ran under a process that has not been recorded.
   to count), P_CMDS, P_TEXT (the first text any record gave, the entry's own first: a sandbox
   wrapper has none, and so a call takes its payload's), P_WROTE (any record wrote), P_SID (the
   session of its newest child, as a finished call is its own record's: a loop that runs past
-  midnight is the new day's row's, R59), the stretch, P_SINCE and P_SINCE_N (`push`), and P_HELP:
+  midnight is the new day's row's, R59), the stretch, P_SINCE and P_SINCE_N (`push`), P_HELP:
   of each kept command's starts, how many were a login shell's startup helper (None for none), so
-  `seen` names a command the call ran itself and no other (R72). A parent
+  `seen` names a command the call ran itself and no other (R72), and P_JOB: whether a child pushed
+  to it ran inside a job a terminal's shell started, below the job's own first process (its process
+  group is neither its own nor its session's), so the parent is that job or part of it, a command
+  still running (`phase_rules.in_job`). A session no agent ran reads only those as calls still
+  running: what waits under the shell itself, or an editor's server, is no command. A parent
   that never exits (an MCP
   server, a tool shell that outlived its agent) keeps its entry; the reducer reads those as open
   calls (`loop_like`, or two children or more in the stretch) or counts them, and the hours carry
@@ -138,8 +142,9 @@ OPEN = 1                    # a flag: still running, seen through its children
 WROTE = 2                   # a flag: Codex's fs helper wrote bytes
 NO_ARGV = 4                 # a flag: a Codex `cat` with no argv, which the app's reads can take
 
-# A pending entry: [first, last, n, cats, cmds, text, wrote, sid, since, since_n, help]
-P_FIRST, P_LAST, P_N, P_CATS, P_CMDS, P_TEXT, P_WROTE, P_SID, P_SINCE, P_SINCE_N, P_HELP = range(11)
+# A pending entry: [first, last, n, cats, cmds, text, wrote, sid, since, since_n, help, job]
+(P_FIRST, P_LAST, P_N, P_CATS, P_CMDS, P_TEXT, P_WROTE, P_SID, P_SINCE, P_SINCE_N, P_HELP,
+ P_JOB) = range(12)
 
 MAX_CMDS = 5                # commands whose spacing an entry keeps; the others count in P_N only
 START_SLACK_S = 60.0        # a child can seem to begin before its parent did, or after it ended
@@ -443,13 +448,14 @@ class PendingJoin:
         self.refused_records = 0    # and the records they held
 
     @staticmethod
-    def leaf(start, end, cat, cmd, text, wrote, sid, helper=False):
+    def leaf(start, end, cat, cmd, text, wrote, sid, helper=False, job=False):
         """The entry for one record: its command's basename `cmd` (None for no command), the call's
-        `text` (None when it has none of its own), whether it wrote, and whether it is a login
+        `text` (None when it has none of its own), whether it wrote, whether it is a login
         shell's startup helper (`phase_rules.login_helper`), which is kept in its command's starts
-        as any start is, and counted apart (P_HELP)."""
+        as any start is, and counted apart (P_HELP), and whether it ran inside a job below the
+        job's first process (`phase_rules.in_job`, P_JOB)."""
         return [start, end, 1, {cat: 1}, {cmd: [1, 0.0, 0.0, start, start]} if cmd else {}, text,
-                bool(wrote), sid, start, 0, {cmd: 1} if helper and cmd else None]
+                bool(wrote), sid, start, 0, {cmd: 1} if helper and cmd else None, bool(job)]
 
     def push(self, host, ppid, item):
         """Fold `item`, what a process and its children did, into its parent's entry, which moves
@@ -460,7 +466,11 @@ class PendingJoin:
         `item` is one child of the parent, busy from its first start to its last end, and the entry
         keeps its stretch: since when (P_SINCE) its children have been busy with no gap of `idle_s`
         or more between one's end and the next one's start, and how many children came in it
-        (P_SINCE_N). A helper's bursts an hour apart are each a stretch of their own (R57)."""
+        (P_SINCE_N). A helper's bursts an hour apart are each a stretch of their own (R57).
+
+        A child that ran inside a job (P_JOB) says the parent is that job or part of it, so the
+        entry is a job's once any child of it was. Only a push says it: what ran under a child
+        (`fold_entry`) says nothing of the child's parent."""
         key = (host, ppid)
         if not isinstance(self.entries, OrderedDict):       # seeded from a carry that holds a dict
             self.entries = OrderedDict(self.entries)
@@ -475,6 +485,7 @@ class PendingJoin:
             self.entries.move_to_end(key)
             gap = item[P_FIRST] - cur[P_LAST]
             fold_entry(cur, item)
+            cur[P_JOB] = cur[P_JOB] or item[P_JOB]
             if item[P_SID] is not None:
                 cur[P_SID] = item[P_SID]
             if self.idle_s is not None and gap >= self.idle_s:

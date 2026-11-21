@@ -370,11 +370,17 @@ The tip is visual only: its layer is `aria-hidden`, and no control points at it 
 
 ### Sessions: tasks, phases, and processes
 
-A session of an agent whose commands are read (Claude Code and Codex) is drawn at three levels, which the
-page names **Tasks**, **Phases**, and **Processes** (`LEVELS`, `src/lib/phases.ts`). The service builds them
-and holds every threshold (`dashboard/README.md`, *Sessions: tasks, phases, and processes*); the page has
-none of its own. The words and the geometry for them are in `src/lib/phases.ts` and `src/lib/tasks.ts`, so the
-table, the chart, and the list say one thing.
+Every session is drawn at three levels, which the page names **Tasks**, **Phases**, and **Processes**
+(`LEVELS`, `src/lib/phases.ts`): an agent's from its tool calls, and a session no agent ran (a person's login,
+an editor's terminal) from the commands its terminals ran, which its block says (`driver`: `agent` or
+`terminal`). The service builds them and holds every threshold (`dashboard/README.md`, *Sessions: tasks,
+phases, and processes*); the page has none of its own. The words and the geometry for them are in
+`src/lib/phases.ts` and `src/lib/tasks.ts`, so the table, the chart, and the list say one thing, and say it in
+the driver's words: a count, a phase's detail, a task's line, and the housekeeping line say `tool calls` for an
+agent and `commands` for a terminal (`callWord`, `driverOf`), an idle phase is the user's turn or the agent
+thinking for one and reading, thinking, or away for the other, and the basis line is the block's own
+(`tasksBasis`). A row a service that read agents alone sent `{unavailable}` still says so under an agent
+(`phasesUnread`).
 
 - **The table row** (`src/tabs/TrajectoriesTab.tsx`, `src/components/PhaseBand.tsx`) draws the session's
   phases as a thin band, with a tick across it where each task or lone stretch after the first span begins.
@@ -382,18 +388,23 @@ table, the chart, and the list say one thing.
   Under the band a line names the tasks, the first two in order and a count of the rest:
   `“Fix the loader” → Run train.py · config/base.yaml → 3 more`. It is two lines at most, with an ellipsis,
   and its hover has the whole of it. A row whose block has no task keeps the order its phases came in,
-  `explore → edit → test`, in the same line, and has no tick.
+  `explore → edit → test`, in the same line, and has no tick. A session running now whose first call has not
+  ended has no phase yet (`runningUnread`): its band is its live edge alone, from its first record to now, its
+  line is the edge's name (`running now · python, srun`), and it has no category chip, since `no tool calls`
+  would be wrong while its calls run.
 - **What kind of session it was** is a chip on the row, beside where it was driven from
   (`src/components/CategoryChip.tsx`): the use that holds half its work (`explore`, `edit & test`, `build`,
-  `run`, `Slurm`, `git`), `mixed`, `waiting`, or what it had none of (`not recorded`, `no tool calls`, both
-  dashed, as everything unread is). Its dot is the colour of the phases its use counts, so the chip and the
+  `run`, `Slurm`, `git`), `mixed`, `waiting`, or what it had none of (`not recorded`, `no tool calls` or, for
+  a session no agent ran, `no commands`, both dashed, as everything unread is). Its dot is the colour of the phases its use counts, so the chip and the
   band beside it agree. Its hover says how the category is decided, the shares of the work, and the
   session's summary. The words are `CATEGORIES` in `src/lib/phases.ts`; the service decides the category.
 - **The inspector** (`src/tabs/TrajectoryInspector.tsx`) reads top down, the session's story before the
-  processes that back it. First who ran it and what it came to (when, how long, its tool calls, processes, CPU,
-  how it was launched), the session's headline, and the category chip with the summary, the session in a few
-  sentences that the service builds from the block's own numbers (`Mostly ran jobs on Slurm (94% of 5.1 h of
-  work). 564 tool calls in 7 tasks, …`). Then two parts, each under a heading:
+  processes that back it. First who ran it and what it came to (when, how long, its tool calls or commands,
+  processes, CPU, how it was launched), the session's headline, and the category chip with the summary, the
+  session in a few sentences that the service builds from the block's own numbers (`Mostly ran jobs on Slurm
+  (94% of 5.1 h of work). 564 tool calls in 7 tasks, …`). A session running now with no call ended says what
+  the census shows running in the summary's place (`runningUnreadText`), and its *What it did* is its live
+  edge alone. Then two parts, each under a heading:
   - **What it did**: a map of the whole session (`src/tabs/SessionMap.tsx`), its **Tasks** as a lane of
     numbered blocks over its **Phases** as a band, on the session's own clock, drawn from the row's block
     before any process is read. The chart below is the read's, and a long session's read stops at its

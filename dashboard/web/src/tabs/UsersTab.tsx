@@ -156,7 +156,7 @@ function CatBar({ row, w = 76 }: { row: Pick<UserRow, 'cats' | 'calls' | 'calls_
   const total = loggedCalls(row);
   if (row.calls == null) {
     return (
-      <span className="nm" data-tip="the service reads the commands of Claude Code and Codex; this user’s agents are neither, so their tool calls are not counted: unread, which is not none">
+      <span className="nm" data-tip="this service read the commands of Claude Code and Codex alone, and this user’s agents are neither, so their tool calls are not counted: unread, which is not none. A service that reads every agent counts them">
         not read
       </span>
     );
@@ -881,7 +881,7 @@ function Work({ p, row }: { p: UserPortrait; row: UserRow }) {
         <div className="ur-shares">
           <div className="eyebrow" data-tip="tool calls by what each command does, counted from each session's call log. The agent's own Read and Edit tools run no command and are not here">tool calls · counted</div>
           {row.calls == null ? (
-            <div className="nm">not read: the service reads the commands of Claude Code and Codex only</div>
+            <div className="nm">not read: this service read the commands of Claude Code and Codex only</div>
           ) : cats.length ? (
             <ShareRows
               items={cats.map(([c, lbl]) => ({

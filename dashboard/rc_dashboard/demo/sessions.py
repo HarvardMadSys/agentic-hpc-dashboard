@@ -129,9 +129,12 @@ class Builder:
         self._written.add(p.pid)
         self.emit(p.end, "exits", rec)
 
-    def child(self, parent, t, command, args, *, dur=None, scale=1.0, cwd=None, **kw):
+    def child(self, parent, t, command, args, *, dur=None, scale=1.0, cwd=None, job=False, **kw):
         """A process `parent` started at `t`: it inherits who it is, and gets its
-        own costs. Not written until `exit` is called for it."""
+        own costs. Not written until `exit` is called for it. `job` for a command
+        line a terminal's shell ran, which job control puts in a process group of
+        its own (what it starts inherits that group); anything else is in its
+        parent's group, as the prompt's `git` is in the shell's."""
         cpu, d, rss, rd, wr, thr = costs(self.rng, command, dur, scale)
         p = Proc(pid=self.pid(), ppid=parent.pid, uid=self.uid, user=self.user,
                  tty=parent.tty, command=command, args=args, cwd=cwd or parent.cwd,
@@ -146,6 +149,8 @@ class Builder:
                  sandbox_detail=None, sandbox_ancestry=parent.sandbox_ancestry,
                  cgroup=parent.cgroup, pgrp=parent.pgrp, sid=parent.sid,
                  start=t, end=t + d, cpu_s=cpu, rss_mb=rss, rd_mb=rd, wr_mb=wr, threads=thr)
+        if job:
+            p.pgrp = p.pid
         for k, v in kw.items():
             setattr(p, k, v)
         return p
@@ -231,11 +236,12 @@ REFUSED = ("sbatch: error: QOSMaxWallDurationPerJobLimit\nsbatch: error: Batch j
 
 
 def slurm_submit(b, parent, t, script, parsable, gpu=None, array=None, refuse=False,
-                 argv=None):
+                 argv=None, job=False):
     """sbatch under `parent` at `t`: its exit and its submit record. Returns (proc, job id).
-    `argv` is `sbatch_args`'s answer when the caller already showed it (a tool call's text)."""
+    `argv` is `sbatch_args`'s answer when the caller already showed it (a tool call's text).
+    `job` for one typed at a terminal's prompt (`Builder.child`)."""
     args, req = argv or sbatch_args(b, script, parsable, gpu, array, hours=72 if refuse else None)
-    p = b.child(parent, t, "sbatch", args)
+    p = b.child(parent, t, "sbatch", args, job=job)
     if refuse:
         p.exit_code, jid, tail = 1, None, REFUSED
     else:
@@ -274,57 +280,57 @@ def human_shell(b):
         f = rng.choice(proj["files"])
         procs = []
         if what == "edit":
-            procs.append(b.child(shell, t, "vim", "vim %s" % f, cwd=b.pdir, dur=logu(rng, 60, 1800)))
+            procs.append(b.child(shell, t, "vim", "vim %s" % f, cwd=b.pdir, dur=logu(rng, 60, 1800), job=True))
         elif what == "look":
             for cmd, args in rng.sample([("ls", "ls -la"), ("cat", "cat %s" % f),
                                          ("less", "less %s" % f), ("grep", "grep -rn %s ." % rng.choice(proj["symbols"])),
                                          ("head", "head -50 %s" % f), ("wc", "wc -l %s" % f)], 2):
-                procs.append(b.child(shell, t, cmd, args, cwd=b.pdir))
+                procs.append(b.child(shell, t, cmd, args, cwd=b.pdir, job=True))
                 t = procs[-1].end + rng.uniform(1, 12)
         elif what == "git":
             for args in rng.sample(["git status", "git diff", "git log --oneline -20", "git pull",
                                     "git add -u", 'git commit -m "wip"'], 2):
-                procs.append(b.child(shell, t, "git", args, cwd=b.pdir))
+                procs.append(b.child(shell, t, "git", args, cwd=b.pdir, job=True))
                 t = procs[-1].end + rng.uniform(2, 20)
         elif what == "run":
             if proj["lang"] == "cpp":
-                procs.append(b.child(shell, t, "make", "make -j8", cwd=b.pdir, scale=3))
+                procs.append(b.child(shell, t, "make", "make -j8", cwd=b.pdir, scale=3, job=True))
             elif p["lab"] == "bio_lab":
                 procs.append(b.child(shell, t, "Rscript", "Rscript scripts/plot_counts.R",
-                                     cwd=b.pdir, scale=4))
+                                     cwd=b.pdir, scale=4, job=True))
             else:
-                procs.append(b.child(shell, t, "python3", "python3 %s" % f, cwd=b.pdir, scale=3))
+                procs.append(b.child(shell, t, "python3", "python3 %s" % f, cwd=b.pdir, scale=3, job=True))
         elif what == "slurm":
             script = rng.choice(proj["jobs"] or ["job.sh"])
             arr = "1-%d%%8" % rng.choice((12, 24, 48)) if "array" in script else None
             sb, jid = slurm_submit(b, shell, t, script, parsable=False, array=arr,
-                                   gpu=rng.choice((None, None, 1)))
+                                   gpu=rng.choice((None, None, 1)), job=True)
             jobs.append(jid)
             t = sb.end
         elif what == "poll":
             for _ in range(rng.randint(1, 3)):
-                q = b.child(shell, t, "squeue", squeue_args(b, jobs[-1], False))
+                q = b.child(shell, t, "squeue", squeue_args(b, jobs[-1], False), job=True)
                 b.exit(q)
                 t = q.end + rng.uniform(5, 90)
             if rng.random() < 0.3:
-                q = b.child(shell, t, "sacct", "sacct -j %d --format=JobID,State,Elapsed" % jobs[-1])
+                q = b.child(shell, t, "sacct", "sacct -j %d --format=JobID,State,Elapsed" % jobs[-1], job=True)
                 b.exit(q)
                 t = q.end
             if rng.random() < 0.08:
-                q = b.child(shell, t, "scancel", "scancel %d" % jobs.pop())
+                q = b.child(shell, t, "scancel", "scancel %d" % jobs.pop(), job=True)
                 b.exit(q)
                 t = q.end
         elif what == "ssh":
             node = rng.choice(cast.COMPUTE)
-            procs.append(b.child(shell, t, "ssh", "ssh %s" % node, dur=logu(rng, 20, 900)))
+            procs.append(b.child(shell, t, "ssh", "ssh %s" % node, dur=logu(rng, 20, 900), job=True))
         elif what == "move":
             src = "%s/runs/run_%02d" % (cast.scratch(p), rng.randint(1, 40))
             procs.append(b.child(shell, t, "rsync", "rsync -av %s/ %s/archive/" % (src, b.home),
-                                 cwd=b.home, scale=2))
+                                 cwd=b.home, scale=2, job=True))
             procs.append(b.child(shell, procs[-1].end + 2, "tar", "tar czf run.tgz %s" % src,
-                                 cwd=b.home, scale=2))
+                                 cwd=b.home, scale=2, job=True))
         elif what == "gpu":
-            procs.append(b.child(shell, t, "nvidia-smi", "nvidia-smi"))
+            procs.append(b.child(shell, t, "nvidia-smi", "nvidia-smi", job=True))
         elif what == "risky":
             # what the Risk tab is for, at a person's hand; credentials arrive
             # masked, as the schema-8 collector writes them
@@ -339,7 +345,7 @@ def human_shell(b):
                 ("mysql", "mysql -u lims -p[REDACTED] lims_prod", ["db_password"]),
                 ("curl", "curl -u %s:[REDACTED] https://repo.example.org/data/manifest.csv" % b.user,
                  ["curl_userpass"])])
-            q = b.child(shell, t, cmd, args, cwd=b.home, scale=2 if cmd in ("wget", "conda") else 1)
+            q = b.child(shell, t, cmd, args, cwd=b.home, scale=2 if cmd in ("wget", "conda") else 1, job=True)
             q.redacted = red
             procs.append(q)
         for q in procs:

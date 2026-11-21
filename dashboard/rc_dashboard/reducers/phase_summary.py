@@ -9,7 +9,9 @@ from, as `phase_segment.prepared` sorts them, and of the tag sets they name (`ph
 changes none of them, and the same block always gives the same answer. Like the rest of the block it
 is read from the commands the agent ran and from nothing else: the agent's own Read and Edit tools,
 and its thinking, leave no command, so a session that only reads and edits with them has no tool
-call.
+call. A session no agent ran (`driver` `terminal`: a person's login, an editor's terminal) is read
+from the jobs its terminals ran in the same way, and its sentences say commands, not tool calls,
+and the words typed in them, not the agent's own.
 
 The categories are the uses the Users tab counts a user's calls by (`portraits.USES`): `explore`
 (read and search code and files), `develop` (change files from the shell, and test them), `build`
@@ -252,10 +254,20 @@ def _named(category, base, uses, work, also):
     return []
 
 
+def _terminal(block):
+    """True for a block no agent ran: its calls are its terminals' jobs (`driver`)."""
+    return block.get("driver") == "terminal"
+
+
 def _what(category, w, timed, base, named, work, block):
     """The first sentence: what the work was, and its mix."""
     if category == NONE:
         hk = (block.get("housekeeping") or {}).get("n") or 0
+        if _terminal(block):
+            # what waits under a process that never exited is not known to be the shell's own
+            hk -= (block.get("housekeeping") or {}).get("never_exited") or 0
+            return "No commands run from a terminal, and %s the shells and editors ran " \
+                "themselves." % _plural(hk, "command") if hk > 0 else "No commands run from a terminal."
         return "No tool calls, and %s of the agent's own." % _plural(hk, "command") \
             if hk else "No tool calls."
     if category == UNKNOWN:
@@ -281,7 +293,7 @@ def _what(category, w, timed, base, named, work, block):
                                " (%s of work%s)" % (dur(work), _within(work, w)) if timed else "")
     of = "%s of %s of work%s" % (_pct(base[top], work), dur(work), _within(work, w)) if timed else \
         "%s of its work" % _pct(base[top], work) if base is w.time else \
-        "%s of its tool calls" % _pct(base[top], work)
+        "%s of its %s" % (_pct(base[top], work), "commands" if _terminal(block) else "tool calls")
     then = _and(["%s (%s)" % (_did(u, w), _pct(base[u], work)) for u in named[1:]])
     return "Mostly %s (%s)%s." % (_did(top, w), of, ", then " + then if then else "")
 
@@ -293,14 +305,16 @@ def _counts(category, named, block, calls, tagsets):
     if not n:
         return None
     tasks = [t for t in block.get("tasks") or () if t.get("kind") == "task"]
-    head = _plural(n, "tool call")
+    terminal = _terminal(block)
+    head = _plural(n, "command" if terminal else "tool call")
+    words = "the words typed in them" if terminal else "the agent's own words"
     if len(tasks) > 1:
         head += " in %d tasks" % len(tasks)
         quoted = sum(1 for t in tasks if t.get("source"))
         if quoted == len(tasks):
-            head += ", all named in the agent's own words"
+            head += ", all named in %s" % words
         elif quoted:
-            head += ", %d named in the agent's own words" % quoted
+            head += ", %d named in %s" % (quoted, words)
     said = []
     if named:
         names, commits = _names(calls, tagsets)
