@@ -3490,6 +3490,16 @@ th.sortable:focus-visible {
   padding-top: 4px;
 }
 
+/* Abnormal Slurm activity (tabs/SlurmTab.tsx): a session's broken rules, one a
+   line, each with what the session did. */
+.slurm-abn {
+  white-space: normal;
+  min-width: 280px;
+}
+.slurm-abn + .slurm-abn {
+  margin-top: 4px;
+}
+
 /* Commands that failed (tabs/ExitsPanel.tsx): the codes and signals of a row,
    wrapping between items, never inside one. */
 .exit-item {

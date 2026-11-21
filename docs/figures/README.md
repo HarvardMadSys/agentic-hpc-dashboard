@@ -515,7 +515,7 @@ chart, Active users and the tables that name now.
   nodes, and jobs, GPUs and GPU-hours asked of Slurm.
 - **Records:** those of the payloads it reads: `exit` (processes, CPU; LV-2), `exit`
   `io` (each process's own) and network bytes (`IoReducer`), `residency_totals` (memory; LV-9),
-  sessions (LV-3), `submit` (`gpus`, `array`, `time_limit_s`; SL-3).
+  sessions (LV-3), `submit` (`gpus`, `array`, `time_limit_s`; SL-4).
 - **Computation:** none of its own. `OverviewTab` reads `tool_mix.by_class[c]` `calls` and `cpu_s`,
   `io_process.by_class[c]` `rd_mb`, `wr_mb` and the `net_tx_mb`/`net_rx_mb` accumulators' totals,
   the highest bin of `resources.series.resident[c].rss_mb` (the largest process on hover, from
@@ -850,7 +850,7 @@ trajectory row by agent and walks each session's call log. Measured on 500 synth
 - **Shows:** what the user's agent sessions asked of Slurm: jobs, refusals, queue checks and checks
   per job, polling sessions and their hours, the longest polling stretch, the `--parsable` share,
   cancels, GPU-hours.
-- **Records:** as SL-2.
+- **Records:** as SL-3.
 - **Computation:** `slurm_by_user` folds the Slurm reducer's agent keys into sessions
   (`SlurmReducer._sessions`) and reads each session's polling with `SlurmReducer._polls`; agent
   sessions only.
@@ -1477,27 +1477,47 @@ section the cluster's profile leaves out is neither computed nor drawn.
 - **Computation:** `RuleSet.summary`, built once per distinct `risk` configuration (`ruleset`). No
   records.
 
-## Login nodes › Slurm
+## HPC
 
-See [Slurm: how sessions use the scheduler](../../dashboard/README.md#slurm-how-sessions-use-the-scheduler).
+The scheduler, an entry of its own in the rail (`?tab=slurm`; `?tab=hpc` opens it too). See
+[Slurm: how sessions use the scheduler](../../dashboard/README.md#slurm-how-sessions-use-the-scheduler).
 Gone when `slurm.enabled` is false. Requests are read off argv: a `#SBATCH` line is not seen.
 
 | | figure | path | payload | code (service · page) |
 |---|---|---|---|---|
 | SL-1 | plates: agent jobs submitted, queue checks per job, agent sessions polling, submissions refused | BUILD | `slurm.by_class`, `slurm.rejections` | `reducers/slurm.py:SlurmReducer.result` · `tabs/SlurmTab.tsx:SlurmTab` |
-| SL-2 | sessions at the scheduler | BUILD | `slurm.sessions`, `sessions_total` | `SlurmReducer.feed`, `_submit`, `_sessions`, `_polls`, `result` · `tabs/SlurmTab.tsx:Sessions`, `SessionDetail` |
-| SL-3 | how each class uses the scheduler | BUILD | `slurm.by_class`; `tool_mix.by_class[c].rows` | `SlurmReducer.result` · `tabs/SlurmTab.tsx:ByClass` |
-| SL-4 | submissions the scheduler refused | BUILD | `slurm.rejections` | `SlurmReducer._submit`, `slurm.py:reason` · `tabs/SlurmTab.tsx:SlurmTab` |
-| SL-5 | latest submissions | LIVE | `submits` | `reducers/live.py:LiveReducer._submit` · `tabs/SlurmTab.tsx:Latest` |
+| SL-2 | abnormal Slurm activity: the rules, each class's count; the sessions that broke one | BUILD | `slurm.abnormal`, `sessions[].abnormal`, `by_class[c].abnormal_by` | `SlurmReducer._abnormal`, `abnormal_rules`, `result` · `tabs/SlurmTab.tsx:Abnormal`, `ruleWords`, `evidence` |
+| SL-3 | sessions at the scheduler | BUILD | `slurm.sessions`, `sessions_total` | `SlurmReducer.feed`, `_submit`, `_sessions`, `_polls`, `result` · `tabs/SlurmTab.tsx:Sessions`, `SessionDetail` |
+| SL-4 | how each class uses the scheduler | BUILD | `slurm.by_class`; `tool_mix.by_class[c].rows` | `SlurmReducer.result` · `tabs/SlurmTab.tsx:ByClass` |
+| SL-5 | submissions the scheduler refused | BUILD | `slurm.rejections` | `SlurmReducer._submit`, `slurm.py:reason` · `tabs/SlurmTab.tsx:SlurmTab` |
+| SL-6 | latest submissions | LIVE | `submits` | `reducers/live.py:LiveReducer._submit` · `tabs/SlurmTab.tsx:Latest` |
 
 #### SL-1 plates
 
 - **Shows:** jobs agents submitted (agent sessions, the busiest minute), agent queue checks per job,
   agent sessions that polled the queue (hours polling), agent submissions refused (share, the
   commonest reason); the other classes beside each.
-- **Computation:** `slurm.by_class` (SL-3) and the agent's first refusal reason (SL-4).
+- **Computation:** `slurm.by_class` (SL-4) and the agent's first refusal reason (SL-5).
 
-#### SL-2 sessions at the scheduler
+#### SL-2 abnormal Slurm activity
+
+- **Shows:** the rules, each worded from its threshold, with each class's count of the sessions
+  that broke it; then every session that broke one: who, where and when, each rule it broke with
+  the session's own numbers (how often and how long it polled, the most queue checks or jobs in
+  one minute, the submissions refused and the commonest reason, `scancel` calls, failed
+  `srun`/`salloc` runs), its jobs and queue checks, opened into SL-3's detail.
+- **Records:** SL-3's.
+- **Computation:** `SlurmReducer.result` judges each session's row (`_abnormal`) against
+  `reducers.slurm.abnormal`: polling is SL-3's stretch of 10 minutes or more; each other rule is a
+  count against a threshold -- the most queue checks in one clock minute (from the query times
+  SL-3 keeps, so a lower bound past 50,000 a key), the most jobs in one clock minute, submissions
+  refused, `scancel` calls, and `srun`/`salloc` runs that ended non-zero or on a signal. Each class
+  counts its sessions per rule, zero included. Every session that broke a rule is served past the
+  busiest 200, up to 500 more, the rest counted (`abnormal.served`). The page holds no threshold:
+  it words the rules from `abnormal.rules`.
+- **Cost:** a pass over each session's row at read, and a count of its query times by minute.
+
+#### SL-3 sessions at the scheduler
 
 - **Shows:** per agent session -- its collector keys folded into the agent -- or per person or IDE
   and user: jobs, refusals, most in one minute, distinct commands with numbers masked, sbatch flags,
@@ -1516,11 +1536,11 @@ Gone when `slurm.enabled` is false. Requests are read off argv: a `#SBATCH` line
   read, `_sessions` folds the agent keys into their owner through the process index, and `_polls`
   joins a session's queries within 2 s into a poll, polls within 3 minutes into a stretch, and
   calls a stretch of 10 minutes or more polling. Sessions sorted by queries plus 10 times jobs and
-  refusals plus runs; 200 served.
+  refusals plus runs; the busiest 200 served, then every other one that broke a rule (SL-2).
 - **Cost:** a few counters a record; bounds of 50,000 keys (the rest counted), and per key 50,000
   query times and 2,000 shapes. Per read, a sort of each session's query times.
 
-#### SL-3 how each class uses the scheduler
+#### SL-4 how each class uses the scheduler
 
 - **Shows:** per class: jobs, sessions and users, queue checks and checks per job, sessions polling
   and the hours of it, the share of the class's processes that are scheduler commands, the share of
@@ -1531,7 +1551,7 @@ Gone when `slurm.enabled` is false. Requests are read off argv: a `#SBATCH` line
   class; the scheduler share is the tool mix's `slurm-submit` and `slurm-query` kinds over the class's
   processes (AG-8), computed in the page.
 
-#### SL-4 submissions the scheduler refused
+#### SL-5 submissions the scheduler refused
 
 - **Shows:** per class, tool and reason: how many times, and one example (user, time, command on
   hover).
@@ -1539,12 +1559,12 @@ Gone when `slurm.enabled` is false. Requests are read off argv: a `#SBATCH` line
   `captured_tail`) is counted by (class, tool, reason), the reason being that line with numbers
   masked and cut to 160 characters (`reason`); the 20 commonest served.
 
-#### SL-5 latest submissions
+#### SL-6 latest submissions
 
 - **Shows:** the newest submissions in the window: when, user, class or agent type, the job id or what
   came back (refused with its reason, dry run, step), the partition, time and GPUs asked (or "in the
   script"), the command.
-- **Records:** `submit`, as SL-2.
+- **Records:** `submit`, as SL-3.
 - **Computation:** `LiveReducer._submit` keeps the 50 newest (`live.submit_tail`), each judged by
   `slurm.outcome` and masked; `result` cuts them to the window.
 

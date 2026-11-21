@@ -34,7 +34,7 @@ A portrait has five parts, each read from one place:
   footprint   processes, CPU, disk and network bytes and peak memory, summed as
               the Trajectories rows sum them
   scheduler   jobs, refusals, queue checks and polling loops of the user's agent
-              sessions, folded as the Slurm tab folds them
+              sessions, folded as the HPC tab folds them
 
 Traits are plain statements about how a user's agents were used in the window
 ("launches with approval bypassed", "keeps several sessions open at once"). Each
@@ -203,7 +203,7 @@ BASIS = {
                 "sessions: the use that holds half its work or more, else mixed, as the Sessions "
                 "tab's rows say it" % PHASE_SESSIONS,
     "sandbox": "whether each session's tool calls ran sandboxed, as the Security tab counts them",
-    "slurm": "the user's agent sessions as the Slurm tab folds them",
+    "slurm": "the user's agent sessions as the HPC tab folds them",
     "traits": "plain statements, each from one rule over these numbers; the rules are served "
               "beside them, and none is a judgement",
     "leverage": "how a user leverages their agents, from the same numbers: the way most of their "
@@ -323,8 +323,8 @@ class _Clock:
 
 def slurm_by_user(slurm):
     """`{user: ...}`: what each user's agent sessions asked of the scheduler,
-    folded through the process index as the Slurm tab folds them. Only agent
-    sessions; a person's own submissions are the Slurm tab's."""
+    folded through the process index as the HPC tab folds them. Only agent
+    sessions; a person's own submissions are the HPC tab's."""
     out = {}
     if slurm is None:
         return out

@@ -61,7 +61,7 @@ const TAB_LBL: Record<string, string> = table({
   trajectories: 'Sessions',
   resources: 'Resources',
   risk: 'Risks',
-  slurm: 'Slurm',
+  slurm: 'HPC',
   security: 'Security',
   internal: 'Internal',
 });
@@ -102,6 +102,7 @@ const PLACES: [string, Place][] = [
   ['panels.sandbox.sandbox_src', { tab: 'security', panel: 'When each process was checked', anchor: 'sec-where-the-per-process-verdict-came-from' }],
   ['panels.sandbox.sandbox_detail', { tab: 'security', panel: 'When each process was checked', anchor: 'sec-where-the-per-process-verdict-came-from' }],
   ['panels.sandbox', { tab: 'security', panel: 'Sandboxed — per process and per session', anchor: 'sec-namespace-isolation-per-process-and-per-session' }],
+  ['panels.slurm.abnormal', { tab: 'slurm', panel: 'Abnormal Slurm activity' }],
   ['panels.slurm.sessions', { tab: 'slurm', panel: 'Sessions at the scheduler' }],
   ['panels.slurm.rejections', { tab: 'slurm', panel: 'Submissions the scheduler refused' }],
   ['panels.slurm', { tab: 'slurm', panel: 'How each class uses the scheduler' }],

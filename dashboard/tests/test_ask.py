@@ -416,6 +416,9 @@ class SuggestionsTest(unittest.TestCase):
                            ("Trajectories", ("trajectories", "Sessions")),
                            ("Overview", ("overview", "Who uses what")),
                            ("Security", ("security", "Security")),
+                           ("panels.slurm.abnormal", ("slurm", "HPC")),
+                           ("Slurm", ("slurm", "HPC")),
+                           ("HPC", ("slurm", "HPC")),
                            ("Internal", ("internal", "Internal")),
                            ("somewhere else", (None, "somewhere else"))):
             self.assertEqual(ask.panel_tab(name), want, name)

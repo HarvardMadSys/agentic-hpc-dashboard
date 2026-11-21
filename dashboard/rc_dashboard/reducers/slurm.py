@@ -51,6 +51,26 @@ MAX_SHAPES = 2000          # distinct command-line shapes held per key
 ROWS = 200                 # sessions served
 FAIL_ROWS = 20
 
+# Abnormal activity at the scheduler: what a session did that an operator would
+# ask its owner about. Each rule is the session's own count against a
+# threshold, `reducers.slurm.abnormal` in the config, whose defaults these are
+# (a test holds the two equal). `polling` is the loop above -- checks at most
+# LOOP_GAP_S apart for LOOP_MIN_S or more: a program waiting on a job, as one
+# Claude session did every 5 s for 5 h. The rest are bursts and repeats: the
+# most queue checks, or jobs, in one clock minute (one session submitted 112 in
+# a minute, where an array is one submission), and refusals, cancels and failed
+# runs that came again and again. A session that breaks any rule is served
+# whatever its rank, as an agent that wrote outside its home is (cascades.py).
+ABNORMAL = {
+    "query_burst": 30,     # queue checks in one clock minute
+    "submit_burst": 20,    # jobs submitted in one clock minute
+    "refused": 3,          # submissions the scheduler refused
+    "cancels": 10,         # scancel calls
+    "failed_runs": 5,      # srun or salloc runs that ended non-zero or on a signal
+}
+ABNORMAL_RULES = ("polling",) + tuple(ABNORMAL)
+ABNORMAL_ROWS = 500        # abnormal sessions served past the busiest ROWS; the rest counted
+
 _DIGITS = re.compile(rb"\d+")
 _NUM = re.compile(r"\d+")
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|[\x00-\x08\x0b-\x1f\x7f]")
@@ -229,6 +249,10 @@ class SlurmReducer:
         self.cfg = cfg
         self.classes = list(classes)
         self.procs = procs
+        # The thresholds are config: config.py checks them at start, and a saved
+        # state's fingerprint pins them (snapshots.py), so a change rebuilds.
+        ab = (cfg.get("reducers.slurm", {}) or {}).get("abnormal") or {}
+        self.abnormal = {k: ab.get(k, v) for k, v in ABNORMAL.items()}
         self.bin_s = bin_for(window_s)
         self.keys = {}
         self.keys_dropped = 0
@@ -441,6 +465,24 @@ class SlurmReducer:
                 "median_gap_s": round(sorted(gaps)[len(gaps) // 2], 1) if gaps else None,
                 "loop": loop}
 
+    def abnormal_rules(self):
+        """Each rule and its threshold, in the order the page lists them."""
+        return ([{"id": "polling", "gap_s": LOOP_GAP_S, "min_s": LOOP_MIN_S}]
+                + [{"id": r, "min": self.abnormal[r]} for r in ABNORMAL])
+
+    def _abnormal(self, row):
+        """The rules a session's row breaks, in ABNORMAL_RULES' order."""
+        th = self.abnormal
+        got = ["polling"] if row["loop"] and row["loop"]["polling"] else []
+        for rule, v in (("query_burst", row["queries_peak_per_min"]),
+                        ("submit_burst", row["peak_per_min"]),
+                        ("refused", row["rejected"]),
+                        ("cancels", row["cancels"]),
+                        ("failed_runs", row["runs_failed"])):
+            if v >= th[rule]:
+                got.append(rule)
+        return got
+
     def result(self):
         rows, by_cls = [], {}
         for sk, g in self._sessions().items():
@@ -481,6 +523,9 @@ class SlurmReducer:
             jobs = out["job"]
             asked = sum(out[o] for o in ("job", "rejected", "no_id"))
             polls = self._polls(ts)
+            # past MAX_QUERY_TS a key's checks have no time (`queries_unplaced`):
+            # then this is a lower bound
+            q_min = collections.Counter(int(t // 60) for t in ts)
             row.update({
                 "first": first, "last": last,
                 "jobs": jobs, "outcomes": {o: out[o] for o in OUTCOMES if out[o]},
@@ -498,10 +543,12 @@ class SlurmReducer:
                 "queries_per_job": round(n["q"] / jobs, 1) if jobs else None,
                 "polls": polls["polls"], "poll_gap_s": polls["median_gap_s"],
                 "loop": polls["loop"], "queries_unplaced": n["q_dropped"],
+                "queries_peak_per_min": max(q_min.values()) if q_min else 0,
                 "cancels": n["cancels"], "runs": n["runs"], "runs_failed": n["runs_failed"],
                 "fails": [{"why": w, "n": c} for w, c in fails.most_common(3)],
                 "args": example,
             })
+            row["abnormal"] = self._abnormal(row)
             rows.append(row)
             c = by_cls.setdefault(s0.cls, {
                 "sessions": 0, "users": set(), "jobs": 0, "asked": 0, "rejected": 0,
@@ -509,7 +556,8 @@ class SlurmReducer:
                 "polls": 0, "polling": 0, "polling_s": 0.0, "cancels": 0, "runs": 0,
                 "runs_failed": 0, "flags": collections.Counter(), "argv_req": 0,
                 "parts": collections.Counter(), "gpus": 0, "gpu_jobs": 0, "gpu_h": 0.0,
-                "gpu_h_known": 0, "peak_per_min": 0})
+                "gpu_h_known": 0, "peak_per_min": 0, "abnormal": 0,
+                "abnormal_by": collections.Counter()})
             if jobs or n["q"] or n["cancels"] or n["runs"] or sum(out.values()):
                 c["sessions"] += 1
                 c["users"].add(s0.user)
@@ -533,6 +581,9 @@ class SlurmReducer:
             for f in ("gpus", "gpu_jobs", "gpu_h", "gpu_h_known"):
                 c[f] += n[f]
             c["peak_per_min"] = max(c["peak_per_min"], row["peak_per_min"])
+            if row["abnormal"]:
+                c["abnormal"] += 1
+                c["abnormal_by"].update(row["abnormal"])
 
         classes = {}
         for cls, c in by_cls.items():
@@ -556,6 +607,10 @@ class SlurmReducer:
                 "gpu_h_known": c["gpu_h_known"],
                 "time_limit_s": self.time_limit[cls].as_dict() if cls in self.time_limit else None,
                 "peak_per_min": c["peak_per_min"],
+                # sessions that broke a rule, and each rule's, 0 included: the
+                # class was judged
+                "abnormal_sessions": c["abnormal"],
+                "abnormal_by": {r: c["abnormal_by"][r] for r in ABNORMAL_RULES},
             }
 
         rows.sort(key=lambda r: (r["queries"] + 10 * (r["jobs"] + r["rejected"]) + r["runs"]),
@@ -563,9 +618,18 @@ class SlurmReducer:
         series = self._series()
         fails = [{"cls": k[0], "tool": k[1], "why": k[2], "n": v, "eg": self.fail_eg.get(k)}
                  for k, v in self.fail_rows.most_common(FAIL_ROWS)]
+        # The busiest are served, and past them every session that broke a rule
+        # however quiet, up to ABNORMAL_ROWS more: the abnormal list is whole
+        # unless `abnormal.served` says otherwise.
+        busiest = rows[:ROWS]
+        later = [r for r in rows[ROWS:] if r["abnormal"]]
+        flagged = sum(1 for r in rows if r["abnormal"])
         return {
             "by_class": classes,
-            "sessions": rows[:ROWS], "sessions_total": len(rows),
+            "sessions": busiest + later[:ABNORMAL_ROWS], "sessions_total": len(rows),
+            "sessions_busiest": len(busiest),
+            "abnormal": {"rules": self.abnormal_rules(), "sessions": flagged,
+                         "served": flagged - max(0, len(later) - ABNORMAL_ROWS)},
             "series": series, "rejections": fails,
             "basis": {
                 "sessions": "an agent's own key and every key folded into it (the "
@@ -575,6 +639,9 @@ class SlurmReducer:
                         % (POLL_JOIN_S, LOOP_GAP_S, LOOP_MIN_S // 60),
                 "requests": "argv only -- a #SBATCH line in the script is not seen",
                 "queries": "every exit of %s" % ", ".join(sorted(SLURM_Q)),
+                "abnormal": "a session breaks a rule when its own count reaches the rule's "
+                            "threshold (reducers.slurm.abnormal); polling is the loop above; "
+                            "a minute is a clock minute",
                 "keys_dropped": self.keys_dropped,
             },
         }

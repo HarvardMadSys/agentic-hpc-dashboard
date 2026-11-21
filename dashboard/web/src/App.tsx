@@ -68,14 +68,18 @@ const EventsExplorer = lazyTab(() => import('./components/EventsExplorer').then(
 
 /* In the order an operator reads them (roadmap notes 32 and 50): what is
  * happening and who uses what, how each user works with agents, the agents,
- * one session, how safely the agents ran, then the detail. Old tab keys still
- * open (lib/filters.ts TAB_ALIAS): sessions and cascades -> agents, io ->
- * resources, sandbox -> security, and overview -> live, where its table now is.
+ * one session, how safely the agents ran, then the detail: the login nodes,
+ * and the cluster behind them. Old tab keys still open (lib/filters.ts
+ * TAB_ALIAS): sessions and cascades -> agents, io -> resources, sandbox ->
+ * security, and overview -> live, where its table now is; `?tab=hpc` opens
+ * HPC, whose key stays `slurm`.
  *
  * Fewer stops in the rail: Overview's last table is a section of Live, and
- * Resources, Risks and Slurm are one entry, the login nodes, with a
- * sub-tab each. A sub-tab keeps its own key, so `?tab=resources`, a citation
- * and every link into it land where they always did. */
+ * Resources and Risks are one entry, the login nodes, with a sub-tab each.
+ * HPC, the scheduler, is an entry of its own: what a session asks of the
+ * cluster is not login-node use. A sub-tab keeps its own key, so
+ * `?tab=resources`, a citation and every link into it land where they always
+ * did. */
 /* `also`: the names a tab had before, which "go to" still finds it by. */
 type Tab = { k: string; lbl: string; eyebrow: string; icon: IconName; group: string; parent?: 'nodes'; also?: string };
 const TABS: Tab[] = [
@@ -86,7 +90,7 @@ const TABS: Tab[] = [
   { k: 'security', lbl: 'Security', eyebrow: 'how agents were launched and sandboxed, what they exposed, and where they reached', icon: 'security', group: 'Monitor', also: 'sandbox approval bypass credentials secrets blast radius' },
   { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O', icon: 'resources', group: 'Monitor', parent: 'nodes' },
   { k: 'risk', lbl: 'Risks', eyebrow: 'what should not run here', icon: 'risk', group: 'Monitor', parent: 'nodes', also: 'risk warning' },
-  { k: 'slurm', lbl: 'Slurm', eyebrow: 'jobs and the scheduler', icon: 'queue', group: 'Monitor', parent: 'nodes' },
+  { k: 'slurm', lbl: 'HPC', eyebrow: 'the Slurm scheduler: what each session asks of it, and what looks abnormal', icon: 'hpc', group: 'Monitor', also: 'slurm scheduler jobs queue abnormal cluster' },
   { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask a language model about this window', icon: 'chat', group: 'More' },
   { k: 'events', lbl: 'Search & export', eyebrow: 'every process record, filtered and downloadable', icon: 'events', group: 'More' },
   { k: 'internal', lbl: 'Internal', eyebrow: 'not settled yet', icon: 'internal', group: 'More' },
@@ -95,7 +99,7 @@ const TABS: Tab[] = [
 /** The one entry the three node tabs share. It is named in the site's own
  *  word for its hosts (`ui.node_noun`, "login nodes"): their figures are
  *  login-node use, not the cluster's (README, "Scope is stated"). */
-const NODES_EYEBROW = 'what runs on them, what should not, and what they ask of the scheduler';
+const NODES_EYEBROW = 'what runs on them, and what should not';
 /** A link to a tab that folded into another lands on the part it became. */
 const LANDS_ON: Record<string, string> = table({ overview: 'sec-who-uses-what' });
 /** The tab the page was opened on, read once, before the link is rewritten

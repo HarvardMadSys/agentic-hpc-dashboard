@@ -1696,13 +1696,25 @@ export interface SlurmSession {
   poll_gap_s: number | null;
   loop: SlurmLoop | null;
   queries_unplaced: number;
+  /** the most queue checks in one clock minute; a lower bound when `queries_unplaced` */
+  queries_peak_per_min?: number;
   cancels: number;
   runs: number;
   runs_failed: number;
   fails: { why: string; n: number }[];
   /** the latest job's command line, credentials masked */
   args: string | null;
+  /** the rules it broke (`SlurmPanel.abnormal.rules`), in their order; absent from a
+   *  service that does not judge them */
+  abnormal?: SlurmRuleId[];
 }
+
+/** What makes activity at the scheduler abnormal (reducers/slurm.py, ABNORMAL). */
+export type SlurmRuleId = 'polling' | 'query_burst' | 'submit_burst' | 'refused' | 'cancels' | 'failed_runs';
+/** A rule and its threshold: the loop's bounds for polling, a count for the rest. */
+export type SlurmRule =
+  | { id: 'polling'; gap_s: number; min_s: number }
+  | { id: Exclude<SlurmRuleId, 'polling'>; min: number };
 
 export interface SlurmClass {
   sessions: number;
@@ -1732,12 +1744,19 @@ export interface SlurmClass {
   gpu_h_known: number;
   time_limit_s: Quant | null;
   peak_per_min: number;
+  /** sessions that broke a rule, and each rule's, 0 included */
+  abnormal_sessions?: number;
+  abnormal_by?: Partial<Record<SlurmRuleId, number>>;
 }
 
 export interface SlurmPanel extends PanelEnvelope {
   by_class?: Record<string, SlurmClass>;
+  /** the busiest `sessions_busiest`, then every other one that broke a rule */
   sessions?: SlurmSession[];
   sessions_total?: number;
+  sessions_busiest?: number;
+  /** the rules, and the sessions that broke one: `served` of them are in `sessions` */
+  abnormal?: { rules: SlurmRule[]; sessions: number; served: number };
   series?: { bin_s: number; t: number[]; by_class: Record<string, { jobs: (number | null)[]; queries: (number | null)[] }> };
   rejections?: { cls: string; tool: string; why: string; n: number; eg: { user: string | null; ts: string | null; args: string } | null }[];
   basis?: Record<string, unknown>;
@@ -1909,7 +1928,7 @@ export interface TraitRule {
   rule: string;
 }
 
-/** What a user's agent sessions asked of the scheduler, folded as the Slurm tab folds them. */
+/** What a user's agent sessions asked of the scheduler, folded as the HPC tab folds them. */
 export interface UserSlurm {
   sessions: number;
   jobs: number;

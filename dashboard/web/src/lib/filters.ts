@@ -115,6 +115,8 @@ const TAB_ALIAS: Record<string, string> = table({
   sandbox: 'security',
   // Overview's one table is a section of Live now; App.tsx lands such a link on it
   overview: 'live',
+  // HPC is the Slurm tab, out from under the login nodes: its key stays
+  hpc: 'slurm',
 });
 
 /** How a filter asks for the processes the collector gave no agent type. */

@@ -308,7 +308,7 @@ export function leveragePoints(row: UserRow, fleet: UsersFleet | null | undefine
     const bits = [`${plural(sl.jobs, 'Slurm job')} submitted${sl.rejected ? `, ${fint(sl.rejected)} refused` : ''}`];
     if (sl.queries) bits.push(`the queue checked ${plural(sl.queries, 'time')}${sl.queries_per_job != null ? ` (${fint(sl.queries_per_job)} a job)` : ''}`);
     if (sl.polling_sessions) bits.push(`polled for ${dur(sl.polling_s)} in ${plural(sl.polling_sessions, 'session')}`);
-    out.push({ k: 'hpc', label: 'on the cluster', text: bits.join('; '), tip: 'their agent sessions at the scheduler, as the Slurm tab folds them' });
+    out.push({ k: 'hpc', label: 'on the cluster', text: bits.join('; '), tip: 'their agent sessions at the scheduler, as the HPC tab folds them' });
   }
   const w = row.words;
   const said = [

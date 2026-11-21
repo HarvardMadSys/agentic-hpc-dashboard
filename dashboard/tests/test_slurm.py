@@ -218,6 +218,96 @@ class Sessions(unittest.TestCase):
         self.assertEqual(q[3], 1)
 
 
+class Abnormal(unittest.TestCase):
+    """What makes a session's activity at the scheduler abnormal: its own count
+    against each rule's threshold, read from the config, served with the rules."""
+
+    def result(self, recs, cfg=None):
+        red = SlurmReducer(cfg or {}, ["agent", "human", "ide"], window_s=86400)
+        for r in sorted(recs, key=lambda r: r["_ts_epoch"]):
+            red.feed(r)
+        return red.result()
+
+    @staticmethod
+    def session(apid, n):
+        """Records for session `apid` that reach each rule with `n` of it: the
+        rule's threshold, or one short of it."""
+        t = T0 + 3600 * apid               # each session in its own hour, minute-aligned
+        return {
+            # checks 30 s apart: n + 1 of them span n * 30 s, so 20 make 600 s
+            "polling": [ex(t + 30 * i, "squeue", apid=apid) for i in range(n + 1)],
+            "query_burst": [ex(t + i, "squeue", apid=apid) for i in range(n)],
+            "submit_burst": [sub(t + i, "sbatch job.sh", apid=apid, job_id=i, job_ids=[i])
+                             for i in range(n)],
+            "refused": [sub(t + i, "sbatch bad.sh", apid=apid, exit_code=1,
+                            captured_tail="sbatch: error: QOSMaxSubmitJobPerUserLimit\n")
+                        for i in range(n)],
+            "cancels": [ex(t + 120 * i, "scancel", apid=apid) for i in range(n)],
+            "failed_runs": [ex(t + 120 * i, "srun", apid=apid, exit_code=1) for i in range(n)],
+        }
+
+    def test_each_rule_at_its_threshold_and_one_short(self):
+        from rc_dashboard.reducers.slurm import ABNORMAL, ABNORMAL_RULES
+        at = dict(ABNORMAL, polling=20)        # 20 gaps of 30 s: 10 min
+        for i, rule in enumerate(ABNORMAL_RULES):
+            with self.subTest(rule=rule):
+                on = self.session(10 + i, at[rule])[rule]
+                off = self.session(20 + i, at[rule] - 1)[rule]
+                rows = {r["session"]: r for r in self.result(on + off)["sessions"]}
+                self.assertEqual(rows["h1:%d" % (10 + i)]["abnormal"], [rule])
+                self.assertEqual(rows["h1:%d" % (20 + i)]["abnormal"], [])
+
+    def test_the_busiest_minute_of_queue_checks_is_a_clock_minute(self):
+        recs = [ex(T0 + 50 + i * 0.5, "squeue") for i in range(40)]      # 20 s across a minute
+        r = self.result(recs)["sessions"][0]
+        self.assertEqual(r["queries_peak_per_min"], 20)
+        self.assertEqual(r["abnormal"], [])
+
+    def test_thresholds_come_from_the_config_and_are_served(self):
+        recs = self.session(5, 1)["refused"]
+        self.assertEqual(self.result(recs)["sessions"][0]["abnormal"], [])
+        out = self.result(recs, {"reducers.slurm": {"abnormal": {"refused": 1}}})
+        self.assertEqual(out["sessions"][0]["abnormal"], ["refused"])
+        rules = {r["id"]: r for r in out["abnormal"]["rules"]}
+        self.assertEqual(rules["refused"], {"id": "refused", "min": 1})
+        self.assertEqual(rules["polling"], {"id": "polling", "gap_s": 180.0, "min_s": 600.0})
+        self.assertEqual(list(rules), ["polling", "query_burst", "submit_burst", "refused",
+                                       "cancels", "failed_runs"])
+
+    def test_each_class_counts_its_sessions_by_rule_zero_included(self):
+        s = self.session(7, 3)
+        recs = s["refused"] + [ex(T0 + 60 * i, "scancel", cls="human", user="bob")
+                               for i in range(12)]
+        out = self.result(recs)
+        a, h = out["by_class"]["agent"], out["by_class"]["human"]
+        self.assertEqual(a["abnormal_sessions"], 1)
+        self.assertEqual(a["abnormal_by"]["refused"], 1)
+        self.assertEqual(a["abnormal_by"]["polling"], 0)
+        self.assertEqual(h["abnormal_sessions"], 1)
+        self.assertEqual(h["abnormal_by"]["cancels"], 1)
+        self.assertEqual(set(h["abnormal_by"]), set(a["abnormal_by"]))
+        self.assertEqual(out["abnormal"]["sessions"], 2)
+
+    def test_an_abnormal_session_is_served_however_quiet(self):
+        from unittest import mock
+        from rc_dashboard.reducers import slurm
+        # four busy sessions with nothing abnormal -- 50 checks 7 s apart: under 10
+        # min, and 9 a minute at most -- and two quieter ones that broke a rule
+        recs = [ex(T0 + 7 * i + 600 * k, "squeue", apid=k) for k in range(4) for i in range(50)]
+        recs += self.session(50, 3)["refused"] + self.session(51, 3)["refused"]
+        with mock.patch.object(slurm, "ROWS", 2):
+            out = self.result(recs)
+        self.assertEqual(out["sessions_total"], 6)
+        self.assertEqual(out["sessions_busiest"], 2)
+        self.assertEqual([r["session"] for r in out["sessions"][2:]], ["h1:50", "h1:51"])
+        self.assertEqual((out["abnormal"]["sessions"], out["abnormal"]["served"]), (2, 2))
+        # past ABNORMAL_ROWS they are counted, not served
+        with mock.patch.object(slurm, "ROWS", 2), mock.patch.object(slurm, "ABNORMAL_ROWS", 1):
+            out = self.result(recs)
+        self.assertEqual(len(out["sessions"]), 3)
+        self.assertEqual((out["abnormal"]["sessions"], out["abnormal"]["served"]), (2, 1))
+
+
 class Merge(unittest.TestCase):
     """A window is merged from saved hour states (rc_dashboard/hours.py): two
     halves merged in time order must be the reducer one pass builds."""

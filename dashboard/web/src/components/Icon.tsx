@@ -65,6 +65,14 @@ const PATHS = {
       <path d="M10 12.9v1.7" />
     </>
   ),
+  // HPC: a compute chip, for the cluster the scheduler hands out
+  hpc: (
+    <>
+      <rect x="5" y="5" width="10" height="10" rx="1.6" />
+      <rect x="8" y="8" width="4" height="4" rx="0.6" />
+      <path d="M7.6 2.6v2.4M12.4 2.6v2.4M7.6 15v2.4M12.4 15v2.4M2.6 7.6h2.4M2.6 12.4h2.4M15 7.6h2.4M15 12.4h2.4" />
+    </>
+  ),
   // the login nodes: a rack of two hosts
   nodes: (
     <>
