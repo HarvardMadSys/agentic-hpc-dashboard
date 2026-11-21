@@ -2,24 +2,14 @@
 
 Two ways to run the same collector and dashboard on Linux servers where you have root. Each
 server's collector writes its own day-files; the two modes differ only in where the
-dashboard runs, and how the files reach it.
+dashboard runs, and how the files reach it. This page covers what they share.
 
 | Mode | What runs where | Start at |
 |---|---|---|
 | **single** | One server runs the collector and the dashboard. The dashboard reads the collector's folders where it writes them. | [`single/README.md`](single/README.md) |
 | **fleet** | Every node runs the collector and keeps its files on its own disk. One more host runs the dashboard, and copies each node's files to itself with rsync, every minute (`pull.py`). | [`fleet/README.md`](fleet/README.md) |
 
-```
-single                                   fleet
-┌───────────────────────────┐            node 1 ─┐  ebpfm, ebpfm-node: /var/log/ebpfm*
-│ ebpfm, ebpfm-node         │            node 2 ─┼─ rsync over ssh, each node every 60 s
-│   └▶ /var/log/ebpfm*      │            node N ─┘           │
-│ rc-dashboard              │                                ▼
-│   reads them, serves :8080│            dashboard's host: rc-pull ▶ /var/lib/rc-dashboard/mirror
-└───────────────────────────┘                              rc-dashboard reads the copy, serves :8080
-```
-
-On a cluster's login nodes, where you have no root, use [`hpc/deploy`](../hpc/README.md)
+On a cluster's login nodes, where you have no root, use [`hpc/deploy`](../hpc/deploy/README.md)
 instead. For a public page over made-up data, use [`cloudflare`](cloudflare/README.md).
 
 ## What each piece is
@@ -29,7 +19,7 @@ instead. For a public page over made-up data, use [`cloudflare`](cloudflare/READ
 | `ebpfm.service` | the collector's eBPF tier, `collector/ebpf_trace.py` | root | [`common/install-collector.sh`](common/install-collector.sh) (`ebpfm.sh install-unit`) |
 | `ebpfm-node.service` | the collector's node tier, a snapshot every 5 minutes | root | the same |
 | `rc-dashboard.service` | `rc_dashboard serve`, on `127.0.0.1:8080` behind a password | `rc-dashboard` | [`common/install-dashboard.sh`](common/install-dashboard.sh) |
-| `rc-pull.service` (fleet) | [`fleet/pull.py`](fleet/pull.py)`loop`, the copy of every node | `rc-dashboard` | the same, `fleet` |
+| `rc-pull.service` (fleet) | [`fleet/pull.py`](fleet/pull.py) `loop`, the copy of every node | `rc-dashboard` | the same, `fleet` |
 
 The collector's output belongs to the group `ebpfm`, mode 750/640: it names real users and
 holds their commands. The dashboard reads it as a member of that group (single), or reads the
@@ -54,7 +44,7 @@ host of a fleet needs `rsync`.
 
 ## The password
 
-The dashboard serves nothing until `dashboard.env` holds a password hash. Make one, as
+The dashboard does not start until `dashboard.env` holds a password hash. Make one, as
 yourself, on the dashboard's host:
 
 ```bash
@@ -62,11 +52,10 @@ cd /opt/agentic-hpc-dashboard/dashboard && /opt/rc-dashboard/venv/bin/python -m 
 ```
 
 It keeps the password in `~/.config/rc-dashboard/password`, readable by you alone, and
-prints only the hash. Put the hash in `/etc/rc-dashboard/dashboard.env`, in single quotes
-since it holds `$` signs, as `RC_DASH_PASSWORD_HASH='scrypt$...'`, then
-`sudo systemctl start rc-dashboard`. A new hash signs
-everyone out. See the dashboard's [Password](../dashboard/README.md#password) section for
-the cookie, proxies, and scripts.
+prints only the hash. Put the hash in `/etc/rc-dashboard/dashboard.env` as
+`RC_DASH_PASSWORD_HASH='scrypt$...'`, in single quotes since it holds `$` signs, then
+`sudo systemctl restart rc-dashboard`. A new hash signs everyone out. The cookie, proxies and
+scripts: [Password](../dashboard/README.md#password).
 
 ## Opening the page
 
@@ -105,8 +94,9 @@ a second, and the Feeds tab shows the refill's progress.
 `dashboard.env` takes any `RC_DASH_*` variable the dashboard's
 [README](../dashboard/README.md#configuration) names; restart `rc-dashboard` after an edit.
 The installer starts it with the page calling the hosts "servers" (`RC_DASH_NODE_NOUN`),
-with no Slurm tab (`RC_DASH_SLURM=0`), and dropping the records of the deployment's own two
-accounts (`RC_DASH_DROP_USERS`). The installers' own settings come from their environment:
+with no HPC tab (`RC_DASH_SLURM=0`), and dropping the records of the deployment's own two
+accounts (`RC_DASH_DROP_USERS`; take `rc-dashboard` out of it to see what the dashboard costs
+the server it runs on). The installers' own settings come from their environment:
 
 | Variable | Default | What |
 |---|---|---|
@@ -114,12 +104,10 @@ accounts (`RC_DASH_DROP_USERS`). The installers' own settings come from their en
 | `COLLECTOR_GROUP` | `ebpfm` | the group that may read it |
 | `SERVICE_USER`, `PULL_USER` | `rc-dashboard`, `rc-pull` | the dashboard's account; the account the copy logs in to the nodes as |
 | `ETC`, `STATE`, `OPT` | `/etc/rc-dashboard`, `/var/lib/rc-dashboard`, `/opt/rc-dashboard` | the folders above |
-| `MEMORY_MAX` | `8G` | the dashboard's hard memory cap |
+| `MEMORY_MAX` | `8G` | the dashboard's hard memory cap: past it the kernel stops the dashboard, and systemd starts it again |
 
-For scale: over 8 busy login nodes and 7 days of history, the dashboard held 12.6 GiB, with
-a peak of 15.9 GiB ([`hpc/deploy`](../hpc/deploy/README.md#memory-and-disk) has the
-measurements, and the settings that trade history for memory). Fewer or quieter servers
-need less; raise `MEMORY_MAX` with the fleet.
+Raise `MEMORY_MAX` with the fleet: [Memory and disk](../hpc/deploy/README.md#memory-and-disk)
+has measurements over 8 busy login nodes, and the settings that trade history for memory.
 
 ## Upgrading
 
@@ -130,10 +118,10 @@ sudo deploy/single/install.sh            # or, in a fleet: deploy/fleet/install-
 
 The dashboard is rebuilt and restarted. The collector's units are written again, but a
 running collector keeps running: its restart flushes every live process as `truncated`, so
-choose the moment, `sudo systemctl restart ebpfm ebpfm-node`. One exception: a collector
-started without the group the installer gives its output reads that only at start, and would
-make every new file root's alone. The installer refuses to leave it so, and restarts it only
-when given `--restart`.
+choose the moment, `sudo systemctl restart ebpfm ebpfm-node`. The exception is a collector
+started before its output had a group: it reads the group only at start, and would make
+every new file root's alone, the dashboard's reads included. The installer refuses to leave
+it so, and restarts it only when given `--restart`.
 
 ## The collector from the RPM
 
@@ -150,9 +138,10 @@ sudo systemctl restart ebpfm         # it reads EBPFM_GROUP at start; flushes li
 sudo EBPF_DIR=/scratch/ebpfm deploy/common/install-dashboard.sh single
 ```
 
-In a fleet, run the first four lines on each node, make the `rc-pull` account there by hand
-(as [`fleet/README.md`](fleet/README.md#the-nodes) describes) in the group, and set
-`FLEET_EBPF_SOURCE=/scratch/ebpfm`. The package does not carry the node tier's unit yet.
+In a fleet, run the first four lines on each node, and make the `rc-pull` account and its key
+there by hand, in the group ([The nodes](fleet/README.md#the-nodes)). In `fleet.env`, name
+the folder as that key sees it: `FLEET_EBPF_SOURCE=/scratch/ebpfm`, or `ebpfm` under
+`rrsync -ro /scratch`. The package has no unit for the node tier.
 
 ## Removing everything
 
@@ -166,19 +155,10 @@ sudo userdel rc-dashboard; sudo userdel -r rc-pull                    # the latt
 
 The collector's day-files stay in `/var/log/ebpfm*` until you remove them.
 
-## Toward a database
-
-In a fleet, `pull.py` is the only part that moves data: the nodes write files as they always
-have, and the dashboard reads a copy laid out as they are. Nodes that send their records to a
-database instead replace the copy, and the dashboard then reads from that source: its ingest
-reads through one interface, `IngestSource` in
-[`dashboard/rc_dashboard/tail.py`](../dashboard/rc_dashboard/tail.py), which files are today
-the only implementation of.
-
 ## Tests
 
 ```bash
 python3 -m unittest discover -s deploy/common/tests -q   # the installers, with stand-ins for systemd and the account tools
 python3 -m unittest discover -s deploy/fleet/tests -q    # pull.py, with rsync for real and stand-in nodes
-cd dashboard && uv run python -m unittest tests.test_fleet_copy -q   # the dashboard's tail over pull.py's copy
+cd dashboard && uv run --frozen python -m unittest tests.test_fleet_copy -q   # the dashboard's tail over pull.py's copy
 ```
