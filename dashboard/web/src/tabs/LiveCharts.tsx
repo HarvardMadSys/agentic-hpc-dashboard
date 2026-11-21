@@ -1,11 +1,13 @@
 /* Every time series of the window, on Live (roadmap note 23).
  *
- * Four stay open, the ones an operator watches: CPU, memory, and each class's
- * share of the processes and of the CPU. Everything else -- waits, D-state,
- * faults, disk, network, the scheduler -- sits behind one picker, one chart at a time,
- * with the table that used to fold under that chart. All of them share one zoom,
- * tied to the window it was taken in: a range picked on the 24 h view means
- * nothing once the 1 h view is on screen.
+ * Two stay open, the ones an operator watches: CPU and memory. Each class's
+ * share of the processes and of the CPU is said once, over the window, by Who
+ * uses what; drawn bin by bin it was the rate chart and the CPU chart over
+ * again, each divided by its bin's total, so it is not drawn. Everything else --
+ * waits, D-state, faults, disk, network, the scheduler -- sits behind one
+ * picker, one chart at a time, with the table that used to fold under that
+ * chart. All of them share one zoom, tied to the window it was taken in: a
+ * range picked on the 24 h view means nothing once the 1 h view is on screen.
  *
  * Sums are binned BY EXIT TIME (a whole-life counter lands in the bin its
  * process exited in); resident memory is the exception, sampled while processes
@@ -47,29 +49,8 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
   // the tables folded under the charts sort too (roadmap note 27)
   const sortOf = useSortMap();
 
-  const byCls = (field: 'n' | 'cpu_s' | 'sched_wait_s' | 'maj_flt'): TimeLine[] =>
+  const byCls = (field: 'cpu_s' | 'sched_wait_s' | 'maj_flt'): TimeLine[] =>
     shown(s?.by_class, cls).map((c) => ({ lbl: CLS_LBL[c] ?? c, c: CLS_COL[c], v: s?.by_class?.[c]?.[field] }));
-
-  // Each class's share of the node, bin by bin: out of EVERY class's records,
-  // not just the shown ones, or a share would change when the filter does.
-  const shareLines = (field: 'n' | 'cpu_s'): TimeLine[] => {
-    const by = s?.by_class ?? {};
-    const all = Object.keys(by);
-    const tot = (s?.t ?? []).map((_, i) => {
-      const vals = all.map((c) => by[c]?.[field]?.[i]).filter((v): v is number => v != null);
-      return vals.length ? vals.reduce((a, v) => a + v, 0) : null;
-    });
-    return cls
-      .filter((c) => by[c])
-      .map((c) => ({
-        lbl: CLS_LBL[c] ?? c,
-        c: CLS_COL[c],
-        v: tot.map((t, i) => {
-          const v = by[c]?.[field]?.[i];
-          return t ? (100 * (v ?? 0)) / t : null;
-        }),
-      }));
-  };
 
   const memCls = shown(s?.resident, cls);
   const memLines: TimeLine[] = memCls.map((c) => ({ lbl: CLS_LBL[c] ?? c, c: CLS_COL[c], v: s?.resident[c]?.rss_mb }));
@@ -288,7 +269,7 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
         span
         empty={!hasSeries}
         emptyWhat="no process exited in the window for the selection"
-        header={<span className="pill" data-tip="every chart on this panel is binned this finely; drag on any of them to zoom all four">{binEye}</span>}
+        header={<span className="pill" data-tip="both charts on this panel are binned this finely; scroll on either to zoom both, and the charts under them with them">{binEye}</span>}
       >
         <div className="pair-row">
           <div>
@@ -328,16 +309,6 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
                 </table>
               </div>
             </More>
-          </div>
-          <div>
-            <div className="eyebrow">each class's share of the processes exited</div>
-            {s && <TimeChart {...z} s={s} lines={shareLines('n')} ylabel="% of processes" yname="share"
-              ymax={100} yfmt={(v) => `${Math.round(v)}%`} />}
-          </div>
-          <div>
-            <div className="eyebrow">each class's share of the CPU time</div>
-            {s && <TimeChart {...z} s={s} lines={shareLines('cpu_s')} ylabel="% of CPU" yname="share"
-              ymax={100} yfmt={(v) => `${Math.round(v)}%`} />}
           </div>
         </div>
       </Panel>

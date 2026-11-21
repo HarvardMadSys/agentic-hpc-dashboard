@@ -6,7 +6,8 @@
  * process's command line gave, else the address (rc_dashboard/endpoints.py).
  * The service sends the top ten for every mix of classes, so ranking the
  * classes the page shows here is exact. Counted as each process exited, like
- * the bars beside it, and narrowed by the page-wide who filter the same way.
+ * the per-class table beside it, and narrowed by the page-wide who filter the
+ * same way.
  */
 import { useState } from 'react';
 import type { EndpointCover, EndpointList, EndpointRow, EndpointUse, IoClassBlock } from '../api/types';
@@ -104,8 +105,8 @@ export function NetEndpoints({ ep, have, byClass }: {
     : k === 'rx' ? rxOf(r, cls)
     : of(r, k));
 
-  // What the endpoints cover of the bytes the bars count, over the classes the
-  // page shows -- a class with no endpoint at all included, for its losses.
+  // What the endpoints cover of the bytes the per-class table counts, over the
+  // classes the page shows -- a class with no endpoint at all included, for its losses.
   const cover = (f: (v: EndpointCover) => number) => have.reduce((a, c) => a + (ep.cover[c] ? f(ep.cover[c]) : 0), 0);
   const listed = cover((v) => v.tx + v.rx);
   const lost = cover((v) => v.lost_tx + v.lost_rx);
@@ -174,7 +175,7 @@ export function NetEndpoints({ ep, have, byClass }: {
       )}
       <div className="nm net-ends-note">
         {`${fint(ep.names)} endpoints from ${fint(ep.addresses)} addresses in the window, counted as each process exited.`}
-        {panel > 0 && ` Endpoints are known for ${pc((100 * listed) / panel)} of the bytes in the bars.`}
+        {panel > 0 && ` Endpoints are known for ${pc((100 * listed) / panel)} of the bytes in the per-class table.`}
         {lost > 0 && ` The collector listed no endpoint for ${mb(lost / MB)}.`}
         {missing > 0 && ` ${fint(missing)} process${missing === 1 ? '' : 'es'} moved bytes without an endpoint list, from a collector before schema 7 or one without its endpoint probes.`}
         {ep.pending > 0 && ` ${fint(ep.pending)} name${ep.pending === 1 ? ' is' : 's are'} still being looked up.`}
