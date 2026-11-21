@@ -95,7 +95,10 @@ again. So [`pull.py`](pull.py) copies by these rules:
   at the offset it reached in the plain file, as it does when a node seals a day on its own
   disk.
 - **A file shorter on the node than in the copy was replaced there**, and is fetched again
-  from its start, as a new file with an inode of its own.
+  from its start, as a new file with an inode of its own; the old copy keeps its inode until
+  then. Only a file that got shorter is known for replaced: one replaced by a file at least
+  as long would be appended to, which the collector never makes happen (it appends, and
+  starts a new file each day).
 
 `dashboard/tests/test_fleet_copy.py` runs the dashboard's own tail over such a copy, through
 appends, a line cut in two by a pass, and a day sealed between passes: every record is read

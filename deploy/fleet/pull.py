@@ -30,6 +30,9 @@ How a file is copied. The dashboard follows a day-file by its inode and an offse
   when a collector seals a day on its own disk.
 - A plain file that is shorter on the node than in the copy was replaced there: the copy
   is removed and fetched again from its start, and the dashboard reads it as a new file.
+  Only a shorter file is known for replaced: one replaced by a file at least as long is
+  appended to as if it had grown. The collector never does that -- it appends, and starts
+  a new file each day -- and telling the two apart would mean reading the file.
 
 What is copied: `<day>/<name>.jsonl` and `<day>/<name>.jsonl.gz`, for the FLEET_DAYS newest
 day folders that hold one (0: every one), and nothing else. No link is followed. The copy
@@ -166,6 +169,12 @@ class Settings(object):
         self.state = os.path.join(self.mirror, STATE)
         self.days = _int(v, "FLEET_DAYS", 0, 100000)
         self.keep_days = _int(v, "FLEET_KEEP_DAYS", 0, 100000)
+        if self.keep_days and (self.days == 0 or self.keep_days < self.days):
+            raise ConfigError(
+                "FLEET_KEEP_DAYS=%d keeps fewer day folders than FLEET_DAYS=%d copies, so every "
+                "pass would copy again what the last one removed: set it to FLEET_DAYS or more "
+                "(FLEET_DAYS=0 copies every day the node holds), or 0 to keep every one"
+                % (self.keep_days, self.days))
         self.interval = _int(v, "FLEET_INTERVAL_S", 5, 86400)
         self.timeout = _int(v, "FLEET_TIMEOUT_S", 30, 86400)
         self.jobs = _int(v, "FLEET_JOBS", 1, 256)
@@ -217,9 +226,11 @@ class Settings(object):
             cmd += ["-i", self.vals["FLEET_SSH_KEY"]]
         cmd += SSH_OPTS
         # The nodes' host keys, and one connection to each node shared by a pass's rsyncs
-        # where the socket's path fits a unix socket (%C is 40 characters).
+        # where the socket's path fits: ssh binds the master at <ControlPath>.<16 random
+        # characters> and then moves it into place, %C is 40 characters, and a unix socket's
+        # path holds 107. A path too long is no fallback: ssh exits 255.
         cmd += ["-o", "UserKnownHostsFile=" + os.path.join(self.state, "known_hosts")]
-        if len(os.path.join(self.state, "cm-")) + 40 <= 100:
+        if len(os.path.join(self.state, "cm-")) + 40 + 17 <= 107:
             cmd += ["-o", "ControlMaster=auto", "-o", "ControlPersist=120",
                     "-o", "ControlPath=" + os.path.join(self.state, "cm-%C")]
         cmd += shlex.split(self.vals["FLEET_SSH_OPTS"])
@@ -447,33 +458,26 @@ class Puller(object):
         os.makedirs(root, mode=0o700, exist_ok=True)
         remote = self.remote(source)
         todo = plan(remote, local_files(root), self.s.days)
-        # A replaced file is fetched as a new one. Its old copy is moved aside until then,
-        # so the new copy cannot be given the inode number the old one frees: the
-        # dashboard knows a file by (st_dev, st_ino), and would take the new file for the
-        # old one, at the old one's offset.
-        aside = []
+        # A replaced file is fetched as a new one. Its old copy is held aside, its inode with
+        # it, until the new copy exists: freed any earlier, that inode number could go to the
+        # new copy, and the dashboard, which knows a file by (st_dev, st_ino), would read the
+        # new file at the old one's offset. A pass that ends first leaves it to a later one.
         for rel in todo["replace"]:
             say("%s: %s is shorter on the node than in the copy: it was replaced there; "
                 "fetching it again" % (self.name, rel))
-            day, name = rel.split("/", 1)
-            p = os.path.join(root, day, ".%s.replaced" % name)
-            os.rename(os.path.join(root, rel), p)
-            aside.append(p)
+            os.rename(os.path.join(root, rel), aside_of(root, rel))
         local = local_files(root)
         behind = sum(remote[r] - local.get(r, 0) for r in todo["append"])
-        try:
-            if todo["append"]:
-                self.copy(source, root, todo["append"], append=True)
-        finally:
-            for p in aside:
-                os.unlink(p)
+        if todo["append"]:
+            self.copy(source, root, todo["append"], append=True)
         if todo["fetch"]:
             self.copy(source, root, todo["fetch"], append=False)
+        release_aside(root)
         sealed = [r for r in todo["seal"] if self.seal(root, r)]
         for r in sealed:
             say("%s: %s sealed: the copy now reads its .gz" % (self.name, r))
         if self.s.keep_days:
-            prune(root, self.s.keep_days, self.name)
+            prune(root, self.s.keep_days, self.name, newest_days(remote, self.s.days))
         return {"files": len(remote), "appended": len(todo["append"]), "bytes": behind,
                 "fetched_gz": len(todo["fetch"]), "sealed": len(sealed),
                 "replaced": len(todo["replace"])}
@@ -536,13 +540,47 @@ def disk_free(path):
     return st.f_bavail * st.f_frsize
 
 
-def prune(root, keep, name):
-    """Remove the copy's day folders past the `keep` newest. Only FLEET_KEEP_DAYS turns
-    this on: the copy may be the only one left of a day the node has since removed."""
+def aside_of(root, rel):
+    """Where a replaced file's old copy waits for its replacement: a name no reader takes
+    for a day-file."""
+    day, name = rel.split("/", 1)
+    return os.path.join(root, day, ".%s.replaced" % name)
+
+
+ASIDE_RE = re.compile(r"^\.([A-Za-z0-9][A-Za-z0-9._@+-]*\.jsonl)\.replaced\Z")
+
+
+def release_aside(root):
+    """Remove the old copies held aside whose file is in the copy again, plain or sealed:
+    the new copy has an inode of its own, so the old one can be freed. One whose file is
+    not there yet stays, and holds its inode, until a later pass fetches the file."""
+    try:
+        days = [d for d in os.listdir(root) if DAY_RE.match(d)]
+    except OSError:
+        return
+    for day in days:
+        d = os.path.join(root, day)
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for n in names:
+            m = ASIDE_RE.match(n)
+            if m and (os.path.isfile(os.path.join(d, m.group(1)))
+                      or os.path.isfile(os.path.join(d, m.group(1) + GZ))):
+                os.unlink(os.path.join(d, n))
+
+
+def prune(root, keep, name, window=()):
+    """Remove the copy's day folders past the `keep` newest, but none in `window`, the days
+    this pass copies. Only FLEET_KEEP_DAYS turns this on: the copy may be the only one left
+    of a day the node has since removed."""
     days = sorted(d for d in os.listdir(root)
                   if DAY_RE.match(d) and os.path.isdir(os.path.join(root, d))
                   and not os.path.islink(os.path.join(root, d)))
     for d in days[:-keep]:
+        if d in window:
+            continue
         shutil.rmtree(os.path.join(root, d))
         say("%s: removed %s (FLEET_KEEP_DAYS=%d)" % (name, os.path.join(root, d), keep))
 

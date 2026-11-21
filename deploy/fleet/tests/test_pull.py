@@ -233,6 +233,55 @@ class TestCopy(Rig):
         self.assertNotEqual(os.stat(self.dst("n1", rel)).st_ino, ino)
         self.assertIn("replaced there", out)
 
+    def test_a_failed_refetch_keeps_the_old_inode_held(self):
+        """A replaced file's old copy is held aside until its replacement exists: freed any
+        earlier, its inode number could go to the replacement, and the dashboard, which
+        knows a file by (st_dev, st_ino), would read that at the old copy's offset."""
+        rel = "2026-11-21/n1.exits.jsonl"
+        self.write("n1", rel, lines(0, 100))
+        self.run_pull()
+        old = os.stat(self.dst("n1", rel)).st_ino
+        self.write("n1", rel, lines(500, 3), mode="wb")
+        os.environ["FAKE_NODES"] = self.nodes
+        self.addCleanup(os.environ.pop, "FAKE_NODES", None)
+        real_say, real_copy = pull.say, pull.Puller.copy
+        pull.say = lambda msg: None
+        self.addCleanup(setattr, pull, "say", real_say)
+        self.addCleanup(setattr, pull.Puller, "copy", real_copy)
+
+        def dropped(self_, source, root, files, append):
+            raise pull.PullError("the link dropped")
+        pull.Puller.copy = dropped
+        p = pull.Puller(pull.load(self.conf), "n1")
+        self.assertFalse(p.pull()["ok"])
+        aside = os.path.join(self.mirror, "ebpf", "n1", "2026-11-21", ".n1.exits.jsonl.replaced")
+        self.assertEqual(os.stat(aside).st_ino, old, "the old inode is still held")
+        self.assertFalse(os.path.exists(self.dst("n1", rel)))
+        pull.Puller.copy = real_copy
+        self.assertTrue(p.pull()["ok"])
+        self.assertEqual(self.read(self.dst("n1", rel)), lines(500, 3))
+        self.assertNotEqual(os.stat(self.dst("n1", rel)).st_ino, old)
+        self.assertFalse(os.path.exists(aside))
+
+    def test_leftovers_of_a_killed_pass_go_once_their_file_is_there(self):
+        """A pass killed between moving a copy aside and removing it leaves `.<name>.replaced`
+        behind: it goes once its file, or that file's sealed .gz, is in the copy."""
+        self.write("n1", "2026-11-21/n1.exits.jsonl", lines(0, 2))
+        self.write("n1", "2026-11-20/n1.exits.jsonl", lines(0, 2))
+        self.seal("n1", "2026-11-20/n1.exits.jsonl")
+        self.run_pull()
+        day = os.path.join(self.mirror, "ebpf", "n1")
+        kept = os.path.join(day, "2026-11-19", ".n1.exits.jsonl.replaced")
+        for p in (os.path.join(day, "2026-11-21", ".n1.exits.jsonl.replaced"),
+                  os.path.join(day, "2026-11-20", ".n1.exits.jsonl.replaced"), kept):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "wb") as fh:
+                fh.write(b"old\n")
+        self.run_pull()
+        self.assertEqual(sorted(n for d in os.listdir(day) for n in os.listdir(os.path.join(day, d))
+                                if n.endswith(".replaced")), [".n1.exits.jsonl.replaced"])
+        self.assertTrue(os.path.exists(kept), "no file of its own yet: still held")
+
     def test_only_the_newest_days(self):
         days = ["2026-11-%02d" % d for d in range(10, 22)]
         for d in days:
@@ -282,11 +331,18 @@ class TestCopy(Rig):
                     self.assertEqual(stat.S_IMODE(os.stat(p).st_mode) & 0o077, 0, p)
 
     def test_keep_days_removes_the_oldest_folders(self):
+        """Retention lowered after a copy built up: the folders past the newest KEEP_DAYS go,
+        and the next pass leaves them gone (the window copies no more than they keep)."""
         days = ["2026-11-%02d" % d for d in range(15, 22)]
         for d in days:
             self.write("n1", "%s/n1.exits.jsonl" % d, lines(0, 2))
-        self.settings(FLEET_KEEP_DAYS="2")
+        self.settings(FLEET_DAYS="0")
         self.run_pull()
+        self.settings(FLEET_DAYS="2", FLEET_KEEP_DAYS="2")
+        self.run_pull()
+        self.assertEqual(sorted(os.listdir(os.path.join(self.mirror, "ebpf", "n1"))), days[-2:])
+        out = self.run_pull()
+        self.assertNotIn("removed", out)
         self.assertEqual(sorted(os.listdir(os.path.join(self.mirror, "ebpf", "n1"))), days[-2:])
 
 
@@ -389,7 +445,10 @@ class TestSettings(unittest.TestCase):
                           ("FLEET_HOSTS=a\nFLEET_DAYS=x\n", "whole number"),
                           ("FLEET_HOSTS=a\nFLEET_EBPF_SOURCE=\n", "eBPF tier"),
                           ("FLEET_HOSTS=a\nFLEET_MIRROR='/a b'\n", "no spaces"),
-                          ("FLEET_HOSTS=a\nnot a setting\n", "KEY=VALUE")):
+                          ("FLEET_HOSTS=a\nnot a setting\n", "KEY=VALUE"),
+                          # the window would copy again what keep-days removes, every pass
+                          ("FLEET_HOSTS=a\nFLEET_KEEP_DAYS=3\n", "FLEET_KEEP_DAYS=3"),
+                          ("FLEET_HOSTS=a\nFLEET_DAYS=0\nFLEET_KEEP_DAYS=3\n", "FLEET_KEEP_DAYS=3")):
             with self.assertRaises(pull.ConfigError) as cm:
                 self.load(text)
             self.assertIn(why, str(cm.exception), text)
@@ -398,6 +457,13 @@ class TestSettings(unittest.TestCase):
         s = self.load("FLEET_HOSTS=a\nFLEET_MIRROR=/var/lib/rc-dashboard/mirror\n")
         self.assertIn("ControlPath=/var/lib/rc-dashboard/mirror/.state/cm-%C", s.ssh())
         s = self.load("FLEET_HOSTS=a\nFLEET_MIRROR=/%s\n" % ("x" * 120))
+        self.assertNotIn("ControlPath", s.ssh())
+        # ssh binds the master at <ControlPath>.<16 random characters>, %C is 40, and a unix
+        # socket's path holds 107: 50 characters of `<state>/cm-` at most
+        s = self.load("FLEET_HOSTS=a\nFLEET_MIRROR=/%s\n" % ("x" * 38))
+        self.assertEqual(len(os.path.join(s.state, "cm-")), 50)
+        self.assertIn("ControlPath", s.ssh())
+        s = self.load("FLEET_HOSTS=a\nFLEET_MIRROR=/%s\n" % ("x" * 39))
         self.assertNotIn("ControlPath", s.ssh())
 
 
