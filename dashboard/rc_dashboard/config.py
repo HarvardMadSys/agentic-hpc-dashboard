@@ -587,6 +587,17 @@ ENV_MAP = {
 HIDDEN = ("anonymize.salt", "server.auth.password_hash", "ask.command", "ask.system_prompt",
           "annotate.api_key", "annotate.command", "annotate.system_prompt")
 
+# The feeds removed once nothing read them -- the scheduler's accounting (sacct,
+# sacctmgr) and the domain and user CSVs -- and every way there was to set one.
+# Each is named in a warning and ignored, never refused, so a unit, a wrapper or
+# a config file written for them still starts (`load`).
+RETIRED_FEEDS = ("sacct", "sacctmgr", "domains", "user_actor")
+RETIRED_ENV = ("RC_DASH_SACCT_DIR", "RC_DASH_SACCT_PATTERN", "RC_DASH_SACCT_MAX_DAYS",
+               "RC_DASH_JOBS_CSV", "RC_DASH_SACCTMGR_DIR", "RC_DASH_DOMAINS_CSV",
+               "RC_DASH_USER_CSV", "RC_JOBS_CSV", "RC_USER_CSV")
+RETIRED_CLI = ("sacct_dir", "jobs_csv")
+RETIRED_WHY = "is retired, with the feed it set, which nothing read; it is ignored"
+
 # CLI dest -> leaf path
 CLI_MAP = {
     "ebpf_root": "feeds.ebpf.roots",
@@ -793,6 +804,14 @@ def load(args=None, config_path=None):
             raise SystemExit("config file %s: %s" % (path, e))
         if not isinstance(filetree, dict):
             raise SystemExit("config file %s: not a JSON object" % path)
+        # dropped, not merged: a retired feed's block would show in /api/config
+        # and in every saved build's fingerprint, while nothing reads it
+        file_feeds = filetree.get("feeds")
+        for name in RETIRED_FEEDS:
+            if isinstance(file_feeds, dict) and name in file_feeds:
+                del file_feeds[name]
+                sys.stderr.write("warning: config file %s: feeds.%s %s\n"
+                                 % (path, name, RETIRED_WHY))
         for w in check_file(filetree, path):
             sys.stderr.write("warning: config file %s: %s; it is ignored\n" % (path, w))
         # relative paths in the file resolve against the repo, absolute stand
@@ -810,6 +829,10 @@ def load(args=None, config_path=None):
             origins[p] = "file:%s" % path
         _deep_merge(tree, filetree)
 
+    for var in RETIRED_ENV:
+        if os.environ.get(var):
+            sys.stderr.write("warning: %s %s\n" % (var, RETIRED_WHY))
+
     for dotted, (var, coerce) in ENV_MAP.items():
         raw = os.environ.get(var)
         if raw:
@@ -821,6 +844,9 @@ def load(args=None, config_path=None):
             origins[dotted] = "env:%s" % var
 
     if args is not None:
+        for dest in RETIRED_CLI:
+            if getattr(args, dest, None) is not None:
+                sys.stderr.write("warning: --%s %s\n" % (dest.replace("_", "-"), RETIRED_WHY))
         for dest, dotted in CLI_MAP.items():
             val = getattr(args, dest, None)
             if val is None or val == []:
