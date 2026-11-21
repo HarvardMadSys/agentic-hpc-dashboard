@@ -367,6 +367,9 @@ class RollupStore:
             bk["today"] = bk["today"] or d == today
             d += datetime.timedelta(days=1)
         with self._connect() as db:
+            # one snapshot for every query below: a write landing between two of
+            # them (the flush, the `rollup` command) must not split a day in two
+            db.execute("BEGIN")
             # A day not yet whole is measured to now, not to its last write: a
             # quiet stretch writes nothing, and its minutes go on all the same.
             for row in db.execute(
@@ -426,6 +429,7 @@ class RollupStore:
             summary = db.execute(
                 "SELECT COUNT(*), MIN(date), MAX(date), SUM(complete), MAX(written_at) "
                 "FROM day").fetchone()
+            db.execute("COMMIT")
         out = []
         for bk in buckets.values():
             have = bk["data_days"] > 0

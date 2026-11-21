@@ -351,6 +351,41 @@ class TrendTest(Case):
         (b,) = store.trend(1, "day", mon, now=a + 12 * 3600)["buckets"]
         self.assertEqual((b["minutes"], b["held"]), (720, 1))
 
+    def test_a_trend_is_read_from_one_snapshot(self):
+        # another writer commits between the trend's first query and the rest
+        path = os.path.join(self.tmp, "t", rollup.FILE)
+        served, other = rollup.RollupStore(path), rollup.RollupStore(path)
+        mon = datetime.date(2026, 11, 2)
+        served.write([self.snap(mon, ["alice"])])
+        real = served._connect
+
+        class Racing:
+            def __init__(self, db):
+                self.db, self.raced = db, False
+
+            def __getattr__(self, name):
+                return getattr(self.db, name)
+
+            def execute(self, sql, *a):
+                cur = self.db.execute(sql, *a)
+                if not self.raced and "FROM day WHERE" in sql:
+                    rows = cur.fetchall()
+                    self.raced = True
+                    other.write([self_.snap(mon, ["alice", "bob", "carol"])])
+                    return iter(rows)
+                return cur
+
+        self_ = self
+
+        def connect():
+            tx = real()
+            tx.db = Racing(tx.db)
+            return tx
+        # the cache stamp is read through `_connect` too: race only the trend's
+        with mock.patch.object(served, "_connect", side_effect=[real(), connect()]):
+            (b,) = served.trend(1, "day", mon, now=rollup.midnight(mon) + 2 * DAY_S)["buckets"]
+        self.assertEqual((b["records"], b["by_class"]["agent"]["n"], b["users"]), (1, 1, 1))
+
     def test_a_table_of_another_format_is_refused(self):
         path = os.path.join(self.tmp, "t", rollup.FILE)
         rollup.RollupStore(path)
