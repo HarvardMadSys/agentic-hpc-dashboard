@@ -1125,9 +1125,9 @@ refusals, the environment and the directory, and `tests/test_guard.py` the route
 ## Network endpoints
 
 The Network bytes panel, in the I/O section of the Resources tab (under *Login nodes* in the
-rail), lists beside its bars the ten remote endpoints the processes made the most send and
-receive calls to. A switch ranks them by bytes sent and received instead. Each row splits its
-calls or bytes by class, and the list follows the who filter and the class choice like the bars.
+rail), lists beside its per-class table the ten remote endpoints the processes made the most send
+and receive calls to. A switch ranks them by bytes sent and received instead. Each row splits its
+calls or bytes by class, and the list follows the who filter and the class choice like the table.
 It is counted from the collector's `net_endpoints` block (schema 7) as each process exited, so a
 capture from an older collector shows no list. Demo mode turns the lookups below off, so its
 made-up endpoints keep the host names its records give.
@@ -1147,7 +1147,7 @@ made-up endpoints keep the host names its records give.
 - **Exact for any mix of classes.** The service sends the top ten by calls and by bytes for
   every mix of classes, so the page can rank the classes it shows and still hold their whole top
   ten.
-- **What it cannot show is said.** The note under the list gives the share of the bars' bytes
+- **What it cannot show is said.** The note under the list gives the share of the table's bytes
   whose endpoint is known, the bytes a block held with no address, and the processes that moved
   bytes with no endpoint block at all.
 - **A restart, not a rebuild.** `server.rdns.enabled` (`RC_DASH_RDNS`, on by default) turns the
