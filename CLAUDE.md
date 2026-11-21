@@ -24,8 +24,8 @@ Two halves, coupled only by files on disk:
   React page (`dashboard/web`, Vite + TypeScript, built into `web/dist/`, which the service
   serves).
 
-Around them: `fleet/` streams each node's files to the dashboard's host over ssh;
-`deploy/fleet` deploys the live service from one `site.env`; `deploy/cloudflare` is the public
+Around them: `hpc/fleet/` streams each node's files to the dashboard's host over ssh;
+`hpc/deploy` deploys the live service from one `site.env`; `deploy/cloudflare` is the public
 demo; `docker/` holds the base, collector and demo images; `packaging/rpm/` the EL8 RPM.
 `docs/README.md` indexes the cross-cutting documents.
 
@@ -35,8 +35,8 @@ From the repository root; CI (`.github/workflows/ci.yml`) runs the same suites.
 
 ```bash
 python3 -m unittest discover -s collector/tests -q        # no root, no BPF needed
-python3 -m unittest discover -s fleet/tests -q
-python3 -m unittest discover -s deploy/fleet/tests -q
+python3 -m unittest discover -s hpc/fleet/tests -q
+python3 -m unittest discover -s hpc/deploy/tests -q
 (cd dashboard && uv sync --frozen && uv run --no-sync python -m unittest discover -s tests -q)   # ~3 min
 (cd dashboard/web && npm ci && npm run typecheck && npm run check && npm run build)
 ```
@@ -119,7 +119,7 @@ Research-integrity constraints, each a past mistake (root `README.md`):
 
 - **Python 3.6** for all of `collector/` (the Python inside `ebpfm.sh` included) and the fleet
   sender. CI's EL8 job checks it on EL8's own 3.6: the collector's tests, and
-  `python3 -m py_compile fleet/fleet_stream.py fleet/seed_mirror.py`. A newer Python accepts
+  `python3 -m py_compile hpc/fleet/fleet_stream.py hpc/fleet/seed_mirror.py`. A newer Python accepts
   syntax 3.6 rejects, so a local run on one does not catch a break. The dashboard needs 3.11
   or later.
 - **Vendored copies**: `collector/node_snapshot.py` and `collector/lib/{procparse,agent_classify,provider_cidrs,slurm_args}.py`

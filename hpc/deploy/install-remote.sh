@@ -74,6 +74,17 @@ mv -T "$R/current.new" "$R/current"
 install -m 600 "$inc/stream.json" "$R/etc/stream.json"
 install -m 600 "$inc/dashboard.config.json" "$R/etc/dashboard.config.json"
 [ -e "$R/etc/auth.env" ] || install -m 600 /dev/null "$R/etc/auth.env"
+# The session's windows run the kit's scripts by the path the unit named, through
+# `current`. A release whose kit is in another folder (deploy/fleet became hpc/deploy)
+# has no such path, so a window whose process ended could not start it again, and the
+# hourly check's respawn would fail the same way: a unit whose ExecStart changed
+# restarts the session.
+unit=$HOME/.config/systemd/user/rc-tmux.service
+if [ -e "$unit" ] && [ "$(grep '^ExecStart=' "$unit" || true)" != \
+     "$(grep '^ExecStart=' "$inc/rc-tmux.service" || true)" ]; then
+  echo "the unit's ExecStart changed (the kit moved): restarting the session"
+  restart=1
+fi
 install -m 600 "$inc/rc-tmux.service" "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
 systemctl --user enable rc-tmux.service >/dev/null 2>&1 || true

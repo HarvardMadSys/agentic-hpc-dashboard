@@ -12,6 +12,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 KIT = os.path.dirname(HERE)
 REPO = os.path.dirname(os.path.dirname(KIT))
 KIT_REL = os.path.relpath(KIT, REPO)
+# The fleet stream is the kit's sibling (hpc/fleet beside hpc/deploy), as deploy.sh has it.
+STREAM_REL = os.path.relpath(os.path.join(os.path.dirname(KIT), "fleet"), REPO)
 RENDER = os.path.join(KIT, "render.py")
 EXAMPLE = os.path.join(KIT, "site.env.example")
 OVERRIDES = ["SOURCE_USER=alice", "SOURCE_NODES=node01 node02 node03",
@@ -91,7 +93,15 @@ class TestRender(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(REPO, KIT_REL, "tmux-session.sh")))
         self.assertEqual(re.search(r"^KIT=(\S+)$", read("check.sh"), re.M).group(1), KIT_REL)
         self.assertIn('kit=${here#"$repo"/}', read("deploy.sh"))
-        self.assertIn('fleet "$kit" > "$work/release.tar"', read("deploy.sh"))
+        self.assertIn('stream=$(dirname "$kit")/fleet', read("deploy.sh"))
+        self.assertIn('"$stream" "$kit" > "$work/release.tar"', read("deploy.sh"))
+
+    def test_the_stream_is_where_the_release_and_the_loop_look(self):
+        """deploy.sh archives the stream from the kit's sibling folder, and the stream's
+        loop runs it from there in the release: a move of either breaks the other."""
+        self.assertTrue(os.path.exists(os.path.join(REPO, STREAM_REL, "fleet_stream.py")))
+        self.assertIn('"release/$stream/fleet_stream.py"', read("deploy.sh"))
+        self.assertIn('"$R/current/%s/fleet_stream.py"' % STREAM_REL, read("keep-running.sh"))
 
     def test_caps_live_in_the_loop(self):
         """The stream and the dashboard run in scopes keep-running.sh starts: their caps,
@@ -341,7 +351,7 @@ class TestNoSiteInTheKit(unittest.TestCase):
 
     def tracked(self):
         files = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard",
-                                KIT_REL, "fleet"],
+                                KIT_REL, STREAM_REL],
                                cwd=REPO, stdout=subprocess.PIPE, universal_newlines=True).stdout.split()
         self.assertTrue(files)
         for f in files:

@@ -59,7 +59,7 @@ flowchart TB
    be running for it to start.
 3. **The dashboard**, `rc_dashboard` ([`dashboard/`](dashboard/README.md)), reads those
    folders wherever they are: on the node itself, on a shared mount, or in the copy the
-   [fleet stream](fleet/README.md) keeps on the dashboard's host. It reduces each record once
+   [fleet stream](hpc/fleet/README.md) keeps on the dashboard's host. It reduces each record once
    into its hour, keeps rolling aggregates for whichever window you pick, keeps every sealed
    day as Parquet too for fast selective reads, and pushes updates to the page over a
    WebSocket.
@@ -178,11 +178,11 @@ refuses to start without a password, since on a login node every user can reach 
 
 ### Run it live across a fleet
 
-[`deploy/fleet`](deploy/fleet/README.md) runs the dashboard on a host of your own, fed live by
+[`hpc/deploy`](hpc/deploy/README.md) runs the dashboard on a host of your own, fed live by
 every login node: one ssh connection per node carries its day-files into a private copy on
-that host ([`fleet/`](fleet/README.md)), and the dashboard serves the copy on 127.0.0.1,
-behind a password. Everything is set in one file, `deploy/fleet/site.env`;
-`deploy/fleet/deploy.sh` installs and upgrades it, and `deploy/fleet/check.sh` checks it every
+that host ([`hpc/fleet/`](hpc/fleet/README.md)), and the dashboard serves the copy on 127.0.0.1,
+behind a password. Everything is set in one file, `hpc/deploy/site.env`;
+`hpc/deploy/deploy.sh` installs and upgrades it, and `hpc/deploy/check.sh` checks it every
 hour from cron. No machine needs root for any of it.
 
 ## Configuration
@@ -236,8 +236,8 @@ The records name real users and show what they ran, so both halves keep them clo
 |---|---|
 | [`collector/`](collector/) | `ebpfm`, the login-node collector, behind one entry point, `ebpfm.sh`; standalone, on Python 3.6 |
 | [`dashboard/`](dashboard/) | `rc_dashboard`, the service; [`web/`](dashboard/web/), the page (React, Vite, TypeScript); [`bench/`](dashboard/bench/), tools that measure it; [`risk-profiles/`](dashboard/risk-profiles/), what counts as risky on each cluster |
-| [`fleet/`](fleet/) | the fleet stream: each node's day-files, carried to the dashboard's host over ssh |
-| [`deploy/fleet/`](deploy/fleet/) | the kit that runs the dashboard live on a host of your own |
+| [`hpc/fleet/`](hpc/fleet/) | the fleet stream: each node's day-files, carried to the dashboard's host over ssh |
+| [`hpc/deploy/`](hpc/deploy/) | the kit that runs the dashboard live on a host of your own |
 | [`deploy/cloudflare/`](deploy/cloudflare/) | the public demo: a Cloudflare Worker in front of a container running the demo |
 | [`docker/`](docker/) | three images: a Rocky 8.10 base, the collector, the demo |
 | [`packaging/rpm/`](packaging/rpm/) | the collector's RPM for EL8 |
@@ -262,8 +262,8 @@ The records name real users and show what they ran, so both halves keep them clo
 | [`docs/feed-parquet/README.md`](docs/feed-parquet/README.md) | the feed as typed Parquet tables: the dashboard's history store, and a dataset for analysis |
 | [`docs/feed-format-v9/README.md`](docs/feed-format-v9/README.md) | a proposed feed schema 9, not implemented, with a prototype that measures it |
 | [`docs/plans/`](docs/plans/) | implementation plans, kept as the record of how the work was done |
-| [`fleet/README.md`](fleet/README.md) | the fleet stream's three programs, and what each is for |
-| [`deploy/fleet/README.md`](deploy/fleet/README.md) | the live deployment: the settings file, the first deploy, memory and disk, upgrades, and the hourly check |
+| [`hpc/fleet/README.md`](hpc/fleet/README.md) | the fleet stream's three programs, and what each is for |
+| [`hpc/deploy/README.md`](hpc/deploy/README.md) | the live deployment: the settings file, the first deploy, memory and disk, upgrades, and the hourly check |
 | [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) | the public demo: deploying it, its password, and deploying from GitHub |
 | [`docs/logo/README.md`](docs/logo/README.md) | the mark and the lockups |
 | [`CLAUDE.md`](CLAUDE.md) | for Claude Code sessions, and a short guide for anyone: where pull requests go, the commands, the dashboard's architecture in brief, and the constraints that bite |
@@ -290,8 +290,8 @@ every pull request ([`ci.yml`](.github/workflows/ci.yml)):
 
 ```bash
 python3 -m unittest discover -s collector/tests -q        # the collector
-python3 -m unittest discover -s fleet/tests -q            # the fleet stream, over a fake collector
-python3 -m unittest discover -s deploy/fleet/tests -q     # the deploy kit, with stand-ins for systemd, tmux and ssh
+python3 -m unittest discover -s hpc/fleet/tests -q        # the fleet stream, over a fake collector
+python3 -m unittest discover -s hpc/deploy/tests -q       # the deploy kit, with stand-ins for systemd, tmux and ssh
 (cd dashboard && uv sync --frozen && uv run --no-sync python -m unittest discover -s tests -q)   # the service, a few minutes
 (cd dashboard/web && npm ci && npm run typecheck && npm run check && npm run build)            # the page
 ```

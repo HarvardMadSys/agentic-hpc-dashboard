@@ -1,5 +1,5 @@
 #!/bin/bash
-# ship-sender.sh SHA FILE: put FILE (a release's fleet/fleet_stream.py) on the source
+# ship-sender.sh SHA FILE: put FILE (a release's hpc/fleet/fleet_stream.py) on the source
 # nodes as SENDER_DIR/SHA/fleet_stream.py, and move SENDER_DIR/current to it, with
 # install-sender.sh run on each node. deploy.sh runs it before it ships the release, so
 # the nodes never run an older sender than the receiver expects.
