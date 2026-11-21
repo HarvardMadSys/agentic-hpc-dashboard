@@ -174,8 +174,11 @@ They are research-integrity constraints; breaking one is a reporting error, not 
 3. **Colour** — Harvard palette, light only, tokens copied from the archived template.
    Crimson `#A51C30` (`--s1`) is `agent`'s among the classes; outside them, the `poll` purpose
    (`src/lib/purposes.ts`) and the `wait` phase (`src/lib/phases.ts`) wear it too. Eight series slots plus one grey
-   tail (`--sg`); the purpose table in `src/lib/purposes.ts` folds everything outside its
-   eight slots into `other` rather than inventing a ninth hue. A series that is not a
+   tail (`--sg`); the purpose table in `src/lib/purposes.ts` draws the service's purposes as
+   four kinds (poll / introspection, slurm, build & compute, files & data) in four of those
+   slots, and folds everything else (git, the agent's runtime, editors, ...) into the grey
+   `other` rather than inventing a hue. A run, a process and a tooltip still name the
+   purpose itself; only the swatch is its kind's. A series that is not a
    class — a tool, or a direction such as sent and received — takes its hue from
    `TOOL_COL` (`src/charts/TimeChart.tsx`), never a class's.
 4. **Zero is not missing** — `_present === false` renders the shared `<EmptyState>`:
@@ -481,6 +484,6 @@ old links wrote it). Search & export's own: `from`, `to`, `host`, `tool`, `purpo
   `io_process`, `resources`, `sandbox`, `cascades`, `node`, `trend`, `risk` and `slurm`) are
   ignored rather than shown generically; Sessions reads `/api/trajectories`, not the panels'
   `trajectories`.
-- The `purposes` list returned by `/api/panels` is not consulted — the eight-slot colour
-  table is fixed in `src/lib/purposes.ts` so the palette cannot grow a ninth hue at
-  runtime. A new purpose folds into the grey `other`.
+- The `purposes` list returned by `/api/panels` is not consulted — the colour table of
+  four kinds and the grey tail is fixed in `src/lib/purposes.ts` so the palette cannot grow
+  a hue at runtime. A new purpose folds into the grey `other` until the table names its kind.

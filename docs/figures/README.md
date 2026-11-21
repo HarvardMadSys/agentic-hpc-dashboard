@@ -1143,6 +1143,9 @@ and for how the page draws them
   least certain was attributed: said only where there is more than one, or the least certain was placed
   by a weaker rule than the agent itself or an ancestor), sandbox and approval. At the head of its
   Processes part, its purpose ribbon and tool tokens, each run opening the tree at its first record.
+  A run is coloured by its purpose's kind (`src/lib/purposes.ts`: poll / introspection, slurm,
+  build & compute, files & data, and a grey `other` for git, the agent's runtime, editors and the
+  rest) and named as its purpose; the key under them is the five kinds.
 - **Computation:** SE-2's row (`tool_rle` cut to 60 runs, `purpose_rle` to 80, with their start
   times). The inspector's own copy is made under the lock by `_inspect`, whose `lookup` folds only
   the keys sharing the row's prefix when the window's fold is stale; the agent's other days come
@@ -1167,7 +1170,8 @@ and for how the page draws them
 #### SE-7 inspector: navigator
 
 - **Shows:** the session's whole span with the stretch this read covers; process starts per time bin
-  stacked by purpose on the read's axis, with the task lane above and the phases tinted behind; the
+  stacked by the kind of their purpose (as SE-4 colours it) on the read's axis, with the task lane
+  above and the phases tinted behind; the
   agent's housekeeping as ticks; failures as ticks; quick jumps to the busiest minute, the first tool
   call, the longest process and each failure.
 - **Records:** every record the read matched, drawn or only counted: start (`_ts_epoch` less

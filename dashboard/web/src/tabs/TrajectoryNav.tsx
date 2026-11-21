@@ -96,13 +96,12 @@ import {
   zoomTip,
 } from '../lib/phases';
 import type { LegendEntry, Level } from '../lib/phases';
-import { PURP, pcol, plbl } from '../lib/purposes';
+import { KINDS, klbl, pcol, pkind } from '../lib/purposes';
+import type { PurposeKind } from '../lib/purposes';
 import { TASKS_BASIS, laneClause, taskAtX, taskBlocks, taskTip } from '../lib/tasks';
 
-/** Purposes outside the eight colour slots stack as one `other`, as they are coloured. */
-const SLOT = new Set(PURP.map(([k]) => k));
-const ORDER = PURP.map(([k]) => k);
-const slotOf = (p: string) => (SLOT.has(p) ? p : 'other');
+/** Purposes stack by the kind they are coloured as (lib/purposes.ts), so a bar has a segment per swatch. */
+const ORDER: PurposeKind[] = KINDS.map(([k]) => k);
 
 /** Tick steps, seconds: a label every ~100 px. */
 const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
@@ -128,17 +127,17 @@ const BIN_W = 1120;
 
 /** Served bins regrouped into display bins at least ~3 px wide across `w` px,
  *  a whole number of served bins each, so a display bin is still a count of
- *  starts over a stated width; stacked by purpose slot. */
+ *  starts over a stated width; stacked by the kind of purpose they are coloured as. */
 function regroup(den: NonNullable<TrajNav['density']>, purposes: string[], v0: number, v1: number, w: number) {
   const k = Math.max(1, Math.ceil(Math.max(v1 - v0, 1e-6) / den.w / (w / 3)));
   const dw = den.w * k;
-  const per = new Map<number, Map<string, number>>();
+  const per = new Map<number, Map<PurposeKind, number>>();
   for (const [i, p, c] of den.bins) {
     const t = den.lo + i * den.w;
     if (t + den.w < v0 || t > v1) continue;
     const j = Math.floor(i / k);
-    const m = per.get(j) ?? new Map<string, number>();
-    const key = slotOf(purposes[p] ?? 'other');
+    const m = per.get(j) ?? new Map<PurposeKind, number>();
+    const key = pkind(purposes[p]);
     m.set(key, (m.get(key) ?? 0) + c);
     per.set(j, m);
   }
@@ -814,7 +813,7 @@ function Strip({
             const c = m.get(key);
             if (c) {
               n += c;
-              by.push(`${plbl(key)} ${fint(c)}`);
+              by.push(`${klbl(key)} ${fint(c)}`);
             }
           }
         }
