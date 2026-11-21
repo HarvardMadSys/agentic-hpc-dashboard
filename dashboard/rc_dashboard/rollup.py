@@ -57,6 +57,7 @@ import sqlite3
 import sys
 import threading
 import time
+import zlib
 
 FORMAT = 1
 FILE = "rollup.sqlite"
@@ -493,14 +494,6 @@ class Rollup:
                         snaps.append(day.snapshot(now, complete))
                         done.append((day, complete))
                         day.dirty = False
-                # a day retention behind, written, is let go; what lands on it
-                # later is counted, not summed
-                keep_from = now - self.retention_s
-                for date, day in list(self.acc.days.items()):
-                    if day.day_to < keep_from and not day.dirty and \
-                            (day.written_complete or day.day_from < self.covered_from):
-                        del self.acc.days[date]
-                        self.acc.floor = max(self.acc.floor or 0, day.day_to)
             try:
                 # a cut day only where the table has no better copy of it
                 cuts = [s["date"] for s, (day, _c) in zip(snaps, done)
@@ -518,9 +511,20 @@ class Rollup:
                         day.dirty = True        # tried again at the next flush
                 self.error = "%s: %s" % (type(e).__name__, e)
                 return 0
-            for day, complete in done:
-                if complete:
-                    day.written_complete = True
+            with lock:
+                for day, complete in done:
+                    if complete:
+                        day.written_complete = True
+                # A day retention behind, written, is let go -- only now that its
+                # write went through: let go before, a failed write would leave
+                # its newest records in a Day nothing holds. What lands on it
+                # later is counted, not summed.
+                keep_from = now - self.retention_s
+                for date, day in list(self.acc.days.items()):
+                    if day.day_to < keep_from and not day.dirty and \
+                            (day.written_complete or day.day_from < self.covered_from):
+                        del self.acc.days[date]
+                        self.acc.floor = max(self.acc.floor or 0, day.day_to)
             self.error = None
             self.written += n
             self.flushed_at = now
@@ -600,6 +604,15 @@ def build_from_files(cfg, days=365, force=False, out=sys.stderr):
     acc = Accumulator()
     written = 0
     read_dirs = set()
+    # dirs with a day-file that could not be read whole: a day whose records
+    # could be in one is written, but never as complete, so a later run reads
+    # it again
+    failed = set()
+
+    def whole(date):
+        x = datetime.date.fromisoformat(date)
+        return not any((x + datetime.timedelta(days=k)).isoformat() in failed
+                       for k in (-1, 0, 1))
 
     def ready(date):
         x = datetime.date.fromisoformat(date)
@@ -612,35 +625,37 @@ def build_from_files(cfg, days=365, force=False, out=sys.stderr):
         snaps = []
         for date in sorted(acc.days):
             if date in want and (final or ready(date)):
-                snaps.append(acc.days.pop(date).snapshot(now, True))
+                snaps.append(acc.days.pop(date).snapshot(now, whole(date)))
             elif date not in want and (final or ready(date)):
                 acc.days.pop(date)
         written += store.write(snaps, source="files", now=now)
         for s in snaps:
-            print("rollup: %s  %d records, %d of %d minutes held"
-                  % (s["date"], s["records"], s["held"], s["minutes"]), file=out)
+            print("rollup: %s  %d records, %d of %d minutes held%s"
+                  % (s["date"], s["records"], s["held"], s["minutes"],
+                     "" if s["complete"] else ", partial: a day-file near it was not read whole"),
+                  file=out)
 
     for date in dirs:
         t0 = time.monotonic()
         n = 0
         for path in sorted(by_date[date]):
             try:
-                fh = open_feed(path)
-            except OSError as e:
+                with open_feed(path) as fh:
+                    for line in fh:
+                        if b'"exit"' not in line and b'"submit"' not in line:
+                            continue
+                        try:
+                            raw = fastjson.record(line)
+                        except ValueError:
+                            continue
+                        rec = norm.normalize(raw)
+                        if rec is not None:
+                            acc.feed(rec)
+                            n += 1
+            except (OSError, EOFError, zlib.error) as e:
+                # unreadable, or a .gz cut short or damaged part way
                 print("rollup: %s: %s" % (path, e), file=out)
-                continue
-            with fh:
-                for line in fh:
-                    if b'"exit"' not in line and b'"submit"' not in line:
-                        continue
-                    try:
-                        raw = fastjson.record(line)
-                    except ValueError:
-                        continue
-                    rec = norm.normalize(raw)
-                    if rec is not None:
-                        acc.feed(rec)
-                        n += 1
+                failed.add(date)
         read_dirs.add(date)
         print("rollup: read %s, %d records in %.0f s" % (date, n, time.monotonic() - t0),
               file=out)

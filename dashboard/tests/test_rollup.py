@@ -30,6 +30,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard import config as configmod      # noqa: E402
+from rc_dashboard import gz as gzmod              # noqa: E402
 from rc_dashboard import rollup                   # noqa: E402
 from rc_dashboard.aggregator import Aggregator     # noqa: E402
 
@@ -211,6 +212,25 @@ class IngestTest(Case):
         self.assertEqual(days[d2], 5)
         self.assertIn((d2, "dave", "agent", "claude_code", 1, 0.5, 0), self.rows(agg)["user"])
 
+    def test_a_failed_write_of_a_day_retention_behind_is_tried_again(self):
+        # A late record lands on a written day that is past retention by the
+        # flush that writes it again. That write fails: the day must still be
+        # held, and written at the next flush, never let go with its record.
+        self.feed()
+        agg = self.run_service(self.cfg())
+        d4 = date_of(self.today - 4 * DAY_S)
+        self.write([exit_rec(self.today - 4 * DAY_S + 20 * 3600, 5001, user="dave")])
+        agg.poll_once()
+        later = self.now + 10 * DAY_S              # day -4 is retention behind
+        with mock.patch.object(agg.rollup.store, "write", side_effect=OSError("disk full")):
+            self.assertEqual(agg.rollup.flush(agg.lock, now=later, force=True), 0)
+        self.assertIn(d4, agg.rollup.acc.days)
+        self.assertEqual(agg.rollup.status(agg.lock)["state"], "error")
+        agg.rollup.flush(agg.lock, now=later, force=True)
+        days = {d: recs for d, _h, recs, _c in self.rows(agg)["day"]}
+        self.assertEqual(days[d4], 5)
+        self.assertNotIn(d4, agg.rollup.acc.days)   # let go once written
+
     def test_a_day_the_read_began_inside_never_replaces_the_whole_copy(self):
         self.feed(spread=True)
         whole = self.rows(self.run_service(self.cfg()))
@@ -323,6 +343,32 @@ class FromFilesTest(Case):
         # and a second run reads nothing it holds whole
         with open(os.devnull, "w") as quiet:
             self.assertEqual(rollup.build_from_files(cfg, days=30, out=quiet), 0)
+
+    def test_a_day_file_that_cannot_be_read_leaves_its_days_partial(self):
+        self.feed()
+        d3 = date_of(self.today - 3 * DAY_S)
+        self.write([exit_rec(self.today - 3 * DAY_S + 15 * 3600, 6000, host="h2")], host="h2")
+        bad = os.path.join(self.root, d3, "h2.exits.jsonl")
+        cfg = self.cfg(cache="by-hand")
+        real = gzmod.open_feed
+
+        def refuse(path, *a, **k):
+            if path == bad:
+                raise PermissionError(13, "Permission denied", path)
+            return real(path, *a, **k)
+        with open(os.devnull, "w") as quiet, \
+                mock.patch("rc_dashboard.gz.open_feed", side_effect=refuse):
+            rollup.build_from_files(cfg, days=30, out=quiet)
+        days = {d: (recs, done) for d, _h, recs, done in self.rows(rollup.path_of(cfg))["day"]}
+        # the dir it is in, and the days either side whose records could be in it
+        for back in (4, 3, 2):
+            self.assertEqual(days[date_of(self.today - back * DAY_S)][1], 0, back)
+        self.assertEqual(days[d3][0], 5)
+        # readable again, the next run reads those days again, whole
+        with open(os.devnull, "w") as quiet:
+            self.assertEqual(rollup.build_from_files(cfg, days=30, out=quiet), 3)
+        days = {d: (recs, done) for d, _h, recs, done in self.rows(rollup.path_of(cfg))["day"]}
+        self.assertEqual(days[d3], (6, 1))
 
 
 class ConfigTest(unittest.TestCase):
