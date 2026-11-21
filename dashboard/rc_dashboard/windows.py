@@ -275,8 +275,8 @@ class ViewFilter:
         "per-class residency ticks, which carry no user or agent type, so a "
         "filtered view has none",
         "login nodes right now: a host-wide snapshot",
-        "the live tier (the Live tab's plates and per-minute rate, and the live "
-        "tiles on Overview): one shared rolling count by class",
+        "the live tier (the Live tab's rate chart): one shared rolling count "
+        "by class",
     )
 
     def __init__(self, users=(), agent_types=()):

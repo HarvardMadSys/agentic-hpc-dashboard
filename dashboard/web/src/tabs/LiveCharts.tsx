@@ -1,4 +1,6 @@
-/* Every time series of the window, on Live (roadmap note 23).
+/* Every time series of the window, on Login nodes › Resources, under Login
+ * node health. They were Live's (roadmap note 23) until Live was cut to what
+ * is live: the process exits' rate chart is the one series it keeps.
  *
  * Two stay open, the ones an operator watches: CPU and memory. Each class's
  * share of the processes and of the CPU is said once, over the window, by Who

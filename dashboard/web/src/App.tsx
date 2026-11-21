@@ -190,7 +190,7 @@ export default function App() {
   // with every live frame. `setUrl` itself is stable (useUrlState).
   // Opening a tab, a session or a user's sessions is navigation: back returns.
   const goto = useCallback((t: string) => setUrl({ tab: t }, true), [setUrl]);
-  const goLive = useCallback(() => setUrl({ tab: 'live' }, true), [setUrl]);
+  const goResources = useCallback(() => setUrl({ tab: 'resources' }, true), [setUrl]);
   const openTraj = useCallback(
     (sid: string) => setUrl({ tab: 'trajectories', traj: sid, tfrom: null, tuser: null }, true),
     [setUrl],
@@ -551,7 +551,7 @@ export default function App() {
           />
         );
       case 'slurm':
-        return <SlurmTab P={P} live={live.live} cls={cls} goLive={goLive} />;
+        return <SlurmTab P={P} live={live.live} cls={cls} goResources={goResources} />;
       case 'agents':
         return <AgentsTab P={P} cls={cls} />;
       case 'feeds':

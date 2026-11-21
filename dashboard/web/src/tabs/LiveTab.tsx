@@ -20,7 +20,6 @@ import { pcol } from '../lib/purposes';
 import { ActiveUsers } from './LiveUsers';
 import { ByUser, distinct } from '../components/ByUser';
 import { WindowPlates } from '../components/WindowPlates';
-import { WindowCharts } from './LiveCharts';
 import { DayByDay } from './DayByDay';
 import { Attention } from './Attention';
 import { SortTh } from '../components/SortTh';
@@ -165,7 +164,7 @@ export const LiveTab = memo(function LiveTab({
   whoUses,
 }: {
   live: LiveState;
-  /** the window's reduced panels: the "last 24h" plates and every time series */
+  /** the window's reduced panels: the plates, Needs attention, Who uses what */
   P: Panels;
   traj: Trajectories | null;
   cls: Cls[];
@@ -383,8 +382,6 @@ export const LiveTab = memo(function LiveTab({
 
         {/* the same question over days: every day the service holds */}
         <DayByDay P={P} cls={cls} who={who ?? null} />
-
-        <WindowCharts P={P} cls={cls} />
 
         <ActiveUsers
           U={U}

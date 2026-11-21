@@ -24,6 +24,7 @@ import { DASH, dur, fint, fmt, mb, notMeasured, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
 import { InstanceTable, RiskIoTab } from './RiskIoTab';
 import { NodeHealth } from './NodeHealth';
+import { WindowCharts } from './LiveCharts';
 import type { ResourceInstance } from '../api/types';
 import type { Panels } from '../lib/panels';
 
@@ -332,6 +333,14 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', 
         <div className="grid wide">
           <NodeHealth P={P} live={live} />
         </div>
+        {/* then the window over time, on one zoom: CPU and memory, how
+            quickly the nodes answered, and every other series behind one
+            picker (they were Live's, roadmap note 23, until Live was cut to
+            what is live) */}
+        <div className="grid-gap" />
+        <div className="grid wide">
+          <WindowCharts P={P} cls={cls} />
+        </div>
         <div className="grid-gap" />
         <div className="grid wide">
           <WorstPanel r={r} />
@@ -339,8 +348,8 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', 
 
         {/* I/O is a resource (roadmap notes 41 and 42): who moved the bytes,
             by tool and by user, and where the network bytes went. Its tiles
-            became rows of Who uses what, and its time series are on Live's
-            picker. */}
+            became rows of Who uses what, and its time series are in More
+            over time's picker, above. */}
         <div className="grid-gap" />
         <RiskIoTab P={P} cls={cls} part="io" plates={false} io="main" />
       </>
