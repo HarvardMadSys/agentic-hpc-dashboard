@@ -21,8 +21,8 @@
   <a href="#how-it-works">How it works</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#configuration">Configuration</a> ·
-  <a href="#data-and-privacy">Data and privacy</a> ·
-  <a href="#documentation-map">Documentation</a> ·
+  <a href="#data-and-privacy">Privacy</a> ·
+  <a href="#documentation-map">Docs</a> ·
   <a href="#development">Development</a>
 </p>
 
@@ -38,16 +38,14 @@ not measured says *not measured*.
 
 ```mermaid
 flowchart TB
-    subgraph login["on each login node"]
-        direction LR
-        ebpf["eBPF tier, as root:<br/>every process, as it exits"]
-        nodetier["node tier, as any user:<br/>node health, every 5 minutes"]
-    end
-    files[("JSONL day-files,<br/>one folder per day")]
-    svc["rc_dashboard, on the dashboard's host:<br/>aggregates over any window,<br/>sealed days kept as Parquet"]
-    page["Agent Observatory,<br/>in your browser"]
-    login --> files
-    files -->|"read in place, from a shared mount,<br/>or streamed over ssh by fleet/"| svc
+    ebpf["eBPF tier (root)<br/>each process, at exit"]
+    nodetier["node tier (any user)<br/>node health, every 5 min"]
+    files[("JSONL day-files<br/>on each login node")]
+    svc["rc_dashboard<br/>on the dashboard's host"]
+    page["Agent Observatory<br/>in your browser"]
+    ebpf --> files
+    nodetier --> files
+    files -->|"read in place,<br/>or streamed by fleet/"| svc
     svc -->|"HTTP and WebSocket,<br/>behind a password"| page
 ```
 
