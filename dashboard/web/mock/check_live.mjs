@@ -317,6 +317,6 @@ test("the header's refresh, and the palette's, reload the panels and the session
   for (const call of ['refreshLive()', 'reloadPanels()', 'reloadTraj()']) assert.ok(body[1].includes(call), call);
   assert.match(app, /const refreshLive = live\.refresh;/);
   assert.match(app, /const reloadTraj = traj\.reload;/);
-  assert.match(app, /<button className="btn" onClick=\{refresh\}[^>]*>\s*<Icon name="refresh"/);
+  assert.match(app, /<button\s+className="iconbtn"\s+onClick=\{refresh\}[^>]*>\s*<Icon name="refresh"/);
   assert.match(app, /id: 'act:refresh',[^}]*run: refresh,/);
 });

@@ -199,15 +199,11 @@ kbd {
   padding: 2px 10px 10px;
   gap: 1px;
 }
+/* the groups part by a rule, not a word */
 .navgroup {
-  margin: 10px 10px 3px;
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
-  white-space: nowrap;
+  height: 1px;
+  margin: 8px 10px;
+  background: var(--rule);
 }
 .rail nav button {
   all: unset;
@@ -281,59 +277,46 @@ kbd {
   background: var(--warn);
   box-shadow: 0 0 0 3px rgba(252, 179, 21, 0.2);
 }
-/* the open tab's sections, under its button in the rail */
-.secnav {
-  display: flex;
-  flex-direction: column;
-  margin: 2px 0 8px 12px;
-  border-left: 1px solid var(--rule);
-}
-.secnav a {
-  display: block;
-  padding: 4px 8px 4px 12px;
-  margin-left: -1px;
-  border-left: 2px solid transparent;
-  font-size: 13px;
-  line-height: 1.35;
-  color: var(--muted);
-  text-decoration: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.secnav a:hover {
-  color: var(--ink);
-}
-.secnav a.on {
-  color: var(--ink);
-  border-left-color: var(--crimson);
-}
-/* a panel picked in the section list lands 14px below the sticky control bar
+/* a panel picked in "go to" lands 14px below the sticky control bar
    (the bar itself is kept clear by the page's scroll padding, below) */
 section.panel {
   scroll-margin-top: 14px;
 }
 
-/* the rail's foot: how the page gets its data, one fact to a line, as a card */
+/* The rail's foot, held at its bottom: the classes warning, sign-out, how
+   the page gets its data, the credits. */
+.rail-end {
+  margin-top: auto;
+  padding-top: 8px;
+}
+/* how the page gets its data, in one line, its facts on hover; the fold beside it */
 .rail .foot {
-  margin: auto 12px 0;
-  padding: 10px 12px;
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  background: var(--page);
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--muted);
+  margin: 8px 12px 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
 }
 .foot-status {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
+  min-width: 0;
+  padding: 0 2px 0 6px;
+  font-size: 12px;
+  color: var(--muted);
   white-space: nowrap;
+  cursor: help;
 }
-.foot-status b {
-  color: var(--ink);
-  font-weight: 600;
+.foot-t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail .foot .iconbtn {
+  width: 30px;
+  height: 30px;
 }
 /* the transport, as a light: streaming, polling, connecting, down */
 .sdot {
@@ -355,29 +338,8 @@ section.panel {
 .sdot.down {
   background: var(--crit);
 }
-.rail .foot dl {
-  margin: 6px 0 0;
-  padding-top: 6px;
-  border-top: 1px solid var(--rule);
-}
-.rail .foot dl > div {
-  display: flex;
-  flex-wrap: wrap;
-  column-gap: 6px;
-}
-/* a value moves to a line of its own, whole, rather than breaking inside
-   itself: `2026-09-` above `14T15:33:20Z` read as two values */
-.rail .foot dd {
-  margin: 0;
-  color: var(--ink-2);
-  white-space: nowrap;
-}
-.rail .foot .held {
-  color: var(--muted);
-  white-space: normal;
-}
 .foot-warn {
-  margin: 8px 12px 0;
+  margin: 0 12px;
   padding: 4px 10px;
   border-radius: 6px;
   background: var(--crimson-wash);
@@ -386,27 +348,10 @@ section.panel {
   cursor: help;
   white-space: nowrap;
 }
-.rail-toggle {
-  all: unset;
-  box-sizing: border-box;
-  cursor: pointer;
-  margin: 8px 12px 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: 7px;
-  color: var(--muted);
-  font-size: 13.5px;
-}
-.rail-toggle:hover {
-  background: var(--surface-2);
-  color: var(--ink);
-}
 /* Sign out, above the fold button while the service asks for a password: the
    same quiet row, and the same 40px icon when the rail is folded */
 .rail-signout {
-  margin: 8px 12px 0;
+  margin: 4px 12px 0;
 }
 .rail-signout button {
   all: unset;
@@ -428,20 +373,20 @@ section.panel {
 /* the rail's last word: MaDSys, Harvard SEAS and FASRC. The logos
    keep their own colours; each is drawn for a white ground, as the rail is. */
 .credits {
-  margin: 12px 12px 0;
-  padding: 12px 4px 0;
+  margin: 10px 12px 0;
+  padding: 10px 4px 0;
   border-top: 1px solid var(--rule);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 .credits img {
   display: block;
   height: auto;
 }
 .credits-lab .credits-full {
-  width: 160px;
+  width: 124px;
 }
 .credits-lab .credits-mark {
   display: none;
@@ -449,15 +394,14 @@ section.panel {
 }
 .credits-partners {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 .credits-partners a:first-child img {
-  width: 176px;
+  width: 104px;
 }
 .credits-partners a:last-child img {
-  width: 112px;
+  width: 76px;
 }
 .credits a {
   border-radius: 4px;
@@ -507,12 +451,9 @@ section.panel {
   .app.mini .brand .sub,
   .app.mini .rail-search-t,
   .app.mini .navlbl,
-  .app.mini .foot dl,
-  .app.mini .foot .build,
   .app.mini .foot-t,
   .app.mini .foot-warn-t,
-  .app.mini .rail-signout span,
-  .app.mini .rail-toggle span {
+  .app.mini .rail-signout span {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -546,13 +487,6 @@ section.panel {
   .app.mini .rail nav {
     padding: 2px 8px 10px;
   }
-  .app.mini .navgroup {
-    height: 1px;
-    margin: 10px 8px;
-    background: var(--rule);
-    color: transparent;
-    overflow: hidden;
-  }
   .app.mini .rail nav button {
     justify-content: center;
     padding: 9px 0;
@@ -568,23 +502,17 @@ section.panel {
     height: 6px;
   }
   .app.mini .rail .foot {
-    margin: auto 0 0;
-    padding: 10px 0;
-    border: 0;
-    background: none;
-    display: grid;
-    justify-items: center;
-    cursor: help;
+    margin: 8px 8px 0;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .app.mini .foot-status {
+    padding: 4px;
   }
   .app.mini .foot-warn {
-    margin: 6px auto 0;
+    width: fit-content;
+    margin: 0 auto;
     padding: 2px 7px;
-  }
-  .app.mini .rail-toggle {
-    margin: 6px auto 0;
-    width: 40px;
-    justify-content: center;
-    padding: 8px 0;
   }
   .app.mini .rail-signout {
     margin: 6px auto 0;
@@ -595,13 +523,6 @@ section.panel {
     padding: 8px 0;
   }
 }
-/* which code the page is, set apart from the lines about the data above it */
-.rail .foot .build {
-  margin: 6px 0 0;
-  padding-top: 6px;
-  border-top: 1px solid var(--rule);
-}
-
 main {
   /* the side padding, named so the control bar can reach across it */
   --gutter: 26px;
@@ -609,15 +530,16 @@ main {
   max-width: 1560px;
   min-width: 0;
 }
-/* The page's head: the tab's icon and name, what it answers, and how current
- * the data is. With the control bar under it, the bar is its lower edge. */
+/* The page's head, one line: the tab's name (what it answers is its hover),
+ * then one pill saying how current the data is, its facts on hover, and the
+ * refresh. With the control bar under it, the bar is its lower edge. */
 .head {
   display: flex;
   flex-wrap: wrap;
-  gap: 14px 20px;
+  gap: 10px 20px;
   align-items: center;
   justify-content: space-between;
-  padding-bottom: 16px;
+  padding-bottom: 14px;
   border-bottom: 1px solid var(--rule);
   margin-bottom: 18px;
 }
@@ -625,41 +547,11 @@ main {
   border-bottom: 0;
   margin-bottom: 0;
 }
-/* The title takes the room the status leaves it, and its line under the name
- * wraps there: sized to that line, a long one (the login nodes') pushed the
- * status onto a row of its own, so the status moved between tabs. Past 360px
- * of title it is the status that wraps, under it. */
-.head-title {
-  display: flex;
-  flex: 1 1 360px;
-  align-items: center;
-  gap: 14px;
-  min-width: 0;
-}
-.head-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 11px;
-  display: grid;
-  place-items: center;
-  flex: none;
-  color: var(--crimson);
-  background: var(--crimson-wash);
-  box-shadow: inset 0 0 0 1px rgba(165, 28, 48, 0.12);
-}
 .head h1 {
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.02em;
-  line-height: 1.15;
-}
-.head-sub {
-  margin-top: 2px;
-  font-size: 14px;
-  color: var(--muted);
-}
-.head-sub::first-letter {
-  text-transform: uppercase;
+  line-height: 1.2;
 }
 /* A parent entry's sub-tabs (the login nodes: Resources, Risks,
  * Slurm), along the foot of the head. The open one is underlined, and the
@@ -669,7 +561,7 @@ main {
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
-  margin: 2px 0 -16px;
+  margin: 0 0 -14px;
 }
 .subtabs button {
   all: unset;
@@ -696,25 +588,6 @@ main {
 }
 .subtabs button[aria-current='page'] .icon {
   color: var(--crimson);
-}
-/* how current the data is, each fact a chip */
-.status .stat {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
-  border: 1px solid var(--rule);
-  border-radius: 99px;
-  background: var(--surface);
-  white-space: nowrap;
-}
-.status .stat .icon {
-  color: var(--muted);
-}
-.status .stat.warn {
-  border-color: var(--warn);
-  color: #8a6410;
-  background: #fff8e6;
 }
 .eyebrow {
   font-size: 11.5px;
@@ -906,21 +779,16 @@ html {
     gap: 8px;
     flex-basis: 100%;
   }
-  /* The head's facts: one height for every chip and the button beside them,
-     closer together, so they wrap as one strip and not as a ragged pile. */
+  /* The head's pills: one height, closer together, so they wrap as one strip
+     and not as a ragged pile. */
   .status {
     gap: 6px;
   }
-  .status > .pill,
-  .status > .stat,
-  .status > .btn {
+  .status > .pill {
     box-sizing: border-box;
     min-height: 30px;
     padding-top: 0;
     padding-bottom: 0;
-  }
-  .status > .btn {
-    border-radius: 99px;
   }
   /* A flag's split by class is a line of its own, and its note starts under
      it, rather than the note's first words squeezed in beside the last chip. */
@@ -2212,20 +2080,22 @@ details.basis .body b {
     z-index: 65;
     background: rgba(30, 30, 30, 0.32);
   }
-  .secnav {
-    display: none;
-  }
   main {
     --gutter: 14px;
     padding: 16px var(--gutter) 60px;
   }
-  .head-icon {
-    width: 36px;
-    height: 36px;
-    border-radius: 9px;
-  }
+  /* the top bar names the tab: the head keeps its name for a screen reader,
+     and shows the pill alone */
   .head h1 {
-    font-size: 21px;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
   }
   .grid,
   .grid.wide,
@@ -3213,7 +3083,6 @@ td.ep-name {
 .u-pick:focus-visible,
 .linkbtn:focus-visible,
 .rail-search:focus-visible,
-.rail-toggle:focus-visible,
 .rail-signout button:focus-visible,
 .iconbtn:focus-visible,
 .subtabs button:focus-visible,
@@ -3376,12 +3245,9 @@ th.sortable:focus-visible {
   .u-host {
     padding: 6px 8px;
   }
-  /* the drawer's tabs, its sections and its go-to field */
+  /* the drawer's tabs and its go-to field */
   .rail nav button {
     padding: 10px 12px;
-  }
-  .secnav a {
-    padding: 8px 8px 8px 12px;
   }
   .rail-search {
     padding: 10px 12px;
