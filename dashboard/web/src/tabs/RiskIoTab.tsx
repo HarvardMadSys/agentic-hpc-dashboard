@@ -6,11 +6,9 @@
  */
 import { GLOSS } from '../lib/glossary';
 import { Fragment, memo, useState } from 'react';
-import type { Cls, IoByTool, IoProcess, IoSort, Resources } from '../api/types';
+import type { Cls, IoByTool, IoProcess, IoSort } from '../api/types';
 import { GroupBars, HBars } from '../charts/primitives';
 import { TOOL_COL } from '../charts/TimeChart';
-import { TimeChart } from './ResourcesTab';
-import type { TimeLine, View } from './ResourcesTab';
 import type { BarGroup, HBarItem } from '../charts/primitives';
 import { Legend, More, NoRows, Panel } from '../components/Panel';
 import { AccumCell, Coverage, QuantCells, QuantHead, quantVal } from '../components/Coverage';
@@ -355,9 +353,9 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
   /** the I/O tiles: off on Resources, where their numbers are Overview rows */
   plates?: boolean;
   /** which I/O panels: `main` is who moved the bytes (by tool, by user) and
-   *  where the network bytes went, on Resources; `internal` is the
-   *  requested-against-disk series (a repeat of Live's picker, with the
-   *  per-class page-cache table) and the raw counters' quantiles, on Internal */
+   *  where the network bytes went, on Resources; `internal` is the per-class
+   *  page-cache table and the raw counters' quantiles, on Internal. The disk
+   *  and requested bytes over time are Live's picker's (tabs/LiveCharts.tsx). */
   io?: 'main' | 'internal';
 }) {
   const nodes = useNodeWords();
@@ -384,26 +382,6 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
     ? shareOf(byClass.agent?.rd_mb ?? 0, wholeOf(Object.keys(byClass), (c) => byClass[c]?.rd_mb)) : null;
   const wrPct = cls.includes('agent')
     ? shareOf(byClass.agent?.wr_mb ?? 0, wholeOf(Object.keys(byClass), (c) => byClass[c]?.wr_mb)) : null;
-
-  /* Disk bytes against requested bytes over time, one axis per direction,
-   * MB/min. Solid is what reached the disk, dashed is what programs requested
-   * through read() or write(): the gap between a class's two lines IS the page
-   * cache. Binned by
-   * exit time, like every series on the Resources tab. */
-  const res = pick<Resources>(P, 'resources', 'ebpfm');
-  const rs = res.series;
-  const ioCls = shown(rs?.by_class, cls);
-  const [zoom, setZoom] = useState<View>(null);
-  const ioLines = (disk: 'rd_mb' | 'wr_mb', sys: 'rchar_mb' | 'wchar_mb', sysWord: string): TimeLine[] =>
-    ioCls.flatMap((c) => [
-      { lbl: `${CLS_LBL[c] ?? c} · disk`, c: CLS_COL[c] ?? 'var(--ink-3)', v: rs?.by_class[c]?.[disk] },
-      { lbl: `${CLS_LBL[c] ?? c} · ${sysWord}`, c: CLS_COL[c] ?? 'var(--ink-3)', v: rs?.by_class[c]?.[sys], dashed: true },
-    ]);
-  const ioLegend = (sysWord: string) => [
-    ...ioCls.map((c) => ({ k: CLS_LBL[c] ?? c, c: CLS_COL[c] ?? 'var(--ink-3)' })),
-    { k: 'disk', c: 'var(--ink-2)', solid: true },
-    { k: sysWord, c: 'var(--ink-2)', dashed: true },
-  ];
 
   const netGroups: BarGroup[] = have.map((c) => ({
     k: CLS_LBL[c] ?? c,
@@ -542,77 +520,64 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, plates = true, 
 
       {part === 'io' && (
       <div className="grid wide">
+        {/* The bytes per class, over the window: what the programs asked for
+            against what reached the disk, and the page cache's part between.
+            The same bytes over time are Live's, under More over time. */}
         {ioPart === 'internal' && (
         <Panel
           id="sec-syscall-bytes-against-disk-bytes"
           title="Requested bytes against disk bytes"
-          p={res}
+          p={io}
           span
-          empty={!ioCls.length || !rs?.t.length}
+          empty={!have.length}
           emptyWhat="no class block for the selection"
         >
-          {rs && (
-            <div className="pair-row">
-              <div>
-                <div className="eyebrow">read · solid: disk read, dashed: read requested, through read() calls</div>
-                <TimeChart s={rs} lines={ioLines('rd_mb', 'rchar_mb', 'requested')} ylabel="MB / min"
-                  yname="read" perMin view={zoom} onView={setZoom} legend={ioLegend('requested')} />
-              </div>
-              <div>
-                <div className="eyebrow">written · solid: disk written, dashed: write requested, through write() calls</div>
-                <TimeChart s={rs} lines={ioLines('wr_mb', 'wchar_mb', 'requested')} ylabel="MB / min"
-                  yname="written" perMin view={zoom} onView={setZoom} legend={ioLegend('requested')} />
-              </div>
-            </div>
-          )}
-          <More label="bytes per class">
-            <div className="scroller">
-              <table>
-                <thead>
-                  <tr>
-                    <SortTh s={sortOf('io-class')} k="cls" first="asc">class</SortTh>
-                    <SortTh s={sortOf('io-class')} k="events" num tip="processes exited">processes</SortTh>
-                    <SortTh s={sortOf('io-class')} k="events_with_io" num tip="processes that read or wrote anything, and the share of the class they are">with I/O</SortTh>
-                    <SortTh s={sortOf('io-class')} k="rchar_mb" num tip={GLOSS.rchar}>read requested</SortTh>
-                    <SortTh s={sortOf('io-class')} k="rd_mb" num tip={GLOSS.rd}>disk read</SortTh>
-                    <SortTh s={sortOf('io-class')} k="wchar_mb" num tip={GLOSS.wchar}>write requested</SortTh>
-                    <SortTh s={sortOf('io-class')} k="wr_mb" num tip={GLOSS.wr}>disk written</SortTh>
-                    <SortTh s={sortOf('io-class')} k="cache_served_mb" num tip={GLOSS.cacheserved}>cache served</SortTh>
-                    <SortTh s={sortOf('io-class')} k="cache_hit_pct" num tip={GLOSS.cachehit}>cache hit</SortTh>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sortOf('io-class').sort(have, (c, k) =>
-                    k === 'cls' ? CLS_LBL[c] ?? c : ((byClass[c] as unknown as Record<string, number | null>)?.[k] ?? null),
-                  ).map((c) => {
-                    const b = byClass[c]!;
-                    return (
-                      <tr key={c}>
-                        <td>{CLS_LBL[c] ?? c}</td>
-                        <td className="num">{fint(b.events)}</td>
-                        <td className="num">
-                          {fint(b.events_with_io)}
-                          <Coverage pct={b.io_coverage_pct} n={b.events_with_io} />
-                        </td>
-                        <td className="num">{mb(b.rchar_mb)}</td>
-                        <td className="num">{mb(b.rd_mb)}</td>
-                        <td className="num">{mb(b.wchar_mb)}</td>
-                        <td className="num">{mb(b.wr_mb)}</td>
-                        <td className="num">{mb(b.cache_served_mb)}</td>
-                        <td className="num">
-                          {b.cache_hit_pct == null ? (
-                            <span className="nm">not measured</span>
-                          ) : (
-                            pc(b.cache_hit_pct)
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </More>
+          <div className="scroller">
+            <table>
+              <thead>
+                <tr>
+                  <SortTh s={sortOf('io-class')} k="cls" first="asc">class</SortTh>
+                  <SortTh s={sortOf('io-class')} k="events" num tip="processes exited">processes</SortTh>
+                  <SortTh s={sortOf('io-class')} k="events_with_io" num tip="processes that read or wrote anything, and the share of the class they are">with I/O</SortTh>
+                  <SortTh s={sortOf('io-class')} k="rchar_mb" num tip={GLOSS.rchar}>read requested</SortTh>
+                  <SortTh s={sortOf('io-class')} k="rd_mb" num tip={GLOSS.rd}>disk read</SortTh>
+                  <SortTh s={sortOf('io-class')} k="wchar_mb" num tip={GLOSS.wchar}>write requested</SortTh>
+                  <SortTh s={sortOf('io-class')} k="wr_mb" num tip={GLOSS.wr}>disk written</SortTh>
+                  <SortTh s={sortOf('io-class')} k="cache_served_mb" num tip={GLOSS.cacheserved}>cache served</SortTh>
+                  <SortTh s={sortOf('io-class')} k="cache_hit_pct" num tip={GLOSS.cachehit}>cache hit</SortTh>
+                </tr>
+              </thead>
+              <tbody>
+                {sortOf('io-class').sort(have, (c, k) =>
+                  k === 'cls' ? CLS_LBL[c] ?? c : ((byClass[c] as unknown as Record<string, number | null>)?.[k] ?? null),
+                ).map((c) => {
+                  const b = byClass[c]!;
+                  return (
+                    <tr key={c}>
+                      <td>{CLS_LBL[c] ?? c}</td>
+                      <td className="num">{fint(b.events)}</td>
+                      <td className="num">
+                        {fint(b.events_with_io)}
+                        <Coverage pct={b.io_coverage_pct} n={b.events_with_io} />
+                      </td>
+                      <td className="num">{mb(b.rchar_mb)}</td>
+                      <td className="num">{mb(b.rd_mb)}</td>
+                      <td className="num">{mb(b.wchar_mb)}</td>
+                      <td className="num">{mb(b.wr_mb)}</td>
+                      <td className="num">{mb(b.cache_served_mb)}</td>
+                      <td className="num">
+                        {b.cache_hit_pct == null ? (
+                          <span className="nm">not measured</span>
+                        ) : (
+                          pc(b.cache_hit_pct)
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </Panel>
         )}
 
