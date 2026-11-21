@@ -7,13 +7,13 @@
 import { GLOSS } from '../lib/glossary';
 import { Fragment, memo, useState } from 'react';
 import type { Cls, IoByTool, IoProcess, IoSort } from '../api/types';
-import { HBars } from '../charts/primitives';
+import { Fluid, HBars, HGroupBars } from '../charts/primitives';
 import { TOOL_COL } from '../charts/TimeChart';
-import type { HBarItem } from '../charts/primitives';
+import type { BarSeries, HBarCell, HBarGroup } from '../charts/primitives';
 import { Legend, More, NoRows, Panel } from '../components/Panel';
 import { AccumCell, Coverage, QuantCells, QuantHead, quantVal } from '../components/Coverage';
 import { Plate } from '../components/Plate';
-import { AGENT_TYPE_LBL, CLS, CLS_COL, CLS_LBL } from '../lib/classes';
+import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { ByUser, distinct } from '../components/ByUser';
 import { CmdCell } from '../components/Cmd';
 import { DASH, dur, fint, fmt, mb, pc } from '../lib/format';
@@ -176,9 +176,6 @@ function InstanceRows({ rows, showArgs, withUser }: { rows: RiskInstance[]; show
   );
 }
 
-/** One direction of per-tool I/O, ranked on its own counter: disk bytes as the
- *  bar, syscall bytes in the tip. A tool that never moved a byte this way is not
- *  a top reader (or writer) and is left off rather than drawn as a zero. */
 /** A per-process counter's drawer sort: its commands, the heaviest first. */
 const QUANT_SORT: Record<string, IoSort | undefined> = {
   rd_mb: 'rd_mb', wr_mb: 'wr_mb', rchar_mb: 'rchar_mb', wchar_mb: 'wchar_mb',
@@ -191,46 +188,60 @@ const QUANT_LBL: Record<string, string> = table({
 });
 const quantLbl = (k: string) => QUANT_LBL[k] ?? k;
 
-/* A tool is not a class. A row the service split by class wears its class's
- * hue, and the chart then carries the key to them; a row with no class (the
- * service's own `by_tool` has none) wears one tool hue, never a class's:
- * crimson there read as "every write was an agent's". */
-const TOOL_HUE = TOOL_COL[0];
+/** The tools each disk counter ranks: a tool among the heaviest on either is drawn. */
+const TOOL_ROWS = 14;
 
-function toolBars(
-  rows: IoByTool[],
-  dir: 'read' | 'write',
-  from?: string | number | null,
-): { items: HBarItem[]; key: { k: string; c: string }[] } {
-  const [disk, sys] = dir === 'read' ? (['rd_mb', 'rchar_mb'] as const) : (['wr_mb', 'wchar_mb'] as const);
-  const top = rows
-    .filter((t) => (t[disk] ?? 0) > 0)
-    .sort((a, b) => (b[disk] ?? 0) - (a[disk] ?? 0))
-    .slice(0, 14);
-  const split = CLS.filter((c) => top.some((t) => t.cls === c));
-  const key = split.length
-    ? [
-        ...split.map((c) => ({ k: CLS_LBL[c] ?? c, c: CLS_COL[c] })),
-        ...(top.some((t) => !t.cls) ? [{ k: 'every class', c: TOOL_HUE }] : []),
-      ]
-    : [];
-  const items = top
-    .map((t) => ({
-      k: t.tool,
-      v: t[disk] ?? null,
-      c: t.cls ? CLS_COL[t.cls] : TOOL_HUE,
-      lbl: mb(t[disk]),
-      tip:
-        `${t.tool}: disk ${dir === 'read' ? 'read' : 'written'} ${mb(t[disk])}, ` +
-        `${dir === 'read' ? 'read' : 'write'} requested ${mb(t[sys])}, through ${dir}() calls` +
-        (dir === 'read' && t.cache_hit_pct != null ? `, cache hit ${pc(t.cache_hit_pct)}` : '') +
-        `, coverage ${pc(t.io_coverage_pct)}, ${fint(t.events)} processes exited`,
-      onPick: () => openIoCmds({
-        title: `disk ${dir === 'read' ? 'read' : 'written'} · ${t.tool}${t.cls ? ` · ${CLS_LBL[t.cls] ?? t.cls}` : ''}`,
-        sort: disk, tool: [t.tool], class: t.cls ? [t.cls] : undefined, from,
-      }),
-    }));
-  return { items, key };
+/* The two bars of a tool's row are directions, not classes, so they wear hues
+ * no class owns: a tool's bar in crimson read as "every write was an agent's". They are
+ * the network chart's hues for the same direction -- into a process (read,
+ * received) and out of it (written, sent) -- so one hue means one direction
+ * across the I/O panels. */
+const DISK_SERIES: BarSeries[] = [
+  { k: 'read', lbl: 'disk read', c: TOOL_COL[1] },
+  { k: 'written', lbl: 'disk written', c: TOOL_COL[0] },
+];
+
+/** Per-tool disk I/O, a row per tool: its disk read and disk written as two
+ *  bars on one scale, the bytes requested in each bar's tip. The rows are the
+ *  14 heaviest on each counter, so a tool that only writes is drawn wherever a
+ *  chart of writes alone would have drawn it; the most disk bytes in all come
+ *  first. A tool's 0 on the other counter is drawn as the 0 it measured, and
+ *  opens no commands: none moved a byte that way. A row the service split by
+ *  class (its own `by_tool` has none) names its class after the tool, since
+ *  the hue says the direction. */
+function toolBars(rows: IoByTool[], from?: string | number | null): HBarGroup[] {
+  const heaviest = (k: 'rd_mb' | 'wr_mb') =>
+    rows
+      .filter((t) => (t[k] ?? 0) > 0)
+      .sort((a, b) => (b[k] ?? 0) - (a[k] ?? 0))
+      .slice(0, TOOL_ROWS);
+  const disk = (t: IoByTool) => (t.rd_mb ?? 0) + (t.wr_mb ?? 0);
+  return Array.from(new Set([...heaviest('rd_mb'), ...heaviest('wr_mb')]))
+    .sort((a, b) => disk(b) - disk(a))
+    .map((t) => {
+      const who = t.cls ? ` · ${CLS_LBL[t.cls] ?? t.cls}` : '';
+      const bar = (dir: 'read' | 'write'): HBarCell => {
+        const [k, sys] = dir === 'read' ? (['rd_mb', 'rchar_mb'] as const) : (['wr_mb', 'wchar_mb'] as const);
+        const done = dir === 'read' ? 'read' : 'written';
+        const v = t[k] ?? null;
+        return {
+          v,
+          lbl: mb(v),
+          tip:
+            `${t.tool}${who}: disk ${done} ${mb(v)}, ` +
+            `${dir === 'read' ? 'read' : 'write'} requested ${mb(t[sys])}, through ${dir}() calls` +
+            (dir === 'read' && t.cache_hit_pct != null ? `, cache hit ${pc(t.cache_hit_pct)}` : '') +
+            `, coverage ${pc(t.io_coverage_pct)}, ${fint(t.events)} processes exited`,
+          onPick: v != null && v > 0
+            ? () => openIoCmds({
+                title: `disk ${done} · ${t.tool}${who}`,
+                sort: k, tool: [t.tool], class: t.cls ? [t.cls] : undefined, from,
+              })
+            : undefined,
+        };
+      };
+      return { k: t.tool + who, v: { read: bar('read'), written: bar('write') } };
+    });
 }
 
 /** The rules the Risks tab counted with: they differ by cluster (a `risk`
@@ -379,8 +390,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
     (['net_tx_mb', 'net_rx_mb'] as const).some((k) => !!byClass[c]?.[k]?.n && byClass[c]![k].total != null);
 
   const byTool = (io.by_tool ?? []).filter((t) => !t.cls || cls.includes(t.cls as Cls));
-  const toolReads = toolBars(byTool, 'read', coveredBy(io).from);
-  const toolWrites = toolBars(byTool, 'write', coveredBy(io).from);
+  const toolDisk = toolBars(byTool, coveredBy(io).from);
   const byUser = (io.by_user ?? []).filter((u) => !u.cls || cls.includes(u.cls as Cls));
 
   const risk = pick<RiskPanel>(P, 'risk', 'ebpfm');
@@ -534,28 +544,24 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
 
         {ioPart === 'main' && (
         <>
+        {/* the anchor the read chart had, so a link or a citation to it lands here */}
         <Panel
           id="sec-reads-by-tool"
-          title="Disk read by tool"
+          title="Disk read and written by tool"
           ask={[{ panel: 'io_process', keys: ['by_tool', 'notes'] }]}
           p={io}
-          empty={!toolReads.items.length}
-          emptyWhat="no tool read from disk in the selection"
+          span
+          empty={!toolDisk.length}
+          emptyWhat="no tool read from or wrote to disk in the selection"
         >
-          <HBars items={toolReads.items} labelW={150} valW={100} />
-          <Legend items={toolReads.key} />
-        </Panel>
-
-        <Panel
-          id="sec-writes-by-tool"
-          title="Disk written by tool"
-          ask={[{ panel: 'io_process', keys: ['by_tool', 'notes'] }]}
-          p={io}
-          empty={!toolWrites.items.length}
-          emptyWhat="no tool wrote to disk in the selection"
-        >
-          <HBars items={toolWrites.items} labelW={150} valW={100} />
-          <Legend items={toolWrites.key} />
+          {/* as wide as the panel, which has the row to itself; never drawn under
+              560, so in a narrower box it fits as HBars does (useFit) */}
+          <Fluid natural={560}>
+            {(w) => (
+              <HGroupBars groups={toolDisk} series={DISK_SERIES} W={Math.max(560, w)} labelW={150} valW={100} fmtVal={mb} />
+            )}
+          </Fluid>
+          <Legend items={DISK_SERIES.map((s) => ({ k: s.lbl, c: s.c }))} />
         </Panel>
 
         <Panel

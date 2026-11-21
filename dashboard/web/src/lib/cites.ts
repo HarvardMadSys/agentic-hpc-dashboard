@@ -78,7 +78,7 @@ const PLACES: [string, Place][] = [
   ['panels.tool_mix.exits', { tab: 'agents', panel: 'Commands that failed', anchor: 'sec-commands-that-failed' }],
   ['panels.tool_mix', { tab: 'agents', panel: 'Tool mix', anchor: 'sec-tool-mix' }],
   ['panels.io_process.by_user', { tab: 'resources', panel: 'I/O by user' }],
-  ['panels.io_process.by_tool', { tab: 'resources', panel: 'Disk read by tool', anchor: 'sec-reads-by-tool' }],
+  ['panels.io_process.by_tool', { tab: 'resources', panel: 'Disk read and written by tool', anchor: 'sec-reads-by-tool' }],
   ['panels.io_process.endpoints', { tab: 'resources', panel: 'Network bytes' }],
   ['panels.io_process', { tab: 'internal', panel: 'I/O distributions' }],
   ['panels.risk.rules', { tab: 'risk', panel: 'Rules in effect' }],

@@ -1199,11 +1199,10 @@ the faults table behind them, and the I/O distributions, are on the Internal tab
 |---|---|---|---|---|
 | RE-1 | login node health: nodes, NFS mounts, local disks, accounts, stuck processes | NODE | `node` | `reducers/resources.py:NodeReducer.result` · `tabs/NodeHealth.tsx:NodeHealth` |
 | RE-2 | worst individual processes | BUILD | `resources.worst_stall`, `worst_fault`, `worst_wait` | `ResourceReducer._keep_worst` · `tabs/ResourcesTab.tsx:WorstPanel`, `tabs/RiskIoTab.tsx:InstanceTable` |
-| RE-3 | disk read by tool | BUILD; a bar opens IOCMDS | `io_process.by_tool` | `reducers/io.py:IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:toolBars`, `charts/primitives.tsx:HBars` |
-| RE-4 | disk written by tool | BUILD; a bar opens IOCMDS | `io_process.by_tool` | as RE-3 |
-| RE-5 | network bytes per class (table) | BUILD; a cell opens IOCMDS | `io_process.by_class[c]`: `net_tx_mb`, `net_rx_mb`, `net_calls` | `IoReducer.feed` · `tabs/RiskIoTab.tsx:RiskIoTab` |
-| RE-6 | network endpoints | BUILD, named on read | `io_process.endpoints` | `IoReducer._feed_endpoints`, `_endpoint_rows`; `endpoints.py:serve`, `fold` · `tabs/NetEndpoints.tsx:NetEndpoints` |
-| RE-7 | I/O by user | BUILD; a cell opens IOCMDS | `io_process.by_user` | `IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:RiskIoTab` |
+| RE-3 | disk read and written by tool | BUILD; a bar opens IOCMDS | `io_process.by_tool` | `reducers/io.py:IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:toolBars`, `charts/primitives.tsx:HGroupBars` |
+| RE-4 | network bytes per class (table) | BUILD; a cell opens IOCMDS | `io_process.by_class[c]`: `net_tx_mb`, `net_rx_mb`, `net_calls` | `IoReducer.feed` · `tabs/RiskIoTab.tsx:RiskIoTab` |
+| RE-5 | network endpoints | BUILD, named on read | `io_process.endpoints` | `IoReducer._feed_endpoints`, `_endpoint_rows`; `endpoints.py:serve`, `fold` · `tabs/NetEndpoints.tsx:NetEndpoints` |
+| RE-6 | I/O by user | BUILD; a cell opens IOCMDS | `io_process.by_user` | `IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:RiskIoTab` |
 
 #### RE-1 login node health
 
@@ -1227,21 +1226,24 @@ the faults table behind them, and the I/O distributions, are on the Internal tab
   by the same rule.
 - **Cost:** a row only for a value above the floor, so few records make one.
 
-#### RE-3 disk read by tool, RE-4 disk written by tool
+#### RE-3 disk read and written by tool
 
-- **Shows:** the 14 tools that read the most from (wrote the most to) disk, as bars; the bytes
-  requested and the cache hit on hover. Over every class: the class chips do not narrow it.
+- **Shows:** a row per tool with two bars on one scale, its disk read and its disk written, for the
+  14 tools that read the most from disk and the 14 that wrote the most to it; the bytes requested
+  and the cache hit on hover. Over every class: the class chips do not narrow it.
 - **Records:** `exit`: `_eff` or `_command`, `io.rd_mb`, `io.rchar_mb`, `io.wr_mb`,
   `io.wchar_mb`, and `pid`, `ppid`, `host`, `io.scope` for the join.
 - **Computation:** `IoReducer.feed` sums each tool's four byte counters, each process's own (its
   `OwnIo` takes back what a parent's figure holds of the children it reaped), its processes and
   those with an `io` block; `result` serves the union of the top `reducers.io.top_n` (20) tools on
   each counter
-  (`_heaviest`, up to 80 rows); the page ranks by disk bytes and draws 14. A bar opens IOCMDS for the
-  tool, read from the JSONL unless the page is filtered by user.
+  (`_heaviest`, up to 80 rows); the page keeps the 14 heaviest on disk read and the 14 on disk
+  written, up to 28 rows, and orders them by the two together. A kept tool's 0 on the other counter
+  is drawn as 0. A bar opens IOCMDS for the tool, read from the JSONL unless the page is filtered by
+  user.
 - **Cost:** a few adds a record; the tool map is unbounded; per read four `nlargest` passes.
 
-#### RE-5 network bytes per class
+#### RE-4 network bytes per class
 
 - **Shows:** per class, bytes sent and received, and the network calls, with coverage; a cell opens
   IOCMDS. Each class's share of the bytes is LV-6's network rows, so the panel draws no bars of
@@ -1250,11 +1252,11 @@ the faults table behind them, and the I/O distributions, are on the Internal tab
   collector's netbytes block was dropped.
 - **Computation:** an `Acc` per class and counter.
 
-#### RE-6 network endpoints
+#### RE-5 network endpoints
 
 - **Shows:** the top 10 remote endpoints by send and receive calls, or by bytes, for the classes
   shown, each row split by class; a name by reverse DNS, else by a command line, else the address;
-  the share of RE-5's bytes whose endpoint is known
+  the share of RE-4's bytes whose endpoint is known
   ([Network endpoints](../../dashboard/README.md#network-endpoints)).
 - **Records:** `exit`: `net_endpoints` (schema 7): per endpoint `addr`, `inbound`,
   `calls`, `tx_bytes`, `rx_bytes`, `proto`, `port`, `host`, `external`, `provider`; and its
@@ -1268,7 +1270,7 @@ the faults table behind them, and the I/O distributions, are on the Internal tab
   for every class mix (up to 15). While names are pending the page reads `/api/panels` again after
   3, 6, 12, 24 and 48 s. Not measured.
 
-#### RE-7 I/O by user
+#### RE-6 I/O by user
 
 - **Shows:** per user, with the class of their newest record: processes, disk and requested bytes
   read and written, network received and sent, I/O coverage; a cell opens IOCMDS for the user, a
@@ -1739,7 +1741,7 @@ by the work the code does.
    CPU-to-run ratios, the endpoints' addresses, the live tier's submissions.
 8. **Making and serving the panels.** Every held view's payload is made again each rebuild tick, a
    reducer per lock hold. Each `/api/panels` read copies the payload and names and ranks the
-   endpoints for every class mix (RE-6); a panels payload of 1.8 MB held the event loop for a quarter
+   endpoints for every class mix (RE-5); a panels payload of 1.8 MB held the event loop for a quarter
    of a second before serializing moved to the request's thread (`app.py`). Not measured since.
 9. **The live frame** (LV-5, LV-17 to LV-21): one per distinct window per poll that
    brought records, cheap by design -- a bin's rows are cached until a record lands in it, and the

@@ -22,7 +22,8 @@
     "check:panels": "node --test mock/check_panels.mjs",
     "check:live": "node --test mock/check_live.mjs",
     "check:lookup": "node --test mock/check_lookup.mjs",
-    "check:procexit": "node --test mock/check_procexit.mjs"
+    "check:procexit": "node --test mock/check_procexit.mjs",
+    "check:io": "node --test mock/check_io.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",
