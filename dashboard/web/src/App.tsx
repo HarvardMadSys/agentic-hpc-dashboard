@@ -58,6 +58,7 @@ import { table } from './lib/lookup';
 const ResourcesTab = lazyTab(() => import('./tabs/ResourcesTab').then((m) => m.ResourcesTab));
 const RiskIoTab = lazyTab(() => import('./tabs/RiskIoTab').then((m) => m.RiskIoTab));
 const InternalTab = lazyTab(() => import('./tabs/InternalTab').then((m) => m.InternalTab));
+const SecurityTab = lazyTab(() => import('./tabs/SecurityTab').then((m) => m.SecurityTab));
 const AgentsTab = lazyTab(() => import('./tabs/AgentsTab').then((m) => m.AgentsTab));
 const SlurmTab = lazyTab(() => import('./tabs/SlurmTab').then((m) => m.SlurmTab));
 const FeedsTab = lazyTab(() => import('./tabs/FeedsTab').then((m) => m.FeedsTab));
@@ -67,9 +68,9 @@ const EventsExplorer = lazyTab(() => import('./components/EventsExplorer').then(
 
 /* In the order an operator reads them (roadmap notes 32 and 50): what is
  * happening and who uses what, how each user works with agents, the agents,
- * one session, then the detail. Old tab keys still open (lib/filters.ts
- * TAB_ALIAS): sessions and cascades -> agents, io -> resources, sandbox ->
- * internal, and overview -> live, where its table now is.
+ * one session, how safely the agents ran, then the detail. Old tab keys still
+ * open (lib/filters.ts TAB_ALIAS): sessions and cascades -> agents, io ->
+ * resources, sandbox -> security, and overview -> live, where its table now is.
  *
  * Fewer stops in the rail: Overview's last table is a section of Live, and
  * Resources, Risks and Slurm are one entry, the login nodes, with a
@@ -82,6 +83,7 @@ const TABS: Tab[] = [
   { k: 'users', lbl: 'Users', eyebrow: 'a portrait of each user, from how they use coding agents', icon: 'users', group: 'Monitor' },
   { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, and the tools they ran', icon: 'agents', group: 'Monitor' },
   { k: 'trajectories', lbl: 'Sessions', eyebrow: 'one session at a time: what it ran, and when', icon: 'trajectories', group: 'Monitor', also: 'trajectories trajectory' },
+  { k: 'security', lbl: 'Security', eyebrow: 'how agents were launched and sandboxed, what they exposed, and where they reached', icon: 'security', group: 'Monitor', also: 'sandbox approval bypass credentials secrets blast radius' },
   { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O', icon: 'resources', group: 'Monitor', parent: 'nodes' },
   { k: 'risk', lbl: 'Risks', eyebrow: 'what should not run here', icon: 'risk', group: 'Monitor', parent: 'nodes', also: 'risk warning' },
   { k: 'slurm', lbl: 'Slurm', eyebrow: 'jobs and the scheduler', icon: 'queue', group: 'Monitor', parent: 'nodes' },
@@ -515,6 +517,8 @@ export default function App() {
         return <EventsExplorer url={url} setUrl={setUrl} windowMin={resolvedWin?.minutes ?? null} />;
       case 'internal':
         return <InternalTab P={P} cls={cls} />;
+      case 'security':
+        return <SecurityTab P={P} cls={cls} />;
       case 'trajectories':
         return (
           <TrajectoriesTab

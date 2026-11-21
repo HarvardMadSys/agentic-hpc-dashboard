@@ -1563,7 +1563,7 @@ const PORTRAIT_TRAITS = [
 const CALL_CATS = ['test', 'slurm', 'run', 'build', 'edit', 'git', 'wait', 'explore', 'unknown']; // `phase_rules.CATS`
 // a phase's calls, by the category of the same name; a loop's are tests, and a guess and an idle gap hold none
 const CAT_OF_PHASE = { explore: 'explore', edit: 'edit', build: 'build', test: 'test', loop: 'test', run: 'run', slurm: 'slurm', wait: 'wait', git: 'git', unknown: 'unknown' };
-// whether a session's tool calls ran sandboxed (the Internal tab's count), from the row's own record
+// whether a session's tool calls ran sandboxed (the Security tab's count), from the row's own record
 const SESSION_SANDBOX = { sandboxed: 'sandboxed', unsandboxed: 'unsandboxed', denied: 'failed', unknown: 'no_calls' };
 const EDT = -4 * 3600;
 const localOf = (epoch) => new Date((epoch + EDT) * 1000);

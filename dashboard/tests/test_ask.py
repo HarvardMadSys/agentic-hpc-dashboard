@@ -415,11 +415,13 @@ class SuggestionsTest(unittest.TestCase):
                            ("Risk & Warning", ("risk", "Risks")),
                            ("Trajectories", ("trajectories", "Sessions")),
                            ("Overview", ("overview", "Who uses what")),
+                           ("Security", ("security", "Security")),
+                           ("Internal", ("internal", "Internal")),
                            ("somewhere else", (None, "somewhere else"))):
             self.assertEqual(ask.panel_tab(name), want, name)
         got = ask.parse_suggestions(json.dumps({"suggestions": [{"title": "t", "panel": "panels.sandbox"}]}))
         self.assertEqual((got["suggestions"][0]["tab"], got["suggestions"][0]["panel"]),
-                         ("internal", "Internal · Sandbox"))
+                         ("security", "Security · Sandbox"))
 
     def test_the_paths_a_command_line_names(self):
         for args, want in (

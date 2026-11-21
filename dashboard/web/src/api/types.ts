@@ -1354,7 +1354,7 @@ export interface CascadeNode {
    *  front-end's); null for a node that is not an agent */
   surface?: Surface | null;
   surface_detail?: string | null;
-  /** whether its tool calls ran sandboxed, as the Internal tab counts its session; null: it made none */
+  /** whether its tool calls ran sandboxed, as the Security tab counts its session; null: it made none */
   sandbox?: SessionSandboxState | null;
   sandbox_calls?: Partial<Record<ToolCallOutcome, number>> | null;
   /** a tree bigger than the service sends: what this node's agents that were
@@ -1966,7 +1966,7 @@ export interface UserRow {
   agent_types: Record<string, number>;
   surfaces: Partial<Record<Surface, number>>;
   approval: Partial<Record<ApprovalState, number>>;
-  /** sessions by whether their tool calls ran sandboxed, as the Internal tab counts them */
+  /** sessions by whether their tool calls ran sandboxed, as the Security tab counts them */
   sandbox: Partial<Record<SessionSandboxState, number>>;
   /** tool calls; null where no session's calls are recognized, which is not none */
   calls: number | null;

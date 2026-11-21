@@ -276,7 +276,7 @@ schema-8 rules the collector and the reducers document, so each tab has what it 
 | Sessions | sessions cut into tasks labeled in the agent's own words (commit subjects, a pull request's title, a `PROGRESS.md` entry), phases from explore to an edit-test loop, a Slurm job polled to its end |
 | Risks | a year regridded on the login node, `pip`/`conda` installs, builds, `ssh` to compute nodes, `nvidia-smi`, `rm -rf` on shared scratch, credentials on command lines (masked, as schema 8 writes them) |
 | Slurm | agents submitting with `--parsable` and polling the queue; people submitting arrays and checking now and then; refusals with the scheduler's own words |
-| Internal (Sandbox) | Codex calls under `codex-linux-sandbox` (isolated, Landlock-only helpers, sandboxes that failed to start), Claude calls under `bwrap` |
+| Security | Codex calls under `codex-linux-sandbox` (isolated, Landlock-only helpers, sandboxes that failed to start), Claude calls under `bwrap`; sessions launched with a bypass flag and in auto mode; and, checked here, the credentials Risks lists and the writes outside the start folder the Agents tab draws |
 | Feeds | per host: a heartbeat a minute, a nightly collector restart with its lost-event count, a kernel limit on one host |
 
 Costs are drawn per command from ranges that look like a login node's; they make the
@@ -1698,7 +1698,7 @@ imports it, and changing it rebuilds nothing.
 
 | part | from | what it says |
 |---|---|---|
-| launch | trajectories (`surface_of`, `approval_of`), sandbox (`agent_calls`) | agent types; where each session is driven from; approval at launch; whether its tool calls ran sandboxed, as the Internal tab counts them |
+| launch | trajectories (`surface_of`, `approval_of`), sandbox (`agent_calls`) | agent types; where each session is driven from; approval at launch; whether its tool calls ran sandboxed, as the Security tab counts them |
 | rhythm | trajectories (each row's first and last record, each call's start) | sessions, how long each was open, the most open at once, and the minutes in which a call began, by local hour and weekday |
 | work | each session's call log; its phase block, for one user's portrait | tool calls by category (`phase_rules.CATS`), counted; time in each phase; the agent's own words in a command (a commit message, a pull request's title, a log entry); the project and the tasks |
 | footprint | trajectories | processes, CPU, disk and network bytes, peak memory, summed as a Sessions row sums them |

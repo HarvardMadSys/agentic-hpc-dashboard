@@ -202,7 +202,7 @@ BASIS = {
     "category": "what kind of session it was, from the same phase blocks, for the newest %d "
                 "sessions: the use that holds half its work or more, else mixed, as the Sessions "
                 "tab's rows say it" % PHASE_SESSIONS,
-    "sandbox": "whether each session's tool calls ran sandboxed, as the Internal tab counts them",
+    "sandbox": "whether each session's tool calls ran sandboxed, as the Security tab counts them",
     "slurm": "the user's agent sessions as the Slurm tab folds them",
     "traits": "plain statements, each from one rule over these numbers; the rules are served "
               "beside them, and none is a judgement",

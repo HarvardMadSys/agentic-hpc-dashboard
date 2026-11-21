@@ -56,6 +56,15 @@ const PATHS = {
       {dot(10, 13.4, 0.95)}
     </>
   ),
+  // Security: a padlock, so it is not read as the Risks shield
+  security: (
+    <>
+      <rect x="4.2" y="8.8" width="11.6" height="8.4" rx="1.8" />
+      <path d="M6.8 8.8V6.4a3.2 3.2 0 0 1 6.4 0v2.4" />
+      {dot(10, 12.4, 1.05)}
+      <path d="M10 12.9v1.7" />
+    </>
+  ),
   // the login nodes: a rack of two hosts
   nodes: (
     <>

@@ -44,6 +44,7 @@ test('the shared tables an outside string indexes hold no prototype', async () =
     'lib/feeds.ts': ['FEED_LBL'],
     'lib/sandbox.ts': ['SB_LABEL', 'SESSION_LABEL', 'CALL_LABEL', 'AP_LABEL', 'AP_SHORT', 'SB_COL', 'AP_COL'],
     'lib/surfaces.ts': ['SURFACE_LBL'],
+    'lib/places.ts': ['PLACE_SEVERITY'],
     'lib/glossary.ts': ['GLOSS'],
     'lib/portraits.ts': ['CAT_TIP', 'USE_VERB', 'USE_TIP'],
     'components/ProcTree.tsx': ['ROLE_TAG', 'LINK_LBL', 'LINK_TIP'],

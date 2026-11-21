@@ -1,7 +1,7 @@
 /* Stat plate: a total, and the per-class breakdown underneath it.
  *
  * A plate carries all three classes unless its question only has an agent
- * answer (the Internal tab's sandbox panels: whether an agent's tool calls were isolated). Then
+ * answer (the Security tab's sandbox panels: whether an agent's tool calls were isolated). Then
  * `by` is left out and the row goes with it; a row of dashes for the classes
  * the question does not apply to is noise, not a breakdown.
  *

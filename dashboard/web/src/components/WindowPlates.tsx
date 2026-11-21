@@ -56,7 +56,7 @@ export const WindowPlates = memo(function WindowPlates({
   const callIso = shareOfKnown(sb.tool_calls?.agent, 'isolated', sb.states?.tool_call_known ?? CALL_KNOWN);
   const agentSum = cls.includes('agent') ? traj?.summary?.agent : undefined;
   const launch = sb.approval_by_class_sessions?.agent;
-  // a session whose tool calls ran and none was isolated (the Internal tab's sandbox
+  // a session whose tool calls ran and none was isolated (the Security tab's sandbox
   // session verdict); one with no tool call seen is neither
   const sessSb = sb.by_class_sessions?.agent;
   const classSum = (rows: { classes?: Partial<Record<string, number>> }[] | undefined, c: string) =>
