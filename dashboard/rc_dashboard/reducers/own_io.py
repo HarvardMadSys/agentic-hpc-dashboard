@@ -83,6 +83,19 @@ record's names: `rd_mb`, `wr_mb`, `rchar_mb`, `wchar_mb`), and feeds it every
 exit it reads, in order. A field the record lacks is None in what `take` gives
 back -- not measured, never 0 -- and hands nothing up.
 
+A join takes off only the children it read, and a filtered view reads only
+the records its filter keeps: the scan skips the rest before parsing them
+(`windows.ViewFilter`). So the figure is worked out ONCE, by the pass that
+reads every record -- the hour chain (hours.py), which reduces each closed
+hour over every node in order -- with one more join, the `Ledger`, which puts
+each exit's own figure on the record (`OWN`) before any reducer reads it, and
+keeps the hour's that are not the record's own `io`: a parent's, less what its
+children carried. A reader that does not read every exit -- a filtered view's
+build, a window's edge -- puts them back on the records of the hours they
+cover (`hours.OwnFigures`), and `take` gives a record that carries one that
+figure. The rest -- an exit of the hour still open, a record fed live, a feed
+with no hour chain -- the join works out as above, from what it read.
+
 The join crosses hours: a shell that exits in the next hour gives back what the
 children it reaped in this one carried. So `reaped` is CARRIED into each hour's
 reduction and is not part of the saved hour (`hours`): a reducer's `carry`,
@@ -96,11 +109,12 @@ short of what its children carried counted (`clamped`): shown as 0, never
 below.
 
 The cap is a setting, `reducers.own_io.max_parents` (`cap_of`; REAPED_MAX
-unless set), because a service holds some 35 joins at once -- five in each
-held window, five carried in the hours' chain, the live tier's two, an
-inspector read's and a lookup's -- and each holds its parents apart. A parent
+unless set), because a service holds some 36 joins at once -- five in each
+held window, six carried in the hours' chain (the reducers' and the
+`Ledger`'s), the live tier's two, an inspector read's and a lookup's -- and
+each holds its parents apart. A parent
 costs about 0.5 KB with one entry and up to 2.5 KB with PER_PID: the default
-is some 39 MB over all of them at one entry a parent, 159 MB at worst
+is some 40 MB over all of them at one entry a parent, 164 MB at worst
 (README, "Disk I/O is each process's own"). The parent given to least
 recently goes first: a dead one whose orphans' bytes wait under its pid, or
 one that has stopped reaping, before one at work. What is held for an agent
@@ -124,6 +138,11 @@ from ..procindex import pop_oldest, users_conflict
 
 FIELDS = ("rd_mb", "wr_mb", "rchar_mb", "wchar_mb")
 DISK = ("rd_mb", "wr_mb")
+# The key an exit's own figure is put on the record under: field -> MB, None
+# where unmeasured, as the record's `io` has them (`Ledger`, hours.OwnFigures).
+OWN = "_own"
+# The Ledger's key in an hour's reducer set (hours.py), which no reducer's is.
+LEDGER = "_own_ledger"
 REAPED_MAX = 2000           # parents held for their own exit, unless the setting says (`cap_of`)
 START_SLACK_S = 60.0        # how long before a process's recorded start its child may begin
 # A figure short of what its children carried by more than the collector's
@@ -339,7 +358,13 @@ class OwnIo:
 
     def take(self, rec):
         """`rec`'s own figures, one per field (None where it carries none), or
-        None when it carries no `io` block. Its whole figure goes to its parent."""
+        None when it carries no `io` block. Its whole figure goes to its parent.
+
+        One the pass that read every record worked out and put on it (`OWN`)
+        is the figure given back. The join still takes what it holds for the
+        pid, counting what it refuses, and hands the whole figure up, as it
+        would have: what it holds for the records that come without one -- the
+        hour still open, the live feed -- is what it was."""
         io = rec.get("io")
         if not isinstance(io, dict):
             return None
@@ -348,7 +373,9 @@ class OwnIo:
             return vals
         got = self.pop_reaped(rec)
         self.give(rec, vals)
-        return self.less(vals, got) if got else vals
+        own = self.less(vals, got) if got else vals
+        known = rec.get(OWN)
+        return own if known is None else tuple(known.get(f) for f in self.fields)
 
     def less(self, vals, got, count=True):
         """`vals` less what the children carried (`got`), field by field: never
@@ -551,3 +578,80 @@ class OwnIo:
         reaped no child (`reaped_none`), not taken off it."""
         return {"evicted": self.evicted, "rejected": self.rejected, "clamped": self.clamped,
                 "crowded": self.crowded, "unreaped": self.unreaped}
+
+
+def figure_key(rec):
+    """What names an exit among an hour's figures: its host, pid and time. Two
+    exits of one pid on one host are minutes apart at the least (a pid comes
+    round again only once every other one has been handed out), and the
+    collector's `ts_epoch` is to the microsecond."""
+    return rec.get("host"), rec.get("pid"), rec.get("_ts_epoch")
+
+
+class Ledger:
+    """The join of the pass that reads every record, once: the hour chain's
+    (hours.py), every exit of a node in order, carried hour to hour.
+
+    It works each exit's own figure out over every field, puts it on the record
+    (`OWN`) before any reducer reads it -- it is first in the hour's reducer
+    set, under LEDGER -- so every panel the hour holds takes the same one, and
+    keeps the hour's that differ from the record's own `io`: a parent's, less
+    what its reaped children carried. Kept by `part(rec)` (the record's user
+    and agent type, hours.own_part), so a filtered view loads the figures of the
+    records it keeps and no more (`hours.OwnFigures`). An exit not kept took
+    nothing off: its own figure is its `io` as it stands.
+
+    Its join is carried, aged and capped as a reducer's is (`CARRY_AGED`,
+    `carry_caps`, ...): the hour chain does the same with it as with theirs. It
+    is never part of a saved hour: hours.py takes it out of the set first."""
+
+    EVENTS = ("exit",)
+    CARRY_AGED = ("reaped",)
+
+    def __init__(self, cap=None, part=None):
+        self.join = OwnIo(FIELDS, cap, "own figures")
+        self.part = part
+        self.figures = {}       # part -> {figure_key: own figure, in FIELDS order}
+        self.kept = 0
+
+    def feed(self, rec):
+        own = self.join.take(rec)
+        if own is None:
+            return
+        rec[OWN] = dict(zip(FIELDS, own))
+        io = rec["io"]
+        key = figure_key(rec)
+        if key[2] is None or own == tuple(io.get(f) for f in FIELDS):
+            return
+        part = self.part(rec) if self.part is not None else None
+        got = self.figures.get(part)
+        if got is None:
+            got = self.figures[part] = {}
+        got[key] = own
+        self.kept += 1
+
+    def take_figures(self):
+        """The figures kept since the last call, by part; none kept after it."""
+        out, self.figures = self.figures, {}
+        return out
+
+    def track(self):
+        self.join.track()
+
+    def carry(self):
+        return self.join.carry({})
+
+    def carry_caps(self):
+        return self.join.carry_caps()
+
+    def carry_trimmed(self, c, dropped):
+        self.join.carry_trimmed(c, dropped)
+
+    def carry_tier(self, field, value):
+        return self.join.carry_tier(field, value)
+
+    def seed(self, c):
+        self.join.seed(c)
+
+    def strip(self):
+        self.join.strip()

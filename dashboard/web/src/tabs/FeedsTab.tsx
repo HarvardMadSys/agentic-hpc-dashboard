@@ -37,7 +37,7 @@ import { useNow } from '../lib/useNow';
 
 /* ----------------------------------------------------------- collectors */
 
-const VERDICT: Record<CollectorVerdict, { pill: FeedStatus | 'live'; text: string; tip: string }> = {
+const VERDICT: Record<CollectorVerdict, { pill: FeedStatus | 'degraded' | 'live'; text: string; tip: string }> = {
   ok: { pill: 'live', text: 'OK', tip: 'running: a heartbeat within the last few minutes' },
   degraded: { pill: 'degraded', text: 'degraded', tip: 'running, but losing data it could have' },
   stopped: { pill: 'stale', text: 'stopped', tip: 'stopped cleanly: it wrote a stop record saying why' },
@@ -325,7 +325,7 @@ function Sources({ list }: { list: FeedReport[] }) {
             // admin looking for a broken collector that does not exist.
             const unset = !f.required && (f.status === 'missing' || f.status === 'empty');
             // a missing or empty source's notice only repeats where it looked,
-            // which "read from" shows already; stale and degraded say something new
+            // which "read from" shows already; a stale one says something new
             const note = f.status === 'missing' || f.status === 'empty' ? null : f.notice;
             return (
               <tr key={f.name}>

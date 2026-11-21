@@ -799,66 +799,158 @@ export function GroupBars({
   );
 }
 
-/* --------------------------------------------------------------- stackRow */
+/* ------------------------------------------------------------- hgroupBars */
 
-export interface StackSeg {
+/** One bar of an `HGroupBars` row, as an `HBarItem` is one of `HBars`; its
+ *  series names it, so it carries no name of its own. */
+export interface HBarCell {
+  v: number | null;
+  lbl?: string;
+  tip?: string;
+  /** the bar and its value open something: the commands behind it */
+  onPick?: () => void;
+}
+export interface HBarGroup {
+  /** the row's name, written once for all of its bars */
   k: string;
-  v: number;
-  c: string;
+  /** a bar per series key; a `null` value is absent: no bar, and a dash for its value */
+  v: Record<string, HBarCell | undefined>;
 }
 
-/** One 100%-stacked row, 2px surface gaps, selective in-bar labels.
- *
- * Not zoomable, on purpose: each segment is a share of the row, and a
- * magnified segment would no longer read as a share of anything. */
-export function StackRow({
-  segs,
+/** The surface gap between one row's bars, which keeps two touching bars two. */
+const HGROUP_IN = 2;
+/** The gap between rows: wider than the one inside a row, so its bars read as one row. */
+const HGROUP_GAP = 9;
+
+/** Horizontal bars grouped in rows, on ONE value scale: a row per category,
+ * named once, and in it a bar per series, one under the other in `series`
+ * order, each with its value at its tip. Every bar grows from the same
+ * baseline, so a row's bars compare as exactly with each other as with the
+ * rows around them. The scale zooms, and the chart fits a narrow box, as
+ * `HBars` does. */
+export function HGroupBars({
+  groups,
+  series,
   W: natW = 560,
-  H = 30,
+  labelW: natLabelW = 132,
+  valW: natValW = 54,
+  barH = 12,
+  max,
+  fmtVal,
+  zoom = true,
 }: {
-  segs: StackSeg[];
+  groups: HBarGroup[];
+  series: BarSeries[];
   W?: number;
-  H?: number;
+  labelW?: number;
+  valW?: number;
+  /** one bar's thickness: a row is its bars and the gaps between them */
+  barH?: number;
+  max?: number;
+  /** writes the zoomed scale and a bar's default hover; `fmt` when left out */
+  fmtVal?: (v: number) => string;
+  /** scroll over the chart to magnify the short bars; the baseline stays 0 */
+  zoom?: boolean;
 }) {
-  const [fitRef, W] = useFit(natW);
-  const tot = segs.reduce((a, d) => a + (d.v || 0), 0);
-  if (!(tot > 0)) return null;
-  let x = 0;
-  const out: ReactNode[] = [];
-  segs.forEach((d, i) => {
-    const w = (W * (d.v || 0)) / tot;
-    if (w <= 0) return;
-    const pctv = (100 * d.v) / tot;
-    out.push(
-      <rect
-        key={'r' + d.k + i}
-        x={x}
-        y={0}
-        width={Math.max(0, w - 2)}
-        height={H}
-        rx={1.5}
-        fill={d.c}
-        data-tip={`${d.k}: ${fmt(d.v)} (${pctv.toFixed(1)}%)`}
-      />,
-    );
-    if (w > 44)
-      out.push(
-        <text
-          key={'t' + d.k + i}
-          x={x + (w - 2) / 2}
-          y={H / 2 + 3.5}
-          textAnchor="middle"
-          style={{ fontSize: '12px', fontFamily: "'IBM Plex Mono',monospace", fill: 'var(--surface)' }}
-        >
-          {pctv.toFixed(w > 62 ? 1 : 0)}%
-        </text>,
-      );
-    x += w;
-  });
+  const [ceil, setCeil] = useState<number | null>(null);
+  const [fitRef, fitW] = useFit(natW);
+  const cells = groups.flatMap((g) => series.flatMap((s) => g.v[s.k] ?? []));
+  const full = max || Math.max(...cells.map((d) => d.v ?? 0), 1);
+  const top = ceil ?? full;
+  const wheel = useCeilingWheel(zoom, cells.map((d) => d.v), full, top, setCeil);
+  if (!groups.length || !series.length) return null;
+  const F = (v: number) => (fmtVal ? fmtVal(v) : fmt(v));
+  const val = (d: HBarCell) => (d.lbl != null ? d.lbl : fmt(d.v));
+  // Drawn narrower than asked (`useFit`), the label and value columns give up
+  // the room they had beyond their own words before the bars give up any, as
+  // in HBars.
+  const words = (ss: string[]) => Math.ceil(Math.max(0, ...ss.map((s) => s.length)) * VLBL_CH);
+  const fitted = fitW < natW;
+  const labelW = fitted ? Math.min(natLabelW, words(groups.map((g) => g.k)) + 12) : natLabelW;
+  const valW = fitted ? Math.min(natValW, words(cells.map(val)) + 13) : natValW;
+  const W = fitted
+    ? Math.min(natW, Math.max(fitW, labelW + valW + Math.max(0, Math.min(natW - natLabelW - natValW, HBAR_MIN))))
+    : natW;
+  const bw = W - labelW - valW;
+  const rowH = series.length * barH + (series.length - 1) * HGROUP_IN;
+  // 3 above the first row and 8 under the last, as HBars leaves
+  const h = 3 + groups.length * (rowH + HGROUP_GAP) - HGROUP_GAP + 8;
   return (
-    <Svg w={W} h={H} fit={fitRef}>
-      {out}
-    </Svg>
+    <>
+      {zoom && (
+        <ZoomNote
+          zoomed={ceil != null}
+          text={`0 – ${F(top)}`}
+          hint="scroll to zoom the scale"
+          reset={() => setCeil(null)}
+        />
+      )}
+      <Svg w={W} h={h} fit={fitRef}>
+        <g
+          ref={wheel}
+          className={zoom ? 'zoomable' : undefined}
+          onDoubleClick={() => setCeil(null)}
+        >
+          {zoom && (
+            <rect x={0} y={0} width={W} height={h} fill="transparent">
+              <title>{ZOOM_HINT}</title>
+            </rect>
+          )}
+          {groups.map((g, gi) => {
+            const y0 = 3 + gi * (rowH + HGROUP_GAP);
+            return (
+              <g key={g.k + '-' + gi}>
+                <text
+                  className="vlbl"
+                  x={labelW - 8}
+                  y={y0 + rowH / 2 + 3.5}
+                  textAnchor="end"
+                  fill="var(--ink-2)"
+                >
+                  {g.k}
+                </text>
+                {series.map((s, si) => {
+                  const d = g.v[s.k];
+                  if (!d) return null;
+                  const y = y0 + si * (barH + HGROUP_IN);
+                  // `null` is absent: draw no bar at all, and label it with a dash.
+                  const absent = d.v == null;
+                  const v = d.v as number;
+                  const len = absent ? 0 : Math.max(v > 0 ? 2 : 0, Math.min(bw, (bw * v) / top));
+                  const cut = !absent && v > top;
+                  const e = labelW + len;
+                  return (
+                    <g key={s.k}>
+                      {!absent && (
+                        <rect
+                          x={labelW}
+                          y={y}
+                          width={len}
+                          height={barH}
+                          rx={2}
+                          fill={s.c}
+                          className={d.onPick ? 'hpick' : undefined}
+                          onClick={d.onPick}
+                          data-tip={(d.tip || `${g.k} · ${s.lbl}: ${F(v)}`) + (d.onPick ? '\nclick: every command behind it' : '')}
+                        />
+                      )}
+                      {cut && (
+                        <Cut
+                          d={`M${e - 13} ${y + barH + 1} L${e - 8} ${y - 1} M${e - 8} ${y + barH + 1} L${e - 3} ${y - 1}`}
+                        />
+                      )}
+                      <text className={`vlbl${d.onPick ? ' hpick' : ''}`} x={e + 7} y={y + barH / 2 + 3.5} onClick={d.onPick}>
+                        {val(d)}
+                      </text>
+                    </g>
+                  );
+                })}
+              </g>
+            );
+          })}
+        </g>
+      </Svg>
+    </>
   );
 }
 

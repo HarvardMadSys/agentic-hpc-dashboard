@@ -5,8 +5,10 @@ document. [`prototype.py`](prototype.py) converts a schema-8 feed into the forma
 expands it back to prove nothing is lost, and measures it. Every number here comes from
 that script, run over the dashboard's synthetic demo feed (4 hosts, 72 h, 64,901
 records), unless it is marked as a real capture. **Before deciding, run it on a real
-capture** (§7): the synthetic feed has the collector's record shapes, but not a login
-node's mix of records.
+capture** (§7): the synthetic feed has the collector's shapes, not a login node's mix.
+One thing it left open has since been built: a columnar copy of sealed days (§4.3, open
+question 5) is the dashboard's history store, [docs/feed-parquet](../feed-parquet/README.md),
+made for the schema-8 feed as it is.
 
 ## In short
 
@@ -89,28 +91,29 @@ Inside a record, by field category:
 ### 1.2 Findings
 
 **F1. Identity rides on every record about a process.** `_base_identity`
-(`collector/ebpf_trace.py:3482`) stamps 30 keys on every `exit`, `truncated`,
+(`collector/ebpf_trace.py:3813`) stamps 30 keys on every `exit`, `truncated`,
 `residency`, `conn`, `netio` and `submit`. On tick records, identity is half to
-two-thirds of the bytes. The collector's own README says as much (`collector/README.md:599`):
+two-thirds of the bytes. The collector's own README says as much (`collector/README.md:715`):
 *"identity, and so `args`, rides on every record about a process, including each tick's
 `residency`, `conn` and `netio`, so one long command line is repeated all day."*
 
 **F2. Nothing says a process started, so readers reconstruct it.**
 - `LiveReducer` reads `conn`/`netio` "for one thing: the identity block of a running
-  agent root" (`dashboard/rc_dashboard/reducers/live.py:171`). `windows.py:80` and
+  agent root" (`dashboard/rc_dashboard/reducers/live.py:207`). `windows.py:90` and
   `reducers/sandbox.py:44` say the same.
 - `ProcIndex` (`dashboard/rc_dashboard/procindex.py`) rebuilds parent links from records
   that arrive child-first. It refuses links across users and against start order,
   because pids are reused: madsys-gpu1 wrapped on 2026-10-09, and a recycled pid made
   one user's agent the parent of another user's server.
 - `session_uuid` already digests `(boot_id, pid, start ticks)` to survive restarts and
-  pid reuse (`ebpf_trace.py:1929`), but only for agent roots. Every other process is
+  pid reuse (`ebpf_trace.py:1996`), but only for agent roots. Every other process is
   keyed by a reusable pid.
 
 **F3. Session facts are copied onto every process.** In all 39 sessions of the 24 h
-synthetic day, `agent_type`, `agent_pid`, `tree_root_pid`, `session_key` and
-`session_uuid` never vary within a session. `autonomous` is set only on the root: it is
-null on all 6,779 child records. The dashboard's rule 4 (`normalize.py:59`) says approval is "a property of the
+synthetic day,
+`agent_type`, `agent_pid`, `tree_root_pid`, `session_key` and `session_uuid` never vary
+within a session. `autonomous` is set only on the root: it is null on all 6,779 child
+records. The dashboard's rule 4 (`normalize.py:60`) says approval is "a property of the
 agent SESSION", yet the feed has no session record to hold it. `sandbox.py:44` explains
 why it must read the root's own record: a first-record-wins rule made the answer depend
 on exit order.
@@ -119,7 +122,7 @@ on exit order.
 - `ts` restates `ts_epoch` as a local, naive string.
 - `session_key` is `"apid:" + agent_pid`.
 - `cpu_pct` is `cpu_s / duration_s`.
-- `cpu_scope` and `io.scope` restate `meta.cpu_scope` and `meta.counters_scope`.
+- `cpu_scope` and `io.scope` both restate `meta.cpu_scope`.
 - `samples` and `state_last` are always null (`normalize.py`, `ALWAYS_NULL`).
 - `net_endpoints.n` is the length of its list plus `overflow.n`, the endpoints cut
   past the cap.
@@ -134,12 +137,12 @@ where its value matches what the rule says, not just because of its name.
 **F5. Network bytes are written up to three times on an exit.** They appear in
 `net_tx_bytes`/`net_rx_bytes`, in `conns.peers[]` (addr, port, provider, bytes) and in
 `net_endpoints.endpoints[]` (addr, port, provider, bytes). All 83 of 83 synthetic
-`peers` equal an endpoint row. The dashboard reads neither block: no reducer names
-`conns`, `peers` or `net_endpoints`.
+`peers` equal an endpoint row. The dashboard reads only `net_endpoints` (`IoReducer`, for
+the network endpoints panel); nothing reads `conns` or `peers`.
 
 **F6. Units and times are inconsistent.**
-- `peak_rss_mb` divides by 1,048,576 (MiB) (`ebpf_trace.py:3824`), while `io.rd_mb`
-  divides by 1e6 (MB) (`ebpf_trace.py:3851`). Both say `_mb`.
+- `peak_rss_mb` divides by 1,048,576 (MiB) (`ebpf_trace.py:4157`), while `io.rd_mb`
+  divides by 1e6 (MB) (`ebpf_trace.py:4184`). Both say `_mb`.
 - An exit's `start` is a local, naive, second-granular string with no epoch, so it cannot
   be placed against another host without `meta.tz`.
 - The node tier writes `timestamp`/`hostname` and has no `event`, while the eBPF tier
@@ -148,8 +151,8 @@ where its value matches what the rule says, not just because of its name.
 **F7. Envelope constants sit on every line.** `collector_pid` is on all records but is
 read only from `meta`, `stop` and `residency_totals` (`dashboard/rc_dashboard/health.py:105`).
 
-**F8. The writer pads its own JSON.** `DailyWriter` writes `json.dumps(rec)` with the
-default `", "`/`": "` separators (`ebpf_trace.py:2260`). Compact separators alone are
+**F8. The writer pads its own JSON.** `DailyWriter` writes through `_JsonlSink`, which
+writes `json.dumps(rec)` with the default `", "`/`": "` separators (`ebpf_trace.py:2302`). Compact separators alone are
 **91.0 %** of the plain bytes, with no other change.
 
 ---
@@ -310,7 +313,7 @@ per 5 min, so this change is for consistency, not size.
 ### 2.9 Invariants kept
 
 - **Null is not zero.** Every key stays present with an explicit null; the key set per
-  event is fixed, as `_stub_identity`'s docstring requires (`ebpf_trace.py:3532`).
+  event is fixed, as `_stub_identity`'s docstring requires (`ebpf_trace.py:3862`).
 - **Three actor classes.** `actor3` stays on every exit.
 - **Nothing is fabricated.** A missing definition is counted, never inferred.
 - **Self-describing lines.** `schema_version` and `host` are on every line, so a capture
@@ -461,8 +464,8 @@ python3 docs/feed-format-v9/prototype.py demo /tmp/feed --hours 72 --hosts 4
 python3 docs/feed-format-v9/prototype.py run /tmp/feed/feed/ebpf /tmp/v9 --node /tmp/feed/feed/node
 ```
 
-The numbers above come from that feed. The demo never stops its collector, so it writes
-no `truncated` record, and its exits' scopes always match its `meta`. Without those, a
+The numbers above come from that feed. The demo's nightly collector restarts write no
+`truncated` record, and its exits' scopes always match its `meta`. Without those, a
 run does not exercise the rules for either. `demo --truncated` adds both: each host-day
 ends with a collector stop, written as `flush_live` writes one, and the first host's
 capture is `leader`-scoped. Run it after any change to the prototype; it must still

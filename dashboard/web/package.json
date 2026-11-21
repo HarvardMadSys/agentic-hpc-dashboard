@@ -12,6 +12,7 @@
     "typecheck": "tsc -b",
     "preview": "vite preview",
     "fixture": "node mock/gen_fixture.mjs",
+    "check": "npm run -s check:no-random && node --test mock/check_*.mjs",
     "check:no-random": "! grep -rn 'Math\\.random' src/ || (echo 'FAIL: Math.random() in src/' && exit 1)",
     "check:phases": "node --test mock/check_phases.mjs",
     "check:charts": "node --test mock/check_charts.mjs",
@@ -21,7 +22,8 @@
     "check:panels": "node --test mock/check_panels.mjs",
     "check:live": "node --test mock/check_live.mjs",
     "check:lookup": "node --test mock/check_lookup.mjs",
-    "check:procexit": "node --test mock/check_procexit.mjs"
+    "check:procexit": "node --test mock/check_procexit.mjs",
+    "check:io": "node --test mock/check_io.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",

@@ -61,7 +61,7 @@ from operator import itemgetter
 
 from .reducers import pct
 from .reducers.phase_log import CAT, PREV, S, TAGS
-from .reducers.phase_rules import CATS, PHASE_AGENTS
+from .reducers.phase_rules import CATS
 from .reducers.sandbox import session_state
 from .reducers.slurm import SlurmReducer
 from .reducers.trajectories import _agent_key
@@ -165,7 +165,6 @@ TRAITS = (
      "%d%% or more of the minutes in which a call began fall between 00:00 and 06:00, local "
      "time, of %d such minutes or more" % (100 * RULES["night"], RULES["night_min"])),
 )
-_TRAIT = {t[0]: t for t in TRAITS}
 
 # What one user's portrait lists, at most: the rest are counted.
 SESSIONS_SHOWN = 60         # sessions, the newest first
@@ -192,8 +191,8 @@ BASIS = {
             "sessions open at the same moment",
     "active_minutes": "the minutes in which one of the user's agents began a tool call, local time",
     "calls": "tool calls the agent issued directly, read from its commands (phase_rules) and counted "
-             "from each session's call log; calls still running are not in it. Claude Code and Codex "
-             "only: another agent's calls are not recognized, which is not none",
+             "from each session's call log; calls still running are not in it. Every agent's: Claude "
+             "Code and Codex by rules of their own, any other agent by the general rule",
     "words": "the agent's own words in a command: a commit message (git commit -m), a pull request's "
              "title (gh pr create/edit --title), or an entry written to a log or plan file",
     "phases": "time in each phase, from the same phase blocks the Sessions tab's rows show, for the "
@@ -252,8 +251,7 @@ def _session(traj, key, rows, boxed, running):
     lasts = [r.last for r in rows if r.last is not None]
     first = min(firsts) if firsts else None
     last = max(lasts) if lasts else None
-    read = agent_type in PHASE_AGENTS
-    calls = [c for r in rows for c in r.phase.calls] if read else []
+    calls = [c for r in rows for c in r.phase.calls]
     calls.sort(key=itemgetter(S))
     tagsets = traj._tagsets
     cats = collections.Counter()
@@ -276,7 +274,7 @@ def _session(traj, key, rows, boxed, running):
         "sandbox": session_state(collections.Counter(boxes)) if boxes else "no_calls",
         "first": first, "last": last,
         "wall_s": (last - first) if first is not None and last is not None else None,
-        "calls": sum(r.phase.n for r in rows) if read else None,
+        "calls": sum(r.phase.n for r in rows),
         "processes": sum(r.n for r in rows),
         "cpu_s": sum(r.cpu for r in rows),
         "rd_mb": sum(r.rd for r in rows), "wr_mb": sum(r.wr for r in rows),
@@ -752,7 +750,7 @@ def portrait(ctx, user, fleet=None):
     served = []
     for i, s in enumerate(sessions):
         block = None
-        if i < PHASE_SESSIONS and s["agent_type"] in PHASE_AGENTS:
+        if i < PHASE_SESSIONS:
             head = s["_rows"][0]
             block = traj.phase_block(head, _members(traj, head))
             if not isinstance(block, dict) or "list" not in block:
@@ -808,7 +806,7 @@ def portrait(ctx, user, fleet=None):
         "phases": {"time_s": {k: round(v, 1) for k, v in phase_s.most_common()},
                    "calls": dict(phase_n.most_common()),
                    "sessions": blocks,
-                   "of": sum(1 for s in sessions if s["agent_type"] in PHASE_AGENTS)},
+                   "of": len(sessions)},
         "tasks": {"n": n_tasks, "lone": n_lone, "quoted": dict(quoted),
                   "recent": tasks[:TASKS_SHOWN], "listed_of": len(tasks)},
         "sessions": served,

@@ -45,7 +45,7 @@ case $name in
     scope=rc-fleet-stream; cap=512M; pause=10; burst=5; within=600
     checks=(--dirs-only --base-ok)
     dir=$HOME
-    cmd=(/usr/bin/python3 "$R/current/fleet/fleet_stream.py" receive --config "$ETC/stream.json") ;;
+    cmd=(/usr/bin/python3 "$R/current/hpc/fleet/fleet_stream.py" receive --config "$ETC/stream.json") ;;
   dashboard)
     scope=rc-dashboard; cap=${RC_DASH_MEMORY_MAX:-7G}; pause=30; burst=4; within=21600
     checks=(--dirs-only --base-ok --auth-set --port-free)

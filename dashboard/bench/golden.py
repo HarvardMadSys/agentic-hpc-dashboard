@@ -6,9 +6,9 @@
 `dump` starts the service from an empty cache with the clock pinned to the feed's
 end (`clock.as_of=auto`, so every build over the same bytes is the same build) and
 the hash seed fixed, waits for the backfill and the default window, opens a
-filtered view and the inspector on the busiest sessions, and writes every
-response a page reads, with the keys that say when or how fast something ran
-removed (`VOLATILE`). `compare` parses both and lists every difference: a speed-up
+filtered view and the inspector on the busiest sessions, and writes the main
+responses a page reads, with the keys that say when or how fast something ran
+removed (`VOLATILE`). `compare` parses both and lists the differences, up to 60: a speed-up
 that changes a number the page shows is a regression, whatever it saves.
 """
 import argparse

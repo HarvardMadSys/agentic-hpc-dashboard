@@ -168,8 +168,8 @@ export const GLOSS: Record<string, string> = table({
   // sessions
   trajectory: 'process tree: one session’s processes, each drawn under the process that started it, with its tool calls in order',
   purpose: 'purpose: what kind of work each process was (polling, files, build, compute, …), as a coloured strip over the session',
-  tasks: 'tasks: what an agent was working on. A task can start after an hour or more in which the agent waited on nothing, when its work moves to something new, or after a commit or pull request. A quoted label is the agent’s own words. Any other label is a verb and the names its commands used. A dashed block is a few tool calls hours from other work.',
-  phases: 'phases: what an agent was doing, read from the commands it ran: exploring, editing, building, testing, running, Slurm jobs, waiting, git, and idle. Reading and editing inside the agent, and its thinking, leave no command, so an edit shows only when a command makes it or, hatched, as a guess',
+  tasks: 'tasks: what a session was working on. A task can start after an hour or more in which it waited on nothing, when its work moves to something new, or after a commit or pull request. A quoted label is words written in its commands: the agent’s own, or a person’s. Any other label is a verb and the names its commands used. A dashed block is a few calls hours from other work.',
+  phases: 'phases: what a session was doing, read from the commands it ran: exploring, editing, building, testing, running, Slurm jobs, waiting, git, and idle. An agent’s are its tool calls; a session no agent ran, a person’s login or an editor’s terminal, is read from the commands its terminals ran, each command line one call. Reading and editing inside an agent or in an editor’s window, and thinking, leave no command, so an edit shows only when a command makes it or, hatched, as a guess',
   keys: 'pieces: how many pieces the collector recorded this session in, joined into this one row',
   wall: 'length: elapsed time from the session’s first process to its last',
   sigmacpu: 'Σ CPU: CPU of the process and everything below it',

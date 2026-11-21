@@ -28,7 +28,7 @@ import time
 from collections import Counter
 
 from . import cast
-from .records import Proc, endpoint, envelope, exit_record, logu
+from .records import Proc, endpoint, envelope, logu
 from .sessions import DURATION, Builder, human_shell, sbatch_args, slurm_submit, squeue_args
 
 CLAUDE_VER = "2.1.311"
@@ -869,6 +869,7 @@ def claude_desktop(b):
                cgroup=b.scope, start=s.start, end=s.end, rss_mb=round(rng.uniform(60, 120), 1),
                threads=12, cpu_s=round((s.end - s.start) * 0.002, 2))
     srv.agent_pid = srv.tree_root_pid = srv.pid
+    srv.pgrp = srv.sid = srv.pid                        # a daemon: it leads its own session
     srv.session_uuid = _uuid(b.hf.boot_id, srv.pid, s.start)
     host = Agent.around(b, srv, 0.002)                  # the server ticks as the tree's root
     appr = p.get("approval", "auto")
@@ -927,6 +928,7 @@ def _vscode_tree(b, s):
                cgroup=b.scope, start=s.start, end=s.end, rss_mb=round(rng.uniform(150, 260), 1),
                threads=11)
     srv.agent_pid = srv.tree_root_pid = srv.pid
+    srv.pgrp = srv.sid = srv.pid        # started over ssh, it leads its session: its helpers are in its group
     srv.depth = 0
     srv.session_uuid = _uuid(b.hf.boot_id, srv.pid, s.start)
     ext = b.child(srv, s.start + 2, "node", "%s/node %s/out/bootstrap-fork --type=extensionHost "
@@ -968,6 +970,7 @@ def _vscode_terminal(b, ag_like, pty, t0, t1, hours=None):
                  "workbench/contrib/terminal/common/scripts/shellIntegration-bash.sh"
                  % (b.home, VSCODE), dur=t1 - t0, cwd=b.pdir)
     sh.tty = "pts/%d" % rng.randint(1, 48)
+    sh.pgrp = sh.sid = sh.pid           # the terminal host starts its shell in a session of its own
     t = t0 + 20
     lang = b.proj["lang"]
     while t < t1 - 60:
@@ -980,7 +983,7 @@ def _vscode_terminal(b, ag_like, pty, t0, t1, hours=None):
             ("python3", "python3 -m http.server 8000") if b.user == "john" else ("make", "make -j4"),
             ("jupyter", "jupyter lab --no-browser --port 8890") if b.user == "john" else ("git", "git log -5")])
         p = b.child(sh, t, cmd, args, dur=logu(rng, 300, 3600) if args.startswith(("python3 -m http", "jupyter"))
-                    else None, scale=2 if cmd in ("cargo", "make") else 1)
+                    else None, scale=2 if cmd in ("cargo", "make") else 1, job=True)
         p.end = min(p.end, t1 - 5)
         b.exit(p)
         ag_like.procs.append((p.start, p.end, p.command, p.rss_mb or 0, p.threads or 1))

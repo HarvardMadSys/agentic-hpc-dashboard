@@ -38,9 +38,7 @@ Two correctness rules, both from how the collector writes:
 
 """
 import concurrent.futures
-import glob
 import heapq
-import json
 import os
 from operator import itemgetter
 

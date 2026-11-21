@@ -28,7 +28,7 @@ export function isConfigLeaf(n: ConfigNode): n is ConfigLeaf {
 
 /* ----------------------------------------------------------------- feeds */
 
-export type FeedStatus = 'ok' | 'stale' | 'empty' | 'missing' | 'degraded';
+export type FeedStatus = 'ok' | 'stale' | 'empty' | 'missing';
 
 export interface FeedReport {
   name: string;
@@ -876,7 +876,11 @@ export interface PhaseBlock {
   /** 2 for a block that carries its tasks; a block of the first version has no `tasks`, `headline`, or `days` */
   v: number;
   basis: string;
-  /** every tool call seen, the cut ones included. For an agent over several days, the whole session's */
+  /** whose calls it was read from: an agent's tool calls (`agent`), or, where no agent ran the session, the jobs its
+   *  terminals' shells ran (`terminal`: a person's login, an editor's terminal). Absent from a service that read
+   *  agents alone, which is `agent` */
+  driver?: PhaseDriver;
+  /** every call seen, the cut ones included. For an agent over several days, the whole session's */
   n_calls: number;
   /** calls past the log's bound: in `n_calls` and in no phase. The earliest began at `cut_at` */
   cut: number;
@@ -909,15 +913,21 @@ export interface PhaseBlock {
  *  mostly not recorded; `none` for one that made no tool call. */
 export type SessionCategory = UseKind | 'mixed' | 'wait' | 'unknown' | 'none';
 
+/** Whose calls a block was read from (`PhaseBlock.driver`). */
+export type PhaseDriver = 'agent' | 'terminal';
+
 /** A block's category, the uses it rests on, and its summary, as a portrait's session carries them too: null where no
  *  block was built for it. */
 export interface SessionKind {
   category?: SessionCategory | null;
   uses?: [UseKind, number][] | null;
   summary?: string | null;
+  /** whose calls it was read from; `agent` where absent */
+  driver?: PhaseDriver;
 }
 
-/** A row whose calls are not recognized: an agent type outside Claude Code and Codex, a person, an IDE. */
+/** What a service that read agents alone sent for a row whose calls it did not read: an agent type outside Claude
+ *  Code and Codex, a person, an IDE. The service now reads every row, and sends a block for each. */
 export interface PhasesUnavailable {
   unavailable: string;
 }
@@ -951,7 +961,6 @@ export interface TrajRunning {
 /** How a session's collector keys were attributed to it, most certain first
  * (`rc_dashboard/procindex.py: VIA`). A row reports its least certain key. */
 export type OwnerVia = 'self' | 'ancestor' | 'parent' | 'tree_root' | 'root' | 'unknown';
-export const OWNER_VIA: OwnerVia[] = ['self', 'ancestor', 'parent', 'tree_root', 'root', 'unknown'];
 
 export interface TrajRow {
   sid: string;

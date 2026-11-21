@@ -14,7 +14,8 @@
  *   programs seen under it, `, seen through sleep and ugrep` (R56, R65)
  * - a session running now ends in its LIVE EDGE, which is not a phase and so is not a row to click: what the
  *   per-minute census shows running (an empty dashed chip where it shows nothing, a dotted one where it
- *   cannot say), and where that was read from
+ *   cannot say), and where that was read from. A session with no phase yet, whose first call has not ended,
+ *   is its live edge alone, from its first record
  *
  * Clicking a phase picks it, as a click on its name on the chart does: the chart zooms to it and the tree
  * opens at its first call.
@@ -28,10 +29,10 @@
  * render again when it flips (`useClockPinned`); the edge's end is now, read again with every live frame (`useNow`,
  * lib/useNow.ts).
  */
-import type { Phase, PhaseBlock, TrajRunning } from '../api/types';
+import type { Phase, PhaseBlock, PhaseDriver, TrajRunning } from '../api/types';
 import { useClockPinned, useNow } from '../lib/useNow';
 import { clock, dur } from '../lib/format';
-import { cutNote, edgeLabel, edgeWhat, phaseCol, phaseLbl, phaseWhat, zoomTip } from '../lib/phases';
+import { cutNote, driverOf, edgeLabel, edgeWhat, phaseCol, phaseLbl, phaseWhat, zoomTip } from '../lib/phases';
 
 type Look = 'fill' | 'guess' | 'idle' | 'unknown';
 
@@ -48,9 +49,9 @@ export function PhaseChip({ kind }: { kind: Phase['kind'] }) {
   return <Chip look={kind === 'edit_guess' ? 'guess' : col === 'none' ? 'idle' : 'fill'} fill={col} />;
 }
 
-/** One phase, as a row to click: its chip, name, when it began and ended, how long it was, and what it was. Picking it is
- *  the caller's: `onPick` is told which. */
-export function PhaseRow({ p, onPick }: { p: Phase; onPick: (p: Phase) => void }) {
+/** One phase, as a row to click: its chip, name, when it began and ended, how long it was, and what it was, in the words of
+ *  whose calls its block was read from (`driver`). Picking it is the caller's: `onPick` is told which. */
+export function PhaseRow({ p, onPick, driver }: { p: Phase; onPick: (p: Phase) => void; driver?: PhaseDriver }) {
   useClockPinned();
   const col = phaseCol(p.kind);
   const look: Look = p.kind === 'edit_guess' ? 'guess' : col === 'none' ? 'idle' : 'fill';
@@ -60,29 +61,34 @@ export function PhaseRow({ p, onPick }: { p: Phase; onPick: (p: Phase) => void }
       <span className={`pl-name ${look}`}>{phaseLbl(p.kind)}</span>
       <span className="pl-when">{`${clock(p.t0)}–${clock(p.t1)}`}</span>
       <span className="pl-dur">{dur(p.t1 - p.t0)}</span>
-      <span className="pl-what">{phaseWhat(p)}</span>
+      <span className="pl-what">{phaseWhat(p, driver)}</span>
     </button>
   );
 }
 
 /** The live edge of a session running now, after its last phase: what the per-minute census shows running, from the last
- *  phase's end to now. Not a phase and not a row to click. Nothing where the session is not running, or has no phase. */
+ *  phase's end to now, or from `first`, the session's first record, where no call has ended yet. Not a phase and not a row
+ *  to click. Nothing where the session is not running, or has neither a phase nor a first record. */
 export function EdgeRow({
   block,
   now,
+  first,
 }: {
   block: PhaseBlock;
   /** what the per-minute census shows running at the live edge of a session running now */
   now?: TrajRunning['now'] | null;
+  /** the session's first record, epoch seconds: where the edge begins when it has no phase */
+  first?: number | null;
 }) {
   const list = block.list;
   const last = list.length ? list[list.length - 1] : null;
-  const edge = last && now && (now.state === 'running' || now.state === 'idle' || now.state === 'unknown') ? now : null;
+  const start = last ? last.t1 : first;
+  const edge = start != null && now && (now.state === 'running' || now.state === 'idle' || now.state === 'unknown') ? now : null;
   // it runs on to now: read again with every live frame (lib/useNow.ts)
   const at = useNow(edge != null);
   useClockPinned();
-  if (!edge) return null;
-  const from = last?.t1 ?? 0;
+  if (!edge || start == null) return null;
+  const from = start;
   const to = Math.max(at / 1000, from);
   // the edge is drawn as the chart draws it: filled in what is running, an empty dashed outline where the census
   // shows nothing beyond what was up already (a proxy for idle), and a dotted one where it cannot say
@@ -102,20 +108,24 @@ export function EdgeRow({
 export function PhaseList({
   block,
   now,
+  first,
   onPick,
 }: {
   block: PhaseBlock;
   /** what the per-minute census shows running at the live edge of a session running now */
   now?: TrajRunning['now'] | null;
+  /** the session's first record: where its live edge begins while it has no phase */
+  first?: number | null;
   onPick: (p: Phase) => void;
 }) {
   const note = cutNote(block);
+  const driver = driverOf(block);
   return (
     <div className="pl" role="group" aria-label="the phases, in order">
       {block.list.map((p, i) => (
-        <PhaseRow key={i} p={p} onPick={onPick} />
+        <PhaseRow key={i} p={p} onPick={onPick} driver={driver} />
       ))}
-      <EdgeRow block={block} now={now} />
+      <EdgeRow block={block} now={now} first={first} />
       {note && <div className="pl-note">{note}</div>}
     </div>
   );

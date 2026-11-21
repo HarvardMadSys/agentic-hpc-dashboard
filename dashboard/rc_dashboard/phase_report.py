@@ -18,9 +18,10 @@ Every folded row is then built as the page gets it (`TrajectoryReducer._row`), a
     each (`T<i>`, its span and length, and its label, in quotes with where the agent's own words
     came from when it has them), with the gap before it and what was still running through the
     gap, and a lone stretch (a few calls hours from other work) as a line of its own
-  * the calls by kind (`bash`, `search`, `wrapper`, `shell`, `bare`) and agent type, with the
+  * the calls by kind (`bash`, `search`, `wrapper`, `shell`, `bare`, and a terminal's `job` and
+    `subshell`) and agent type, or class for a session no agent ran, with the
     commonest shapes of each, so a shape filed in the wrong place shows
-  * a summary over the rows whose calls are recognized (Claude Code and Codex): phases per active
+  * a summary over the rows an agent ran, of every agent type: phases per active
     hour (median, p90, max), the share of rows at a handful or fewer, phases per row, tasks per
     session-day (median, p90, max, over the rows with two active hours or more), the sessions by
     category, each session once, the share of tasks named by the agent's words, the lone
@@ -62,7 +63,7 @@ from .normalize import Normalizer, canonical_class
 from .procindex import ProcIndex
 from .redact import redact
 from .reducers.phase_log import CAT, FLAGS, OPEN, P_TEXT, S, PhaseLog
-from .reducers.phase_rules import (_SETUP, PHASE_AGENTS, _argv, _first_word, call_text,
+from .reducers.phase_rules import (_SETUP, RULED_AGENTS, _argv, _first_word, call_text,
                                    is_fs_helper, shell_text, split_simple)
 from .reducers.phase_segment import NEVER_EXITED
 from .reducers import trajectories as trajmod
@@ -74,7 +75,7 @@ SHAPE_CHARS = 60            # characters of a masked command shown as a shape
 LABEL_CHARS = 200           # characters of a task's label or a headline shown
 DAY_SESSIONS = 10 ** 7      # raw sessions one pass over a day holds (`reduce_day`)
 EXAMPLES = 4                # shapes per kind shown with their first argv
-KINDS = ("bash", "search", "wrapper", "shell", "bare")
+KINDS = ("bash", "search", "wrapper", "shell", "bare", "job", "subshell")
 MINUTE = "%H:%M"            # the clock of a task line, as `clock` takes it
 
 
@@ -245,14 +246,17 @@ def _program(text):
 
 
 def call_shape(rec, kind, kids_text=None):
-    """A call's shape for the census: a bare command's program (the fs helper as such), a search's
-    name, a shell call's first program, and a wrapper's payload's first program."""
+    """A call's shape for the census: a bare command's program (the fs helper as such), a
+    terminal's job's program, a search's name, a shell call's first program, and a wrapper's or a
+    forked subshell's payload's first program."""
     command, args, argv0 = _argv(rec)
     if kind == "bare":
         return "codex fs helper" if is_fs_helper(rec) else (os.path.basename(command) or "?")
+    if kind == "job":
+        return os.path.basename(command) or argv0 or "?"
     if kind == "search":
         return argv0 or os.path.basename(command) or "?"
-    if kind == "wrapper":
+    if kind in ("wrapper", "subshell"):
         if not kids_text:
             return "(no payload)"
         text = shell_text(None, kids_text)
@@ -273,8 +277,9 @@ class CountedReducer(TrajectoryReducer):
         self.bare_argv = collections.Counter()    # (agent type, masked argv) of a bare call
 
     def _call(self, s, rec, kind, t0, end, kids):
+        # an agent by its type, as the reducer reads it; a session no agent ran by its class
         at = rec.get("agent_type")
-        at = at if at in PHASE_AGENTS else s.agent_type
+        at = (at if at in RULED_AGENTS else s.agent_type) if s.cls == "agent" else s.cls
         key = (at, kind, call_shape(rec, kind, kids[P_TEXT] if kids else None))
         self.by_kind[(at, kind)] += 1
         self.shapes[key] += 1
@@ -360,8 +365,11 @@ def session_calls(traj, days):
                         app_s=traj.phase_params["app_read_s"])
     last = max(s.last for s, _entries in parts)
     block, own = list(log.calls), {}
+    # a session no agent ran (an editor's server keyed on its pid joins its days too) reads only
+    # what waits under a command as a call still running, as its block does
+    terminal = parts[0][0].cls != "agent"
     for s, entries in parts:
-        opened, hidden = traj._open_calls(parts[0][0].agent_type, last, entries)
+        opened, hidden = traj._open_calls(parts[0][0].agent_type, last, entries, terminal)
         block += opened
         own[s.sid] = (list(s.phase.calls_in(log, traj.phase_params["app_read_s"])) + opened,
                       hidden)
@@ -630,20 +638,29 @@ def report(out, traj, read, day, apids=(), trees=(), top=15, days=1):
                                                    for a, n in argv[:top]), file=out)
 
     # -- the summary
-    sup = [(s, row, mem, calls) for s, row, mem, calls in rows if "list" in row["phases"]]
-    unavail = collections.Counter(row["agent_type"] for s, row, mem, calls in rows
-                                  if s.cls == "agent" and "list" not in row["phases"])
+    sup = [(s, row, mem, calls) for s, row, mem, calls in rows
+           if "list" in row["phases"] and s.cls == "agent"]
+    # every other row is read from its terminals' jobs, and counted apart: the thresholds below
+    # were tuned on agents' calls
+    term = [(s, row) for s, row, _mem, _calls in rows
+            if "list" in row["phases"] and s.cls != "agent"]
+    by_type = collections.Counter(row["agent_type"] or "?" for _s, row, _m, _c in sup)
     stats = [(s, row, row_stats(row["phases"], calls.block, row["sid"], calls.own))
              for s, row, mem, calls in sup]
     real = [x for x in stats if traj.rooted(x[0])]
-    print("\n== summary over the rows whose calls are recognized (%s)" %
-          ", ".join(sorted(PHASE_AGENTS)), file=out)
+    print("\n== summary over the rows an agent ran (%s by rules of their own, any other by the "
+          "general rule)" % ", ".join(sorted(RULED_AGENTS)), file=out)
     print("rows: %d: %d sessions (an agent process at the root) and %d probes (none, as the "
           "page counts them); calls %s" % (
               len(sup), len(real), len(sup) - len(real),
               "{:,}".format(sum(row["n_calls"] for _s, row, _m, _c in sup))), file=out)
-    print("agent rows whose calls are not recognized: %s" % (
-        ", ".join("%s %d" % (k, v) for k, v in unavail.most_common()) or "none"), file=out)
+    print("agent rows by type: %s" % (
+        ", ".join("%s %d" % (k, v) for k, v in by_type.most_common()) or "none"), file=out)
+    by_cls = collections.Counter(s.cls for s, _row in term)
+    print("rows no agent ran, read from their terminals' jobs: %d (%s); calls %s, in %d rows" % (
+        len(term), ", ".join("%s %d" % kv for kv in by_cls.most_common()) or "none",
+        "{:,}".format(sum(row["n_calls"] or 0 for _s, row in term)),
+        sum(1 for _s, row in term if row["n_calls"])), file=out)
     dist = _distribution(out, "sessions", real, days=days)
     _distribution(out, "every row, probes too", stats, brief=True, days=days)
     categories = session_categories(row for _s, row, _st in real)
@@ -693,13 +710,15 @@ def report(out, traj, read, day, apids=(), trees=(), top=15, days=1):
           "no phase: %d" % (len(off), " %s" % off[:10] if off else "", unplaced), file=out)
     print("pending join at the day's end: %s entries (cap %s), %s evicted, %s refused as an "
           "earlier process's (%s records); call index %s, %s evicted; past-due dropped %s; "
-          "reparented %s; held by a root to its exit %s; preview overflow %s; phase_tag_overflow "
-          "%s; sessions evicted %s"
+          "reparented %s; held by a root to its exit %s; of a session no agent ran with no "
+          "process groups kept, not read %s; preview overflow %s; phase_tag_overflow %s; "
+          "sessions evicted %s"
           % tuple("{:,}".format(v) for v in (
               len(traj.pend.entries), traj.pend.cap, traj.pend.evicted, traj.pend.refused,
               traj.pend.refused_records, len(traj.calls_at), traj.calls_at_evicted,
               traj.past_due_evicted, traj.phase_reparented, traj.phase_unread,
-              traj.preview_overflow, traj.tag_overflow, traj.evicted)), file=out)
+              traj.phase_ungrouped, traj.preview_overflow, traj.tag_overflow,
+              traj.evicted)), file=out)
     print("late children: where each process went, %s noted (cap %s), %s dropped; placed where "
           "their parent went %s; placed nowhere %s; under a record with no time %s; pushed with "
           "no start to check %s; pushed past %s parents up %s; entries started under a parent "

@@ -49,23 +49,30 @@ Every source is configurable. Each key is resolved **separately**, in the order
 never outranks the file.
 
 - Copy [`dashboard.config.example.json`](dashboard.config.example.json) to
-  `dashboard.config.json` (gitignored) and edit it. Keys prefixed with `//` are comments and are
-  stripped on load, so the example file is itself a valid config.
-- `--print-config` prints the resolved tree with a `_origin` for each key, so you never have to
-  guess why the service is reading a particular path.
-- Path defaults are **candidate lists** that are probed against the filesystem. `--check-feeds` shows
-  every candidate and which one won.
-- **A mistake stops the service instead of loosening it.** A config file named by `--config`
-  or `RC_DASH_CONFIG` must exist. A yes/no setting, whether an `RC_DASH_*` variable or a string
-  in the file, accepts `1`/`0`, `true`/`false`, `yes`/`no` or `on`/`off` in any case. Anything else
-  (`RC_DASH_ASK=n`) stops the service. So does an unknown key under `server`, `anonymize` or `ask`,
-  or a top-level key that is one typo away from one of them (`anonymise`); the error names the
-  nearest real key. An unknown key anywhere else, such as `feeds.ebpf.prefer` in an old file from
-  the EBR format, only produces a warning.
-- `history` (`RC_DASH_HISTORY`, `RC_DASH_HISTORY_DIR`, `_WORKERS`, `_DAYS`) also keeps every
-  sealed day-file as Parquet, built in the background, and answers selective reads of a sealed
-  day from that copy ([History in Parquet](#history-in-parquet)). `RC_DASH_HISTORY=0` reads every
-  day-file as JSONL. Switching it changes no answer and rebuilds no saved window.
+  `dashboard.config.json` (gitignored) and edit. `//`-prefixed keys are comments, stripped on
+  load, so the example file is itself a legal config.
+- `--print-config` prints the resolved tree with a `_origin` per key, so "why is it reading
+  *that*" is never a guess.
+- Path defaults are **candidate lists**, probed against the filesystem, and every candidate
+  that exists is read. `--print-config` lists the ones that exist (`_existing`);
+  `--check-feeds` prints the first, or how many it tried when none does.
+- **A mistake stops the service rather than loosening it.** A config file named by `--config`
+  or `RC_DASH_CONFIG` must exist. A yes/no setting, as an `RC_DASH_*` variable or as a string
+  in the file, is `1`/`0`, `true`/`false`, `yes`/`no` or `on`/`off` in any case; anything else
+  (`RC_DASH_ASK=n`) stops it. An unknown key under `server`, `anonymize` or `ask`, or a
+  top-level key one slip from one of them (`anonymise`), stops it and names the nearest key
+  there is. An unknown key anywhere else, such as an old file's `feeds.ebpf.prefer` from the
+  EBR format, is a warning.
+- **The feeds since removed are named and ignored, never refused.** Nothing read the
+  scheduler's accounting or the domain and user CSVs, so their feeds are gone. A unit, wrapper
+  or config file written for them still starts, with a warning for each setting it gives:
+  `feeds.sacct`, `feeds.sacctmgr`, `feeds.domains` or `feeds.user_actor` in the file, which is
+  dropped from the resolved config; `RC_DASH_SACCT_DIR` and the other variables
+  (`config.RETIRED_ENV`); or `--sacct-dir` and `--jobs-csv`.
+- `history` (`RC_DASH_HISTORY`, `RC_DASH_HISTORY_DIR`, `_WORKERS`, `_DAYS`) keeps every
+  sealed day-file as Parquet too, made in the background, and answers a selective read of one
+  from that copy ([History in Parquet](#history-in-parquet)); `RC_DASH_HISTORY=0` reads every
+  day-file as JSONL. Switching it changes no answer, and rebuilds no saved window.
 - `ingest.workers` (`RC_DASH_INGEST_WORKERS`, 1 by default) and `ingest.reducer_groups`
   (`RC_DASH_INGEST_REDUCER_GROUPS`, 2) reduce the hours in worker processes, each taking one
   node's share of an hour for one group of reducers. 0 workers means one per CPU the service may
@@ -85,21 +92,28 @@ is a JSON line, and the retired builder's contract was `data.json`), and
 
 | feed | what it carries | default candidates |
 |---|---|---|
-| `ebpf` (**required**) | the root tier: per-process exit, residency, tcp/conn, submit | `$EBPFM_LOG_ROOT`, `$EBPFM_OUTPUT_DIR`, `$RC_MEASUREMENT_ROOT/ebpfm/logs`, `log/ebpfm`, `/var/log/ebpfm` |
-| `ebpf_node` | the unprivileged node tier: load, memory, NFS, per-user cgroup | `$EBPFM_NODE_LOG_ROOT`, `…/ebpfm/node/logs`, `/var/log/ebpfm-login`, `log/login` |
+| `ebpf` (**required**) | the root tier: per-process exit, residency, tcp/conn, submit | `$EBPFM_LOG_ROOT`, `$EBPFM_OUTPUT_DIR`, `$RC_MEASUREMENT_ROOT/ebpfm/logs`, `log/ebpfm`, `log/ebpfm/logs`, `/var/log/ebpfm`, `~/.ebpfm/ebpf` |
+| `ebpf_node` | the unprivileged node tier: load, memory, NFS, per-user cgroup | `$EBPFM_NODE_LOG_ROOT`, `$EBPFM_NODE_OUTPUT_DIR`, `$RC_MEASUREMENT_ROOT/ebpfm/node/logs`, `log/ebpfm_node`, `/var/log/ebpfm-login`, `~/.ebpfm/login`, `log/login` |
+
+A relative candidate is under the repository's root. `/var/log/ebpfm{,-login}` and
+`~/.ebpfm/{ebpf,login}` are where the collector writes as root and as a user; as root on a
+host with a writable `/scratch` it writes to `/scratch/ebpfm{,-login}`, which is not a
+candidate, so name it in `RC_DASH_EBPF_ROOTS` / `RC_DASH_NODE_ROOTS`.
 
 Under a root, a day is a directory of one file per host and stream:
 `<YYYY-MM-DD>/<host>.exits.jsonl[.gz]` and `<host>.snapshot.jsonl[.gz]` for the eBPF tier,
 `<YYYY-MM-DD>/<host>.jsonl` for the node tier. A `.gz` file is a day the collector has
 sealed. The collector never seals the node tier's files.
 
-`log/login` is the last candidate, but it matters: `node_snapshot.py` is a vendored copy of
-`collect/common/snapshot.py`, so the existing login feed has a compatible schema and works before
-`ebpfm --node` is deployed anywhere.
+`log/login` is last but load-bearing: `node_snapshot.py` is a vendored copy of
+`collect/common/snapshot.py`, so the login feed that poller writes is schema-compatible, and is
+read where the collector's node tier is not deployed.
 
-The service reads the collector's output from a **separate** env var, not the collector's own
-`EBPFM_OUTPUT_DIR`, following `collect/healthcheck.py`. If they shared one variable, an operator's
-shell could silently repoint the readers along with the writer.
+The readers have a variable of their own, `EBPFM_LOG_ROOT`, first in the list, following
+`collect/healthcheck.py`: an operator shell that repoints the collector's `EBPFM_OUTPUT_DIR`
+is not meant to repoint the readers too. That variable is still a candidate, though, and every
+candidate that exists is read, so one set where the service starts adds a root.
+`RC_DASH_EBPF_ROOTS` (`--ebpf-root`) replaces the list.
 
 ### History in Parquet
 
@@ -216,15 +230,16 @@ as EBR can be read again after converting it to JSONL with the last version of `
 | `run-fasrc.sh` | 8085 | FAS RC capture, `/scratch/marthen/fas-rc-test-data` (boslogin06, 2026-10-08..09, `.jsonl.gz`) | pinned to the capture's end | `fasrc.json` | on |
 | `run-demo.sh` | 8087 | a synthetic feed it writes itself, `.cache/demo/feed` ([Demo mode](#demo-mode)) | wall | built-in rules | on |
 
-Both hot-reload like `./run.sh build`, from the same tree, and both serve names as aliases
-(`RC_DASH_ANONYMIZE=1`, [Anonymized names](#anonymized-names)). `run-dev.sh` and
-`run-fasrc.sh` (and `run.sh` itself) only start with a password hash in
-`dashboard.config.json` ([Password](#password)). Without one, the backend prints how to make
-one and exits. `run-demo.sh` needs no password. `site.name` (`RC_DASH_SITE_NAME`) is
-shown under the sidebar title and in the browser tab, so you can't mistake a frozen capture for
-a live feed when both are open side by side. `slurm.enabled` (`RC_DASH_SLURM=0`) turns off the
-Slurm tab and skips its reduction, for a cluster without Slurm. The Overview's "asked of Slurm"
-rows disappear along with it.
+All three hot-reload as `./run.sh build`, from the same tree. `run-dev.sh` and `run-fasrc.sh`
+serve names as they are (`RC_DASH_ANONYMIZE=0` unless set; `1` aliases every name,
+[Anonymized names](#anonymized-names)), to readers who sign in. `run-dev.sh` and
+`run-fasrc.sh` (and `run.sh` itself) start only with a password hash in
+`dashboard.config.json` ([Password](#password)); without one the backend prints how to make
+one and exits. `run-demo.sh` needs none. `site.name` (`RC_DASH_SITE_NAME`) is
+shown under the sidebar title and in the browser tab, so a frozen capture and a live feed open
+side by side are never mistaken for each other. `slurm.enabled` (`RC_DASH_SLURM=0`) turns the
+Slurm tab off and skips reducing it, for a cluster without Slurm; the Overview's "asked of Slurm"
+rows go with it.
 
 The FAS RC `sacct` export (`/scratch/marthen/agentic-hpc-measurement/raw_data/sacct`, one parquet
 file a day, 2026-08-23..09-30) is not read. Those days overlap neither deployment's eBPF data, so
@@ -273,16 +288,16 @@ is meant to show:
 Costs are drawn for each command from ranges that look like a login node's. They make the
 panels' shapes recognisable, but they don't model anything.
 
-**What it overrides.** The demo overrides the following settings, whatever the shell or the
-config file says, because `run.sh` exports the cluster's feed roots and a demo must never read
-them: both feed roots (set to the demo's own), the other feeds (set to a path in the demo dir
-that does not exist, so they read *not set up*), `cache.dir` (so no real deployment's saved
-builds are evicted), `clock.as_of` (the wall clock), `live.retention_min` and
-`live.backfill_hours` (to match the history written), `panels.preprocess` and
-`panels.preprocess_wait_s` (every window is built before the port opens, so a visitor never lands
-on a *merging* bar), `site.name`/`site.description`, and `server.auth.open` (a demo serves its
-made-up data with no password unless one is set). Each of these shows `demo` as its origin in
-`--print-config`. `--ebpf-root`, `--node-root` and `--as-of` are refused rather than ignored.
+**What it overrides**, whatever the shell or the config file says -- `run.sh` exports the
+cluster's feed roots, and a demo must never read them: both feed roots (the demo's own), the other feeds (a path in the
+demo dir that does not exist, so they read *not set up*), `cache.dir` (so no real deployment's
+saved builds are evicted), `clock.as_of` (the wall clock), `feeds.ebpf.days`,
+`live.retention_min`, `live.backfill_hours` and `live.window_min` (fitted to the history
+written), `panels.preprocess` and `panels.preprocess_wait_s` (every window built before the
+port opens, so a visitor never lands on a *merging* bar), `site.name`/`site.description`,
+`server.rdns.enabled` (off: no DNS is asked about made-up addresses), and `server.auth.open`
+(a demo serves its made-up data with no password unless one is set). Each reads `demo` as its origin in `--print-config`.
+`--ebpf-root`, `--node-root` and `--as-of` are refused rather than ignored.
 
 | flag | env | default | |
 |---|---|---|---|
@@ -296,10 +311,12 @@ made-up data with no password unless one is set). Each of these shows `demo` as 
 **Hosting it.** [`docker/demo/Dockerfile`](../docker/demo/Dockerfile) packages the demo as one
 image (`docker run -p 8080:8080`), with two days of history, Ask LLM off, and the people's
 working day in New York time. [`deploy/cloudflare`](../deploy/cloudflare/README.md) puts
-that image behind a Cloudflare Worker at <https://dashboard-demo.agentic-system.org>. It is one
-shared instance that sleeps when nobody is looking and shows that it is starting while it wakes.
-To run the real service over live collectors, behind a password, on a host of your own, see
-[`deploy/fleet`](../deploy/fleet/README.md).
+that image behind a Cloudflare Worker at <https://dashboard-demo.agentic-system.org>: one
+shared instance that sleeps when nobody is looking and says it is starting while it wakes.
+The real service over live collectors, behind a password, on a host of your own, is one
+of [`deploy`](../deploy/README.md)'s two modes -- one server that runs the collector and
+the dashboard, or a fleet of collectors that the dashboard's host pulls from with rsync --
+or, over a cluster's login nodes, [`hpc/deploy`](../hpc/deploy/README.md).
 
 **Restarts resume the demo.** The feed is a function of the seed, the host count and the clock.
 The same span produces the same bytes, however it is cut into windows (`demo/world.py`;
@@ -321,25 +338,26 @@ handles both without modifying any record. (`run-fasrc.sh` serves boslogin06's c
 (`rc_dashboard/gz.py`). Once the history store has converted it, its replica answers the
 selective reads ([History in Parquet](#history-in-parquet)). Every reader here
 addresses a file by byte offset (the window plan's binary search, the read-back that walks from
-the end, a saved window's resume, the tail), and gzip doesn't support random access. So the
-first open inflates the file once and saves a copy of the inflater state every 8 MB of output.
-After that, reaching any offset inflates at most 8 MB. Offsets refer to the uncompressed stream,
-so a byte range or a saved build means the same thing for either form. On boslogin06's
-2026-10-08..09 (330 MB -> 7.9 GB), indexing takes ~6 s and holds ~32 MB. The index lives in the
-process because an inflater cannot be pickled, so each restart indexes again. A plain file takes
-precedence over its `.gz` copy, concatenated gzip members are followed, and a truncated stream is
-read as far as it goes. A date dir that holds no day-file is skipped instead of being counted as a
-day. A copied capture can have dirs created before their files arrive, and counting those dirs
-used to leave the capture's 1 h view with nothing to read.
+the end, a saved window's resume, the tail),
+and gzip offers none of that, so the first open inflates the file once and keeps a copy of the
+inflater every 8 MB of output. Reaching any offset then inflates at most 8 MB, and offsets are
+into the uncompressed stream, so a byte range or a saved build means the same thing for either
+form. On boslogin06's 2026-10-08..09 (330 MB -> 7.9 GB) indexing takes ~6 s and holds ~32 MB;
+it lives in the process, because an inflater cannot be pickled, so each restart indexes again.
+A plain file wins over its `.gz` copy, concatenated members are followed, and a stream cut
+short is read as far as it goes. A date dir holding no day-file is passed over rather than
+counted as a day: a copied capture has dirs made ahead of the files, and counting them left
+the 1 h view of the capture nothing to read.
 
-**It is old.** On the wall clock, every window would end in days of nothing. `clock.as_of`
-(`RC_DASH_AS_OF`, `--as-of`) pins the service's present: `auto` means one second after the newest
-record, or you can give a local time. The pinned clock is **frozen** (`rc_dashboard/clock.py`
-explains why: a running clock would date every saved build in the future after a hot-reload
-restart, so the service would re-scan instead of resuming). Every live frame carries `clock`, the
-header reads *frozen capture · as of ...* instead of *live*, and the page takes "now" from the
-server rather than the browser, so the events query, the export bounds and every "ago" agree with
-the windows. Durations that the service measures with that clock read 0 s.
+**It is old.** On the wall clock every window would end in days of nothing. `clock.as_of`
+(`RC_DASH_AS_OF`, `--as-of`) pins the service's present: `auto` is one second after the newest
+record, or give a local time. The pinned clock is **frozen** (`rc_dashboard/clock.py` says why:
+a running one would date every saved build in the future after a hot-reload restart, and
+re-scan instead of resuming). Every live frame carries `clock`, the header reads *frozen
+capture · as of ...* instead of *live*, and the page takes "now" from the server, not the
+browser, so the events query, the export bounds and every "ago" agree with the windows.
+Durations are not measured on that clock: a build's elapsed time, the inspector's read time
+and the workers' idle time are timed on `time.monotonic()`, which the pin leaves alone.
 
 ### Testing against a capture
 
@@ -441,9 +459,11 @@ A rebuild reports three things instead of assuming them:
   with a real percentage. It is neither `none` (which would claim a measurement) nor the empty
   state (which would blame the feed).
 - **Drift.** A built view keeps ingesting, so it holds more than its own window. The excess is
-  published in seconds, and the view re-scans once it reaches `panels.max_drift_pct` (25%) of the
-  window. Because this is proportional, a 1 h view refreshes often and cheaply, and a 7 d view
-  rarely and expensively.
+  published in seconds and the view re-scans at `panels.max_drift_pct` (25%) of the window —
+  proportional, so 1 h refreshes often and cheaply and 7 d rarely and expensively. With the
+  hours kept, a view filtered by user or agent type also re-scans once the hour still open as
+  it was built has closed, whatever its drift, so its exits' own disk bytes are the hours'
+  ("Disk I/O is each process's own").
 - **The seam.** A build reads the day-files while the tailer is also advancing through them.
   Rows that land in that seam are buffered and replayed. If the buffer overflows, the count is
   published as `replay_dropped` instead of silently going missing. The seam is drawn per file,
@@ -501,77 +521,85 @@ Two things keep a build from costing more than it needs to:
   reducers are pickled to `<cache.dir>/windows/` together with exactly how far into each day-file
   the scan read: `(st_dev, st_ino)`, a digest of the first 4 KB, and the offset just past the last
   complete line. A restart (and `run.sh` restarts on every save), or a return to a
-  window the LRU evicted, loads that snapshot and reads each file onward from its offset, so it
-  only reads what the collector wrote since. On one login node's feed, a 24 h window goes from
-  ~7 s to ~0.2 s and a 7 d window from ~42 s to ~1.4 s, plus the catch-up. A snapshot is ~12 MB
-  per day of window, and `panels.cache_keep` (8) limits how many are kept.
+  window the LRU evicted, loads that and reads each file on from its offset — only what the
+  collector wrote since. On one login node's feed a 24 h window goes from ~7 s to ~0.2 s and a
+  7 d window from ~42 s to ~1.4 s, plus the catch-up. A snapshot is ~12 MB per day of window;
+  `panels.cache_keep` (8) bounds how many are kept.
 
-A resumed view holds the same records as a service that had never stopped, and reproduces a
-fresh scan's panels exactly. This was checked on real data and in `tests/test_window_cache.py`.
-The view keeps its original `built_at`, so its age and drift read as if nothing had restarted.
-The catch-up *is* drift, and the view re-scans at the same drift budget. The snapshot is ignored,
-and the window is scanned from scratch, unless all of the following hold. If one fails, the
-window status's `cache.note` says which:
+A resumed view holds the records a service that had never stopped would hold, and reproduces a
+fresh scan's panels exactly — checked on real data, and in `tests/test_window_cache.py`. It keeps
+its original `built_at`, so its age and its drift read as they would had nothing restarted; the
+catch-up *is* drift, and re-scans at the same budget. The snapshot is ignored, and the window
+scanned from scratch, unless all of these hold — and the window status's `cache.note` says which
+one failed:
 
-- The same code and config (a fingerprint of the reducers, the normaliser, the scan and every
-  config key outside `server`). If you change how a record is counted, the service must never
-  resume a reduction that was counted the old way.
-- The same files. Every file the build read must still be there, with the same inode *and* the
-  same first 4 KB (a file that is deleted and rewritten can get its inode number back), at least
-  as long as before, and with a line ending at the saved offset. A day the collector has gzipped
-  since (`x.jsonl` to `x.jsonl.gz`) has the same bytes at the same offsets under a new name and
-  inode. It is recognised by its first 4 KB alone and read onward from its `.gz` (or from its
-  replica, which answers the same checks).
-- Built within the window's drift budget. An older snapshot would be re-scanned as soon as it
-  caught up, so catching it up would only add to the cost.
+- the same code and config (a fingerprint of the reducers, the normaliser, the scan and every
+  config key outside `server`, `anonymize`, `ui`, `ask` and `history`, none of which changes
+  what a saved state holds) — changing how a record is counted must never resume a reduction
+  counted the old way;
+- the same files: every one it read still there, the same inode *and* the same first 4 KB (a
+  file deleted and rewritten can get its inode number back), at least as long, and a line ending
+  at the saved offset. A day the collector has gzipped since (`x.jsonl` to `x.jsonl.gz`) is the
+  same bytes at the same offsets under a new name and inode, so it is read on from its `.gz` (or
+  its replica, which answers the same checks), known by its first 4 KB alone;
+- built within the window's drift budget. An older one would be re-scanned the moment it caught
+  up, so catching it up would only add to the cost;
+- for a view filtered by user or agent type, the hour still open when it was built not closed
+  since. Such a build joins that hour's exits within itself, over what its filter keeps, and once
+  the hour has closed a build gives them the figures the hours worked out over every record
+  instead ("Disk I/O is each process's own"); a copy that only reads on from where it stopped
+  would keep its own, so that hour is saved with it (`own_open_hour`).
 
-A drift re-build always scans, because its purpose is to move the window's start forward, which
-an older copy cannot do. Unpickling runs code chosen by whoever can write the file, so the
-directory is created 0700 and files 0600, and a symlink, or a file another user owns or can
-write, is never loaded.
+A drift re-build always scans: it exists to move the window's start forward, which an older copy
+cannot do. So does a filtered view's once the hour still open as it was built has closed. Pickle
+runs code for whoever can write the file, so the directory is created 0700, files 0600, and a
+symlink or a file another user owns or can write is never loaded.
 
-**The panels are saved too** (`payloads.py`). Everything a view materialises (every reducer's
-`result()`, with credentials masked) is written to `<cache.dir>/payloads/` after each build and
-each refresh tick, along with the span it covers. When the registry creates a view (after a
-restart, or for a window the LRU dropped), the view shows those panels immediately, the same way
-a drift re-build shows its previous reduction. They carry their own `built_at`, coverage and
-drift, and the "rebuilding" pill, whose tooltip says when they were saved (`cache.restored` in the
-window status). The view's own build then swaps in fresh panels. Saved panels are only shown for
-the same code and config (the same key a saved build and a saved hour use), the same window and
-filter, and within the drift budget. Otherwise `cache.panels_note` says why they weren't shown.
-They are a snapshot of what the page showed and are never used as input: no build reads them. A
-day's panels on the two-host demo feed are ~0.4 MB (0.12 MB compressed) and load in ~5 ms.
+**The panels are saved too** (`payloads.py`). What a view materialises -- every reducer's
+`result()`, credentials masked -- is written to `<cache.dir>/payloads/` after each build and each
+refresh tick, with the span it covers. A view the registry creates (after a restart, or for a
+window the LRU dropped) shows those panels at once, as a drift re-build shows its previous
+reduction: their own `built_at`, coverage and drift, and the "rebuilding" pill, whose tip says
+when they were saved (`cache.restored` in the window status). Its own build then swaps fresh panels
+in. Saved panels are shown only for the same code and config (what a saved build and a saved hour
+are keyed on), the same window and filter, and within the drift budget; otherwise
+`cache.panels_note` says why not. They are a picture of what the page showed, never an input: no
+build reads them. A day's panels on the two-host demo feed are ~0.4 MB, 0.12 MB compressed, and
+load in ~5 ms.
 
-`panels.cache_windows=false` (`RC_DASH_CACHE_WINDOWS=0`) turns all of this off.
+`panels.cache_windows=false` (`RC_DASH_CACHE_WINDOWS=0`) turns all of it off.
 
 ### Hourly merge-reduce
 
 With `panels.merge_reduce` on (the default; `RC_DASH_MERGE_REDUCE=0` turns it off), each record is
 parsed and reduced **once**, into the state of the epoch hour it belongs to, and that state is
-saved under `<cache.dir>/hours/` (`hours.py`). An unfiltered window is then made of three parts:
-the records from its start to the first whole hour, read as before, so the start is exact rather
-than rounded to an hour; every closed hour inside it, merged from their saved states (whole epoch
-days come from one saved merge of their 24 hours, `panels.day_cache`); and the hour that is still
-open, read as before. The view is fed live as always. Every window reducer has `merge(other)`,
-which folds a later state into its own exactly as if it had been fed the later records, so a
-merged window equals the window one pass builds (`tests/test_merge.py`, `tests/test_hours.py`;
-also checked on the real feed). The quantile panels are now a mergeable sketch of every value
-rather than a capped sample: `n`, `max` and `mean` are exact, each quantile is within 1%
-(`rel_err`), and `sampled` is false.
+saved under `<cache.dir>/hours/` (`hours.py`). An unfiltered window is then the records from its
+start to the first whole hour, read as before, so the start is exact rather than snapped to an
+hour; every closed hour inside it, merged from their saved states (whole epoch days from one saved
+merge of their 24 hours, `panels.day_cache`); and the hour still open, read as before. The view
+is live-fed as always. Every window reducer has `merge(other)`, which folds a later state into its
+own exactly as feeding it the later records would have, so a merged window is the window one pass
+builds (`tests/test_merge.py`, `tests/test_hours.py`; checked on the real feed). The quantile panels
+are now a mergeable sketch of every value rather than a capped sample: `n`, `max` and `mean` exact,
+each quantile within 1% (`rel_err`), `sampled` false.
 
-Some joins cross an hour boundary: the shell-wrapper dedup, the process index's parent requests,
-a sandbox wrapper absorbing its payload, and the keys the workspace has admitted. Their state is
-carried from each hour into the next hour's reduction, so the hours are reduced in order, and a
-merged window takes the join state its last hour ended with. That carried state is aged out after
-24 hours without being touched. This is the one place where a merged 7 d window differs from one
-pass over 7 days: it no longer holds week-old pending requests. On rtx6000a, those old requests
-made one pass refuse a few legitimate parents whose pid had been used by an older process. An
-hour closes once the newest record is `panels.hour_grace_s` (300 s) past its end. A record that
-arrives for a closed hour is found by the next hour's read and merged into its own hour's saved
-state, so it is not lost. On one login node's feed, a 24 h window then builds in ~2-3 s and a 7 d
-window in ~8 s after a restart, a window switch or a drift refresh (compared with ~15 s and
-~160 s when scanned). Filling the hours the first time costs about as much as one scan. A week of
-hours takes ~38 MB on disk. A view filtered to users or agent types is still scanned.
+Joins that cross an hour -- the shell-wrapper dedup, the process index's parent requests, a
+sandbox wrapper absorbing its payload, the keys the workspace has admitted -- are carried from
+each hour into the next one's reduction, so the hours are reduced in order, and a merged window
+takes the join state its last hour ended with. That carried state is aged out after 24 hours
+untouched, which is the one place a merged 7 d window differs from one pass over 7 days: it no
+longer holds week-old pending requests, which on rtx6000a made one pass refuse a few legitimate
+parents whose pid an older process had used. An hour closes once the newest record is
+`panels.hour_grace_s` (300 s) past its end; a record that arrives for a closed hour is found by the
+next hour's read and merged into its hour's saved state, not lost. On one login node's feed a 24 h window then builds in ~2-3 s and a 7 d one in
+~8 s after a restart, a window switch or a drift refresh (against ~15 s and ~160 s scanned);
+filling the hours the first time costs about what one scan does. A week of hours is ~38 MB on
+disk. A view filtered to users or agent types is still scanned, but its exits take their own
+disk bytes from the hours, which its build reduces first when they are not yet (see "Disk I/O
+is each process's own"): each hour also saves the own figures of the exits it took a child off
+(`o<hour>`), kept by user and agent type so a filtered build reads only its own. On the bench
+feed (a day of 8 nodes, 0.9 M records) they are 0.25 MB beside 3.3 MB of hour states, and
+working them out adds under 3% to reducing an hour.
 
 On a sealed day, an hour's time search and its read each open the `.gz`, and the next hour's
 search lands near where that read ended. Each open used to inflate the same 8 MB span again. Now,
@@ -620,15 +648,15 @@ with other users' load) over the eight nodes' real feed of 2026-11-16, with Pyth
 | 15:00, a balanced hour (1.45 M records) | 90 s | 28 s | 22 s | 18 s | **15 s** (6.2x) | 15 s |
 | 11:00-14:00, boslogin07 at 2 GB/h (4.94 M) | 367 s | 120 s | 119 s | 111 s | **92 s** (4.0x) | 101 s |
 
-The balanced hour is limited by boslogin06 and by the merge into the hour (~4 s an hour in the
-service's own process). The spike hours are limited by boslogin07, whose records cost more to
-read than to reduce, so its second read helps less. Two workers per node (one per node and group)
-is the most that helps. Each worker takes ~0.5 GB (16 of them ~7.4 GB, plus ~1.7 GB in the service
-while it merges), and they count against the service's memory cap. The FAS deployment uses two
-per node (`INGEST_WORKERS` in `deploy/fleet/site.env`, left empty for two per node). The table
-was measured with a single pool, where every worker took the next hour of any unit. With a worker
-for every unit, as in the 16 (2) column, each unit now sticks to its own worker
-(`hours.UnitPool`, below), and that setup has not been measured on this feed.
+The balanced hour is bound by boslogin06 and the merge into the hour (~4 s an hour in the
+service's own process); the spike hours by boslogin07, whose records cost more to read than to
+reduce, so its second read buys less. Two workers per node -- one per node and group -- is the
+most that helps; each is ~0.5 GB (16 of them ~7.4 GB, plus ~1.7 GB in the service while it
+merges), and they count against the service's memory cap. The FAS deployment uses that
+(`INGEST_WORKERS` in `hpc/deploy/site.env`, empty for two per node). The table was measured
+with one pool that every worker took any unit's next hour from; with a worker for every unit, as
+in the 16 (2) column, each unit now keeps to its own (`hours.UnitPool`, below), which this feed
+has not been measured with.
 
 **Python 3.14.** The same reductions run 5-10% faster on CPython 3.14 than on 3.12, and every
 panel is identical (compared field by field on a real slice). The test suite passes on both.
@@ -688,8 +716,10 @@ take up to ~1 GB. The demo turns both settings on.
 | `GET /api/windows` | offered windows, the retention ceiling, and every held window's build state |
 | `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |
 | `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
+| `GET /api/live/users?window_min=&q=&limit=&running=` | the user roster past the busiest rows the live frame carries; `q` searches it (the aliases, when names are anonymized), `running=agent:<type>` keeps the accounts with such a session up |
+| `GET /api/live/user?name=&window_min=&n=` | one account opened up: the sessions it has running and its last `n` (25) exited processes, however long ago |
 | `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#sessions-tasks-phases-and-processes)) |
-| `GET /api/trajectory?sid=&window_min=&from=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
+| `GET /api/trajectory?sid=&window_min=&from=&to=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
 | `GET /api/annotate` | the model that labels tool calls with their purpose: provider, model, endpoint, whether it can run here ([below](#tool-call-purposes-from-a-model)) |
 | `POST /api/annotate` `{sid, window_min, from, to, order, run}` | one session's tool calls and the purposes already known; `run` starts a job asking the model about the rest |
 | `GET /api/annotate/{job}` | that job's progress and its answers so far |
@@ -697,14 +727,17 @@ take up to ~1 GB. The demo turns both settings on.
 | `GET /api/user?name=&window_min=` | one user's portrait: their row read against the window's users, rhythm by hour, calls and time by phase, projects and tasks, the scheduler, and their sessions; `name` takes the alias when names are anonymized |
 | `GET /api/events?<filters>` | paged event query |
 | `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
-| `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}`. Each reader has its own sender that holds the newest frame of each kind, so a reader that stops reading holds up neither the tail nor the other readers (previously it did, for as long as it stayed connected). A reader that takes no frame for 5 s is dropped (close 1008), and beyond 64 readers a new one is turned away (close 1013: the page retries, then polls) |
-| `GET /api/health` | `ok` false, and `why`, when the service is not doing its work: the tail has not moved (no poll ended, no batch handed over) for 5 poll intervals (at least 5 s); a background loop failed its last 3 rounds in a row (the ingest loop's 3 polls, the windows loop's 6 s, the feeds loop's 90 s, the rebuild loop's 3 rebuild intervals); or a view could not take a record in 3 of the tail's batches in a row. A single error changes nothing: a round that succeeds, or a batch that every view takes, ends the streak. Previously it said `ok` even with a `last_poll` two minutes old, whatever errors the loops and the views had hit. Also returns `ingest` (`age_s`, `stale_after_s`, `feed_errors`, `feed_error_streak`, `feed_error`), each loop's last error, error count and `streak` (`loops`), the readers (`websocket`: `readers`, `dropped`, `refused`, `last_drop`), the backfill, the windows, and the memos. Loop and view errors are also logged to stderr when they change, and once a minute while they repeat |
+| `GET /api/io/commands?<filters>&window_min=&apid=&host=&cwd=` | starts a lookup of every command behind an I/O figure, over the window's records (`iocmds.py`); `apid` and `host` name the agents as the page drew them, `cwd` a directory |
+| `GET /api/io/commands/{job}?offset=&limit=&sort=&dir=` | that lookup's state and, once it is done, a page of its rows (200, by `rd_mb`, largest first, unless asked otherwise) |
+| `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}`. Each reader has a sender of its own holding the newest frame of each kind, so a reader that stops reading holds up neither the tail nor the other readers (one did, for as long as it stayed); one that takes no frame for 5 s is dropped (close 1008), and past 64 readers one is turned away (close 1013: the page retries, then polls) |
+| `GET /api/health` | `ok` false, and `why`, when the service is not doing its work: the tail has not moved -- no poll ended, no batch handed over -- for 5 poll intervals (5 s at least); a background loop failed its last 3 rounds in a row (the ingest loop's 3 polls, the windows loop's 6 s, the feeds loop's 90 s, the rebuild loop's 3 rebuild intervals); or a view could not take a record in 3 of the tail's batches in a row. One error alone flips nothing: a round that goes through, or a batch every view takes, ends the streak. It said `ok` with a `last_poll` two minutes old, and whatever the loops and the views met. `ingest` (`age_s`, `stale_after_s`, `feed_errors`, `feed_error_streak`, `feed_error`), each loop's last error, how many and its `streak` (`loops`), the readers (`websocket`: `readers`, `dropped`, `refused`, `last_drop`), the backfill, the windows, the memos. A loop's error and a view's are also logged to stderr, when they change and once a minute while they repeat |
 | `GET /login`, `POST /login` | the sign-in form, and signing in: a session cookie, then back to `next` ([Password](#password)) |
 | `POST /logout` | signing out: the cookie cleared, then the form |
 
-With a password set, every route above requires it ([Password](#password)). `POST /api/ask`,
-`GET /api/ask` and `/api/suggestions/done` belong to [Ask LLM](#ask-llm). Every route under `/api`
-that is not a GET or HEAD only accepts a JSON body (and returns a 415 otherwise).
+With a password set, every route above asks for it ([Password](#password)). `POST /api/ask`,
+`GET /api/ask`, `GET /api/ask/{job}` and `/api/suggestions/done` (`GET`, `POST`, and `DELETE
+/api/suggestions/done/{id}`) are [Ask LLM](#ask-llm)'s; every route under `/api` that is not a
+GET or HEAD takes a JSON body only (a 415 otherwise).
 
 `window_min` is optional everywhere. Omitting it means `live.window_min`, never an error, so a
 script or bookmark that predates the control keeps the view it had. A value above retention is
@@ -721,46 +754,47 @@ the collector's `depth`, the fold) says so in `link`, and a parent with no exit 
 is drawn without one. Consecutive siblings of the same shape fold into counted groups. Every bound
 is reported in the response, never applied silently. The read stops at
 `reducers.trajectories.inspect_max_records` (150 000) or `inspect_max_bytes` and says where
-(`scan.stopped_at`; `from=` continues from there). At most `inspect_hold` (20 000) processes, and
-at most `inspect_per_parent` (2 000) childless processes of one command per parent, are itemised,
-and the rest are counted under their parent. `inspect_nodes` (6 000) rows are served breadth
-first, and the rest are counted. Command lines are masked (`redact.py`) and then cut to 220
-characters. Only one read runs at a time, and its tree is served again for ten minutes
-(`CACHE_TTL`) as long as the window is the same build.
+(`scan.stopped_at`; `from=` continues from it), at most `inspect_hold` (20 000) processes and
+`inspect_per_parent` (2 000) childless ones of one command per parent are itemised and the rest
+counted under their parent, and `inspect_nodes` (6 000) rows are served breadth first with the rest
+counted. Command lines are masked (`redact.py`) and then cut to 220 characters. One read runs at
+a time, and its tree is served again for ten minutes (`CACHE_TTL`) while the window is the same
+build.
 
-**How a read is made.** Most of a large session's read time goes into building its records and
-normalising them (44 us per record on FAS, compared with 6 us for the tree they feed). So that
-work is done in `reducers.trajectories.inspect_workers` worker processes (8, and no more than the
-CPUs the service may use; 1 builds them in the service's own process), each handling a part of
-each day-file: a replica's row groups, or a plain file's 32 MB chunks (`keysearch.py`). A record
-comes back holding only the fields the tree reads. The parts are replayed in file order with the
-same counters the single-process read keeps, so every bound above stops a read at the same record
-either way (`tests/test_keysearch.py`). A read that stops early is cancelled in its workers, so
-the next read does not wait behind it. A sealed day-file with no replica is read in the service's
-own process, as before. A row's summary also takes the agent's other days from the ranking's last
-fold, instead of folding every session of the window again under the service's lock. On FAS's
-boslogin06, 2026-11-16, read as a live window reads it (with its fold stale), a 150 000-record
-read went from 9.9 s to 2.5-2.7 s, and a 3 121-key agent's read went from 13.2 s to 2.2-2.6 s.
-Newest first, reading 149 573 records on boslogin05 went from 12.1 s to 5.3-5.5 s, and most of
-that time is now the tree's own work of keeping the newest records.
+**How a read is made.** Most of a large session's read is building its records and normalising
+them -- 44 us a record on FAS, against 6 us for the tree they feed -- so that is done in
+`reducers.trajectories.inspect_workers` worker processes (8, and no more than the CPUs the
+service may use; 1 builds them in the service's own process), a part of each day-file each: a
+replica's row groups, or a plain file's 32 MB chunks (`keysearch.py`). A record comes back holding
+only the fields the tree reads. The parts are replayed in file order with the counters the
+one-process read keeps, so every bound above stops a read at the same record either way
+(`tests/test_keysearch.py`); a read that stops early is cancelled in its workers, so the next one
+does not wait behind it. A sealed day-file with no replica is read in the service's own process,
+as before. And a row's summary takes the agent's other days from the ranking's last fold rather
+than folding every session of the window again under the service's lock. On FAS's boslogin06,
+2026-11-16, read as a live window is (its fold stale), a 150 000-record read went from 9.9 s to
+2.5-2.7 s, and a 3 121-key agent's from 13.2 s to 2.2-2.6 s; newest first, 149 573 records on
+boslogin05 from 12.1 s to 5.3-5.5 s, the tree's own keeping of the newest now the most of it.
 
-Each of those bounds keeps one end of the session and counts the other. By default, they all keep
-the **oldest** end, which is the order the records arrive in. `order=newest` moves every bound to
-the other end, rather than just sorting the result. Siblings are listed with the latest start
-first, and the rows are served breadth first in that order, so the row budget cuts the deep end of
-the oldest subtrees. A process that finds the hold full, or its command's quota under one parent
-used up, is drawn anyway, and the oldest drawn process is counted under its parent instead. The
-read continues to the session's end, up to `inspect_newest_records` (600 000). However much it
-reads, it keeps only the newest `inspect_hold` drawn processes, so that budget only limits time.
-Totals are the same in either order.
+Each of those bounds keeps one end of the session and counts the other, and by default all of
+them keep the **oldest**, the order the records arrive in. `order=newest` moves every one of them
+rather than sorting the result. Siblings are listed latest start first, and the rows are served
+breadth first in that order, so the row budget cuts the deep end of the oldest subtrees. A process
+that finds the hold full, or its command's quota under one parent, is drawn anyway, and the oldest
+drawn one is counted under its parent in its place. The read goes on to the session's end, up to
+`inspect_newest_records` (600 000): however much it reads, it keeps only the newest
+`inspect_hold` drawn, so that budget bounds time alone. Totals are the same in either order.
 
-`/api/events` and `/api/export` share the same filters, so **the download is exactly the view**:
-`from to class[] agent_type[] user[] host[] tool[] purpose[] bucket[] session_key sandbox
-approval depth_min depth_max cpu_min duration_min exit_code signal outcome[] q`. `outcome` is
+Filters are shared by `/api/events` and `/api/export`, so **the download is exactly the view**:
+`from to event[] class[] agent_type[] user[] host[] tool[] purpose[] bucket[] session_key
+sandbox approval depth_min depth_max cpu_min duration_min rd_min wr_min exit_code signal
+outcome[] q`. `event` is `exit` unless one is given (an empty `event=` widens it to every kind,
+and `/api/events` says `event_filter_defaulted` when it applied the default); `rd_min` and
+`wr_min` are MB read and written, at least. `outcome` is
 how a process ended, in the words of [Commands that failed](#commands-that-failed): `ok`,
 `nonzero`, `answer`, `signal`, `pipe` or `none`.
 
-The export's first line is a `_meta` header (filters, window, feed paths, schema versions) and its last is a `_trailer` (row count, whether the cap truncated it).
+The export's first line is a `_meta` header (the filters, `from` and `to` among them, the feed paths and their status, schema versions) and its last is a `_trailer` (row count, whether the cap truncated it).
 Body rows are the
 collector's own fields plus added `_`-prefixed derived keys. The original fields are unmodified,
 except for credentials.
@@ -860,47 +894,63 @@ already made that mistake once.
   its commands' I/O, and an agent's figure includes the I/O of every one of its tool calls. Every
   figure that sums disk or syscall bytes (the
   I/O panel, the tool mix, the I/O series, the blast radius, the sessions, the live roster and its
-  rows, the inspector's subtree totals, the commands behind a number) takes each process's
-  figure minus what its exited children carried. This is done in `reducers/own_io.py`, with one
-  join per reducer, carried across hours like the other joins. The live tier's backfill, which
-  reads newest first, subtracts each child from the first parent it meets. So a command's bytes
-  count once, not once for every process above it. A child whose exit was not read is not
-  subtracted, for example one outside the window, or one a filter leaves out. Neither is a child
-  that its parent cannot have reaped. A child that outlives its parent still names that parent's
-  pid, and a later process may get that pid, so a process only subtracts children of its own user
-  (except for root) that began no more than a minute before it did (its recorded start is its
-  last exec). Other children were already counted at their own exits; they are dropped, and the
-  drop is counted.
+  rows, the inspector's subtree totals, the commands behind a number -- takes each process's
+  figure less what its exited children carried (`reducers/own_io.py`: one join per reducer,
+  carried across hours like the other joins; the live tier's backfill, which reads newest first,
+  takes each child off the parent it met first). So a command's bytes count once, not once per
+  process above it. A join can take off only a child whose exit it read, and a filtered view
+  never reads what its filter leaves out: a `claude` that read 20 MB itself, under which a
+  `codex` it started read 100 MB, was 20 MB unfiltered and 120 MB under
+  `agent_type=claude_code`. So the figure is worked out once, by the one pass that reads every
+  record: the hours (`hours.py`, "Hourly merge-reduce") put each exit's own figure on it before
+  their reducers read it, with one more join (`Ledger`), and save the parents' beside each hour,
+  kept by the process's user and agent type. A filtered view's build gives every exit of a
+  closed hour in its window that figure, from a day-file or a sealed day's replica alike,
+  loading only the figures of the users and agent types it keeps; a window's first part-hour
+  does too, so a child reaped before the window began is taken off as in the hours after it.
+  Then a process reads the same in any view. A child is still not taken off where no such pass
+  has read it: in the hour still open and in what a filtered view is fed live, the view takes
+  off only the children it read, until that hour has closed (its status says from which hour,
+  `cache.own_io`). A held filtered view is then built again at the next rebuild tick
+  (`rebuild.interval_s`, 15 minutes), whatever its drift: about one filtered scan an hour for
+  each filtered view held, where drift alone would build a 24 h view again every 6 h and a 7 d
+  one every 42 h (on the bench's six-node feed, `bench/README.md`, a 24 h filtered view is
+  built again in about 3 to 7 s, a 48 h one in 4 to 16 s). And a build of it saved before that hour
+  closed is not resumed after: a restart reads the window again (`cache.note` says why). With
+  no hours kept (`panels.merge_reduce` off) every view joins what it reads, as before; and the
+  inspector and the commands behind a number join what their own reads parse, as before. Nor is
+  one its parent cannot have reaped: a child that outlives its
+  parent still names it, and a later process may get that pid, so a process takes off only its
+  own user's children (root aside) that began no more than a minute before it did (its recorded
+  start is its last exec); the rest were counted at their own exits and are dropped, counted.
   The record has no fork time apart from that exec, so a launcher that forks a child and execs
-  more than a minute later is refused that child. The child's bytes then count twice, and the
-  refusal is counted in `rejected` (across four million records, one child in 2.7 M began between
-  a minute and an hour before its parent's recorded start). The record also has no reaping event.
-  A child that ended before its parent but was never waited for by it (the parent never calls
-  wait(), or ignores SIGCHLD) is not in the parent's figure. A parent that reaped no children at
-  all shows it: its `child_cpu_s`, the CPU the kernel credits a reaper with in the same step as
-  the bytes, is 0. Such a parent has nothing subtracted, and is counted separately (`unreaped`).
-  A parent that reaped some of its children but not others still has all of them subtracted, so
-  its figure comes out short by the unreaped ones. A figure that would go below 0 shows as 0, and
-  that is counted too. Each join holds at most `reducers.own_io.max_parents` parents (2000; below
-  1 the service refuses to start). When it is full, the parent that least recently received a
-  child is dropped first. The drop is counted (`evicted`) and reported on stderr (the first time,
-  then at most hourly per panel in each process, so each of the hours' workers reports it too),
-  and that parent's children's bytes are then counted again at its exit. Entries held for an
-  agent runtime, or for the process that started one, are only dropped after every other parent,
-  unless such parents hold more than half the cap. An agent sits idle for as long as its reader
-  does while other parents reap, and its tool calls' bytes are the most any parent holds, but a
-  login shell that the feed never sees exit would otherwise crowd out the rest.
-  A pid whose children's groups pass PER_PID (eight), with no two from the same user to merge,
-  drops the earliest-begun group, counted separately (`crowded`); the cap does not apply to it. A
-  service holds about 35 joins (five in each held window, five carried in the hours' chain, two
-  in the live tier, one for an inspector read and one for a lookup). At one entry per parent
-  (~0.5 KB), 2000 parents come to ~39 MB in all; at the demo's 2.8, ~69 MB; and at worst (eight,
-  ~2.5 KB), 159 MB. The live tier's notes add at most ~10 MB. The repo's streams hold under 500
-  parents at once, and the bench's feed, with 32 times the demo's records, drops none at 2000. A
-  busy login node may need more: over one real day, an uncapped join of agent children alone
-  ended up holding 177,411 parents, most of them stale (`reducers/phase_log.py`). Raise the cap
-  while `evicted` keeps growing, at a cost of 19 to 80 KB for each parent added.
-- **"Top" is seven rankings, not one:** `events`, `cpu_s`, `peak_rss_mb`, `io_mb`, `net_mb`,
+  over a minute later is refused it: that child's bytes count twice, and the refusal is counted
+  in `rejected` (on four million records, one child in 2.7 M began a minute to an hour before
+  its parent's recorded start). Nor has the record a reaping event: a child that ended before
+  its parent but was never waited for by it (the parent never calls wait(), or ignores SIGCHLD)
+  is not in the parent's figure. A parent that reaped none at all says so -- its `child_cpu_s`,
+  the CPU the kernel credits a reaper with in the same step as the bytes, is 0 -- and takes none
+  off, counted apart (`unreaped`); one that reaped some of its children and not others still has
+  them all taken off, and comes out short by the rest. A figure short of what its children
+  carried shows as 0, never below, and is counted too. Each join holds at most
+  `reducers.own_io.max_parents` parents (2000; below 1 the service refuses to start), the one
+  given to least recently dropped first,
+  counted (`evicted`) and said on stderr (the first time, then at most hourly a panel in each
+  process, so each of the hours' workers says it too), its children's bytes then counted again
+  at its exit. What is held for an agent runtime, or for the process that started one, goes
+  only after every other parent, unless such parents hold over half the cap: an agent sits idle
+  as long as its reader does while other parents reap, and its tool calls' bytes are the most a
+  parent holds, but a login shell the feed never sees exit would otherwise crowd the rest out.
+  A pid whose children's groups pass PER_PID (eight) with no two of one user to merge drops the
+  earliest begun, counted apart (`crowded`): the cap does not bear on it. A service holds some
+  36 joins (five in each held window, six carried in the hours' chain, the live tier's two, an
+  inspector read's and a lookup's): at one entry a parent (~0.5 KB) 2000 is ~40 MB in all, at
+  the demo's 2.8 ~71 MB, at worst (eight, ~2.5 KB) 164 MB; the live tier's notes add at most
+  ~10 MB. The repo's streams hold under 500 parents at once, and the bench's feed, 32 times the
+  demo's records, drops none at 2000. A busy login node may need more -- over one real day an
+  uncapped join of agent children alone ended holding 177,411 parents, most of them stale
+  (`reducers/phase_log.py`): raise it while `evicted` grows, at 19 to 80 KB for each one added.
+- **"Top" is seven rankings, not one** — `events`, `cpu_s`, `peak_rss_mb`, `io_mb`, `net_mb`,
   `distinct_tools` and `recent`, each with `dominant_user_share_pct`, because a single ranking
   is dominated by one poll loop and one mega-user. `recent` lists real sessions only, because
   otherwise a status-bar probe, or a tool call whose shell has not exited yet, would hold the
@@ -1060,8 +1110,8 @@ restart:
   on one host keep separate cookies. *Sign out*, at the bottom of the sidebar, ends the session. A
   page whose session expires goes back to the form on its next request.
 - **Scripts** send the password as HTTP Basic auth, with any user name:
-  `curl --netrc-file ~/.config/rc-dashboard/netrc http://127.0.0.1:8085/api/health`. This way the
-  password never appears on a command line, where `ps` would show it to other users.
+  `curl --netrc-file ~/.config/rc-dashboard/netrc http://127.0.0.1:8080/api/health`. The
+  password then never appears on a command line, where `ps` would show it to other users.
 - **What the service keeps.** Only the hash. A password is checked with scrypt, one check at a
   time, and compared in constant time. A wrong password waits an extra second. The cookie holds an
   expiry and its HMAC, keyed with a key derived from `<cache.dir>/session.key` (created once, mode
@@ -1118,38 +1168,39 @@ credentials, not as a person's account. For these reasons:
 - **Never without a password.** While `server.auth.password_hash` is empty, Ask is refused,
   even when turned on. `GET /api/ask` says why, and a question gets a 400 that says so. A refused
   question reads nothing.
-- **A short environment.** The agent gets only what a program needs to run, to find its login,
-  and to reach its provider through the site's proxy (`ask.AGENT_ENV`): `PATH`,
-  `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TZ`, `TMPDIR`, `TERM`,
-  `LD_LIBRARY_PATH`, the `XDG_*` directories and `DBUS_SESSION_BUS_ADDRESS` (which
-  `systemd-run --user` needs, as `deploy/fleet` runs it), the proxy and CA variables,
-  `CODEX_HOME`, `OPENAI_*`, `ANTHROPIC_*` and `CLAUDE_*`. Anything else it needs, such as
-  credentials for a provider reached through a cloud, must be listed in `ask.env_passthrough`
-  (`RC_DASH_ASK_ENV_PASSTHROUGH`, comma-separated). Entries are variable names, or a family
-  prefix of three or more characters followed by `_*`, for example `["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS",
-  "CLOUD_ML_REGION", "ANTHROPIC_VERTEX_*", "AZURE_*"]`, depending on the provider. A shorter
-  prefix, or one without the `_` (`S*`), would let through anything else that starts the same
-  way, so it is refused at startup; list such a variable by its full name. The service's own
-  `RC_DASH_*` settings, including its password hash, are never passed. If the agent fails, the
-  error says so, since a missing credential makes it fail without any mention of the environment.
-  **The proxy variables are passed unchanged**: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
+- **A short environment.** The agent gets what a program needs to run, to find its login and
+  to reach its provider through the site's proxy, and nothing else (`ask.AGENT_ENV` and
+  `ask.AGENT_ENV_PREFIXES`): `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LANGUAGE`,
+  `LC_*`, `TZ`, `TMPDIR`, `TERM`, `LD_LIBRARY_PATH`, `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`,
+  `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and `DBUS_SESSION_BUS_ADDRESS` (which
+  `systemd-run --user` needs, as `hpc/deploy` runs it), the proxy and CA variables,
+  `CODEX_HOME`, `OPENAI_*`, `ANTHROPIC_*` and `CLAUDE_*`. Anything else it needs, such as a
+  provider reached through a cloud, is named in `ask.env_passthrough`
+  (`RC_DASH_ASK_ENV_PASSTHROUGH`, comma-separated): variable names, or a family's prefix,
+  three characters or more and then `_*` -- `["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS",
+  "CLOUD_ML_REGION", "AZURE_*"]` as the provider needs. A shorter prefix,
+  or one without the `_` (`S*`), would take in whatever else begins so, and is refused at
+  start; such a variable is named whole. The service's own `RC_DASH_*` settings, its password
+  hash among them, are never passed. An agent that fails says so, since a credential left out
+  fails it without a word about the environment.
+  **The proxy variables are passed as they are**: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
   `NO_PROXY` and their lower-case forms, so the agent reaches its provider through the site's
-  proxy. A proxy URL often contains a user and password (`http://user:pass@proxy:3128`), and
-  then the agent can read them, and this is an agent whose prompt holds other users' command
-  lines. For the service's account, prefer a proxy that needs no password in the URL.
-- **A directory of its own**, created with mode 0700 in the system's temporary directory for each
-  question and removed afterwards. It is not under `cache.dir`, so the salt, the session key and
-  the saved builds are not next to it.
-- **A short question.** At most 4 000 characters (longer questions get a 400). The prompt
-  includes the last three earlier turns, cut to 600 characters for the question and 1 500 for the
-  answer.
-- **JSON only.** `POST /api/ask`, and `POST`/`DELETE /api/suggestions/done`, require
-  `Content-Type: application/json` (and return a 415 otherwise). Another site's page cannot send
-  that without the browser asking first. A body over 1 MB gets a 413, and a malformed one a 400.
+  proxy. A proxy URL often carries a user and password (`http://user:pass@proxy:3128`), and
+  then the agent can read them -- an agent whose prompt holds other users' command lines. For
+  the service's account, prefer a proxy that needs no password in the URL.
+- **A directory of its own**, made 0700 in the system's temporary directory for each question
+  and removed after, not under `cache.dir`, so the salt, the session key and the saved builds
+  are not its neighbours.
+- **A short question.** At most 4 000 characters (a 400 past that); the prompt carries the last
+  three earlier turns, cut to 600 and 1 500 characters a side.
+- **JSON only.** Every `/api` request but a GET, HEAD or OPTIONS (`POST /api/ask`, `POST
+  /api/suggestions/done`, `DELETE /api/suggestions/done/{id}`, `POST /api/annotate`) takes
+  `Content-Type: application/json` (a 415 otherwise, `guard.py:JsonOnly`), which another site's page cannot send
+  without the browser asking first; a body past 1 MB is a 413, and a malformed one a 400.
 
-`ask.agent` picks a preset (`codex`). `ask.command` gives the argv directly, with `{workdir}`,
-`{answer_file}` and `{model}` filled in and the prompt on stdin. A command, or the instructions in
-`ask.system_prompt`, may contain a provider's key, so `/api/config` and `--print-config` show both
+`ask.agent` picks a preset (`codex`); `ask.command` gives the argv outright, `{workdir}`,
+`{answer_file}` and `{model}` filled in, the prompt on stdin. A command, or the instructions in
+`ask.system_prompt`, may hold a provider's key, so `/api/config` and `--print-config` show both
 as `(hidden)` when set, and `GET /api/ask` names only the program a command runs (`claude` for
 `env ANTHROPIC_API_KEY=... claude -p`). `tests/test_ask.py` checks the
 refusals, the environment and the directory, and `tests/test_guard.py` checks the routes.
@@ -1277,34 +1328,61 @@ Tool mix's shell dedup, per class and agent type, by tool and by kind of tool.
 
 ## Sessions: tasks, phases, and processes
 
-An agent session's row says what the agent was doing at three levels, which the page calls **Tasks**,
-**Phases**, and **Processes**.
+Every session's row says what it was doing at three levels, which the page calls **Tasks**, **Phases**, and
+**Processes**: an agent's, by the tool calls it made, and a session no agent ran (a person's login, an editor's
+terminal), by the commands its terminals ran.
 
 | level | what it is | built by |
 |---|---|---|
 | Tasks | stretches of the session that were about one thing, each labeled for what it was for | `reducers/phase_tasks.py` cuts and labels them, from the names and the agent's own words that `reducers/phase_names.py` reads out of each command |
-| Phases | what the agent spent its time on inside a task: exploring, editing, building, testing, running, Slurm jobs, waiting, git, and idle | `reducers/phase_segment.py`, from the tool calls `reducers/phase_rules.py` names |
+| Phases | what the session spent its time on inside a task: exploring, editing, building, testing, running, Slurm jobs, waiting, git, and idle | `reducers/phase_segment.py`, from the calls `reducers/phase_rules.py` names |
 | Processes | every process the session ran, in its tree | `/api/trajectory` (`proctree.py`) |
 
-A Claude Code or Codex row carries the first two levels as `phases`: the `list` of phases, the `tasks` above
-them (each phase says which task it belongs to), a `headline` (the project, then the names that recur
-across the tasks, as in `KempnerForge · PRs #229, #233 · video_io.py`), and `n_calls`. It also says what kind
-of session it was: a `category`, the `uses` of its work that the category rests on, and a `summary` (*What
-kind of session it was*, below). A row for any other
-agent type, a person, or an IDE carries `{unavailable}` and a null `n_calls`, because "not recognized" is
-not the same as "none". [`web/README.md`](web/README.md#sessions-tasks-phases-and-processes) describes how
-the page draws the levels.
+Every row carries the first two as `phases`: the `list` of phases, the `tasks` above them (each phase says
+which one it belongs to), a `headline` (the project, then the names that recur across the tasks, as
+`KempnerForge · PRs #229, #233 · video_io.py`), and `n_calls`; what kind of session it was, a `category`
+with the `uses` of its work it rests on and a `summary` (*What kind of session it was*, below); and
+`driver`, whose calls they are: `agent` or `terminal`. How the page draws the levels is in
+[`web/README.md`](web/README.md#sessions-tasks-phases-and-processes).
 
-All of this is read from the commands the agent ran and the words it wrote in them, and from nothing else,
-as the basis line above the inspector's chart says. Reading and editing inside the agent, its thinking, and
-any log entry it writes with its own Write or Edit tool leave no command behind, so none of them is seen. No
-model writes a label, and no transcript, prompt, or file on disk is read. The cutting and the naming are
-heuristics over command text, and their thresholds were tuned on seven hand-labeled sessions from boslogin06
-and rtx6000a. `rc_dashboard/phase_report.py` reads a day of a feed the way a window build does, prints the
-phases and tasks of the requested agents, and summarizes every row. The thresholds are tuned against that
-output.
+**Which processes are calls** (`reducers/phase_rules.py`):
 
-**Where a task begins.** Calls that start within `phases.step_s` of a step's first call form one step, and
+- **An agent's tool calls** are its runtime's direct children. Claude Code and Codex have rules of their own
+  (their Bash tool's shell, Claude's Grep and Glob, Codex's shell and bare commands, each agent's own chores
+  counted as housekeeping). Any other agent -- Copilot, a Cursor or Windsurf agent, a sandbox the collector
+  keyed on its own, a type it learns later -- is read by the general rule, Codex's with only the chores any
+  agent runs: its own executable run as a probe, client, server, or helper, a login shell's startup helpers,
+  and `git --version`. An editor's server (VS Code, Cursor, Windsurf) runs nothing for anyone directly: its
+  direct children are the editor's own, and its terminals are read as any terminal is.
+- **A terminal's commands.** A shell a person types into runs each command line as a job, a process group of
+  its own, in the session the shell leads (sshd, a tmux pane, and an editor's terminal host each start it so).
+  The collector records each process's group and session (`pgrp`, `sid`), so a session no agent ran is read
+  from them a record at a time: a process that leads its own group in a session it does not lead is a call,
+  with everything under it, and so is a later stage of its pipeline and a command that leads a session of its
+  own (`ssh host cmd`, `setsid cmd`). The shell itself is never a call (it ran the whole time), and what it
+  runs in its own group -- its startup files' helpers, its prompt's `git rev-parse`, what a typed `module load`
+  or `conda activate` runs -- is its housekeeping, as are a terminal multiplexer and the daemons that lead a
+  session after a fork. A record whose group and session were not kept (a collector without the feature) is
+  not read, and counted (`phase_ungrouped`).
+- **A call still running** is read from what its children did while it runs, as the module docstring of
+  `reducers/trajectories.py` says; in a session no agent ran, only what runs inside a command (a job, or the
+  command that leads a session) can be one, never what waits under the shell itself or an editor's server.
+
+A session running now whose first call has not ended has no call to cut phases from: a call is recorded when it
+ends. Its row and its inspector draw its live edge alone, from its first record to now, and say what the
+per-minute census shows running in the summary's place, never `no tool calls`.
+
+All of it is read from the commands the session ran and the words written in them, and from nothing else,
+as the basis line over the inspector's chart says. Reading and editing inside an agent, its thinking, and
+a log entry it writes with its own Write or Edit tool leave no command, so none of them is seen, and nor is
+what a person reads or edits in an editor's window. No model
+writes a label, and no transcript, prompt, or file on disk is read. The cutting and the naming are
+heuristics over command text, and their thresholds were tuned on seven hand-labeled sessions of boslogin06
+and rtx6000a. `rc_dashboard/phase_report.py` reads a day of a feed as a window build does, prints the
+phases and tasks of the agents it is asked for, and summarizes every row, which is what the thresholds are
+tuned against.
+
+**Where a task begins.** Calls that start within `phases.step_s` of a step's first call are one step, and
 every cut falls between two steps. A task is cut
 
 - at a gap of `gap_s` or more in which the agent was waiting on nothing. The agent is waiting on the calls of
@@ -1464,23 +1542,25 @@ files from the shell. 2 tool calls.`), as their tasks read `Edit`. The folder is
 setup, not Codex's, so it is not treated as housekeeping. `rc_dashboard/phase_report.py` prints each row's category and summary, and counts a day's
 sessions by category, each once.
 
-The page shows the category as a chip on the row and in the Users tab's list of a user's sessions, and shows
-the summary under the headline in the inspector (`web/README.md`). The plates over every session in the window
-do not count categories. A category needs a session's block, and building a block for every session of a
-week on eight login nodes takes minutes, while the plates are re-read every few seconds.
+The page shows the category as a chip on the row and in the Users tab's list of a user's sessions, and the
+summary under the headline in the inspector (`web/README.md`). The plates over every session in the window
+do not count categories: a category needs a session's block, and building a block for every session of a
+week on eight login nodes takes minutes, where the plates are read again every few seconds.
 
-**Config.** `reducers.trajectories.tasks` sets the thresholds. Its defaults equal `phase_tasks.DEFAULTS`,
-where each one is documented, and a test keeps the two equal. `reducers.trajectories.phases`, next to it,
-does the same for the fine phases (`reducers/phase_segment.py`), and `reducers.trajectories.summary` does
-the same for a block's category and summary (`reducers/phase_summary.py`). Its keys are `mostly` (0.5), the
-share of the work a use must hold for the session to be put under it, and `also` (0.1), the share a second
-use, or waiting, needs before the summary mentions it. Like the rest of `reducers`, all three are part of the
-config that a saved window or hour is fingerprinted by, so changing a value rebuilds them instead of resuming
-them (*The time window*). A saved state only actually needs this for the phase thresholds that are read as
-records arrive, which limit the call log and join a call's children to it (`max_calls`, `hk_bin_cap`,
-`pend_max`, and `idle_s`). The rest, including every task and summary threshold, are read when a row is
-built. The reducer cuts and names a row each time it serves it, using its current thresholds, and no saved
-state holds a task or a category.
+**Config.** `reducers.trajectories.tasks` sets the thresholds. It equals `phase_tasks.DEFAULTS`, where each
+one is documented, and a test holds the two equal. `reducers.trajectories.phases`, beside it, does the same
+for the fine phases (`reducers/phase_segment.py`), and `reducers.trajectories.summary` for a block's
+category and summary (`reducers/phase_summary.py`): `mostly` (0.5), the share of the work a use must hold
+for the session to be put under it, and `also` (0.1), the share a second use, or waiting, needs before the
+summary names it. Like the rest of `reducers`, all three are part of the config a
+saved window or hour is fingerprinted by, so a changed value builds them again rather than resuming them
+(*The time window*). A saved state needs that only for the phase thresholds read as records arrive, which
+bound the call log and join a call's children to it (`max_calls`, `hk_bin_cap`, `pend_max` and
+`idle_s`), and `app_read_s`, which decides as a `cat` arrives whether it is a call or the Codex
+app's own read.
+The rest, every task and summary threshold among them, are read when a row is built: the reducer cuts and
+names a row each time it serves it, with the thresholds it runs with, and no saved state holds a task or a
+category.
 
 | key | default | meaning |
 |---|---|---|
@@ -1748,35 +1828,34 @@ many jobs that was.
 
 ## Known collector limitations the page surfaces
 
-- **`peak_rss_mb` is always 0** on kernel 6.8. The kernel runs `exit_mm()` (clearing
-  `task->mm`) before the `sched_process_exit` tracepoint fires, so the `if (mm)` guard at
-  `ebpf_trace.py:834` never assigns a value. Reading `task->signal->maxrss` instead survives
-  `exit_mm()` (verified). Until the collector does that, the metric renders **not measured**.
-- **The collector's session key splits one session into one per tool call.** The collector keys
-  a process on its nearest classifier-tagged ancestor. Until the classifier was changed to look at
-  the program alone, it tagged anything whose argv mentioned `~/.claude/`, `~/.codex/` or
-  `~/.vscode-server/`, including the shell that every Claude Code Bash tool call runs in
-  (collector README, *Agent tags*). The dashboard decides what each tagged process
-  really is (`roles.py`) and folds each key into the agent above it (`procindex.py`).
-  Trajectory rows say how many keys they fold and how the least certain one was
-  attributed, and the Sandbox tab attributes tool calls to sessions through the same fold. On
-  madsys-gpu1, a 24 h window went from 3 281 keys to 636 sessions (one VS Code server alone from
-  688).
-- **The node tier daemon needs an absolute path.** `ebpfm.sh:466` re-execs `"$0"`, so
-  `bash ebpfm.sh start` leaves the nohup'd child unable to find itself. Invoke it by its absolute
-  path.
-- **`submit` request fields are argv-only.** A job whose request is in `#SBATCH` directives
-  reports `null` for `partition`/`gpus`/`array`, and `req_src` says which case applies.
-  Recovering them needs a `slurm_jobs` census join, which is not a configured feed.
+- **`peak_rss_mb` is 0 on every exit in older captures**: the kernel runs `exit_mm()` (clearing
+  `task->mm`) before the `sched_process_exit` tracepoint fires, so a collector that read
+  `mm->hiwater_rss` never got a value. The collector now reads `task->signal->maxrss`, which
+  survives `exit_mm()`; a field that is 0 on every record of a feed renders **not measured**
+  rather than as a measured zero (`reducers/__init__.py`, `all_zero`).
+- **Through schema 7 the collector's session key split one session per tool call.** It keyed
+  a process on its nearest classifier-tagged ancestor, and the classifier tagged anything
+  whose argv mentioned `~/.claude/`, `~/.codex/` or `~/.vscode-server/` -- including the shell
+  every Claude Code Bash tool call runs in -- until it read the program alone (collector
+  README, *Agent tags*). Schema 8 starts a session only at an agent runtime. For the older
+  captures the dashboard decides what each tagged process really is (`roles.py`) and folds
+  each key into the agent above it (`procindex.py`); trajectory rows say how many keys they
+  fold and how the least certain one was attributed, and the Sandbox tab attributes tool
+  calls to sessions through the same fold. On madsys-gpu1 a 24 h window went from 3 281 keys
+  to 636 sessions, one VS Code server alone from 688.
+- **`submit` request fields are argv-only.** A job whose `#SBATCH` directives carry the
+  request reports `null` for `partition`/`gpus`/`array`; `req_src` says which. Recovering them
+  needs a `slurm_jobs` census join, which is not a configured feed.
 - **Scheduler and GPU panels are absent, not zero.** `running_agent_jobs` and GPU duty need
-  the census and `dcgm`. Instead, the Live tab shows *agent job submissions in the window* from
-  eBPF `submit` records. These are per submission and attributed to an actor, which is better
-  evidence than a census count.
+  the census and `dcgm`. The Slurm tab shows the *latest submissions* in the window from eBPF
+  `submit` records instead — per-submission and actor-attributed, which is better evidence
+  than a census count.
 
 ## Layout
 
 | path | role |
 |---|---|
+| `rc_dashboard/__main__.py` | the CLI: `serve` (the default), `demo`, `check-feeds`, `print-config` (also as `--check-feeds`, `--print-config`) and `new-password` (`--force` to replace a password, `--dir`, `--netrc-host`; [Password](#password)) |
 | `rc_dashboard/config.py` | per-key precedence, candidate probing, `--print-config` |
 | `rc_dashboard/feeds.py` | resolve + report every feed; ports `healthcheck.check_target` / `last_timestamp` |
 | `rc_dashboard/feedfile.py` | the collector's day-files: listing them (a plain file before its `.gz`), the binary searches by time (`seek_to_epoch`, `end_at`), where the last complete line ends, the head digest |
@@ -1810,7 +1889,6 @@ many jobs that was.
 | `rc_dashboard/annotate.py` | what each tool call was for, in a model's words: the inspector's "annotate purposes" |
 | `rc_dashboard/iocmds.py` | every command behind an I/O figure, looked up when it is clicked |
 | `rc_dashboard/endpoints.py` | the far ends of the network bytes, named and ranked when the panel is read ([Network endpoints](#network-endpoints)) |
-| `rc_dashboard/sacct.py` | `collect/slurm_query.bash` exports → per-job rows, generation-merged |
 | `rc_dashboard/export.py` | shared filter grammar, streaming export, the windowed re-scan (over `feedfile.py`, whose names it re-exports) |
 | `rc_dashboard/app.py` | FastAPI: REST, WebSocket, static mount |
 | `rc_dashboard/auth.py` | sign-in for the whole service: one password, kept as a salted scrypt hash ([Password](#password)) |
@@ -1820,22 +1898,22 @@ many jobs that was.
 | `rc_dashboard/jsonout.py` | JSON out: serialized with orjson on the request's worker thread, gzipped when the reader takes it |
 | `rc_dashboard/gcwatch.py` | how long Python's garbage collector holds the process, and keeping it short |
 | `rc_dashboard/ask.py` | a question about the window on screen, answered by an agent CLI on this host ([Ask LLM](#ask-llm)) |
-| `rc_dashboard/demo/` | demo mode: the synthetic feed (`world` plans and builds it, `cast` the people, `sessions`/`agents` what each runs, `host` each node's own records, `feed` the files), and the overrides that point the service at it |
+| `rc_dashboard/demo/` | demo mode: the synthetic feed (`world` plans and builds it, `cast` the people, `sessions`/`agents` what each runs, `host` each node's own records, `records` the records themselves as the collector writes them, `feed` the files), and the overrides that point the service at it |
 | `web/` | React + Vite + TS; `dist/` is what the service serves |
-| `bench/` | a synthetic feed at fleet density, timers, a profiler, and the guard that every served answer stayed the same ([bench/README.md](bench/README.md)) |
+| `bench/` | a synthetic feed at fleet density, timers, a profiler, and the guard that the main served answers stayed the same ([bench/README.md](bench/README.md)) |
 
 ## Ingestion, precisely
 
-**What the page holds depends only on the collector's files and the clock, never on when this
-service was running.** Nothing in the live tier is restored from a previous run. (The historical
-windows resume from saved builds, but only from builds that are provably a prefix of the same
-files; see *The time window*.) On every start, the service hands
-each day-file to the tail at the end of its last complete line or frame, then reads the history
-before that point back into the live tier. It reads `min(live.backfill_hours, live.retention_min)`
-of history, located by the same timestamp binary search that the window rebuild uses. Offsets
-used to be persisted while the bins they fed were not, so a restart resumed at EOF with empty
-bins, and the page showed only what the collector wrote after the service came back. And
-`run.sh` restarts the service on every save.
+**What the page holds is a function of the collector's files and the clock — never of when this
+service was running.** Nothing in the live tier is restored from a previous run (the historical
+windows resume from saved builds, but only from ones that are provably a prefix of the same files —
+see *The time window*). On every start the service hands
+each day-file to the tail at the end of its last complete line, then reads the history
+behind that point back into the live tier: `min(live.backfill_hours, live.retention_min)` of it,
+located by the same timestamp binary search the window rebuild uses. Offsets used to be
+persisted while the bins they fed were not, so a restart resumed at EOF with empty bins and the
+page showed only what the collector wrote after the service came back — and `run.sh` restarts
+the service on every save.
 
 The read-back runs **newest first**, k-way merged across hosts, while the tail is already
 polling. A poll that lands before the hand-off reads nothing, so no record is counted twice. The

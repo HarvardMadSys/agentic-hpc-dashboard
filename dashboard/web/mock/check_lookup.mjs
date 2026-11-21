@@ -74,6 +74,42 @@ test('the words for an agent type, a feed, a state and a purpose are a string fo
   assert.equal(W.atypeLbl('claude_code'), 'Claude Code');
 });
 
+test('a purpose is coloured as its kind and named as itself, and the key holds each kind once', async () => {
+  const U = await ui.load('lib/purposes.ts');
+  // the service's purposes (rc_dashboard/normalize.py, _BUILTIN_PURPOSE), each to the kind it is drawn as
+  const KIND = {
+    poll: 'other',
+    slurm_mon: 'slurm',
+    slurm_sub: 'slurm',
+    build: 'compute',
+    compute: 'compute',
+    filesearch: 'files',
+    data: 'files',
+    runtime: 'other',
+    git: 'other',
+    editor: 'other',
+    other: 'other',
+  };
+  for (const [p, kind] of Object.entries(KIND)) {
+    assert.equal(U.pkind(p), kind, p);
+    assert.equal(U.pcol(p), U.pcol(kind), p);
+  }
+  assert.equal(U.pcol('no-such-purpose'), 'var(--sg)');
+  assert.equal(U.pcol(null), 'var(--sg)');
+  // a run or a process still says which purpose it was, not only its kind
+  assert.equal(U.plbl('poll'), 'poll / introspection');
+  assert.equal(U.plbl('slurm_sub'), 'slurm submit');
+  assert.equal(U.plbl('data'), 'data move');
+  assert.equal(U.plbl('git'), 'git');
+  // the key: a swatch per kind, each its own colour, the grey tail last; a kind is its own kind, as the navigator stacks
+  const key = U.purposeLegend();
+  assert.equal(key.length, U.KINDS.length);
+  assert.equal(new Set(key.map((e) => e.c)).size, key.length);
+  assert.equal(key.at(-1).c, 'var(--sg)');
+  for (const [kind] of U.KINDS) assert.equal(U.pkind(kind), kind);
+  for (const e of key) assert.ok(e.tip, `${e.k} says what it holds`);
+});
+
 test('a link with ?atype=__proto__ and ?tab=__proto__ is read as strings, and the filter draws it', async () => {
   const { parseUrl } = await ui.load('lib/filters.ts');
   const u = parseUrl('?atype=__proto__&tab=__proto__&tab=constructor');

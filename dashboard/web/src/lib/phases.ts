@@ -1,7 +1,9 @@
-/* Phases: what an agent was doing, read from the commands it ran
+/* Phases: what a session was doing, read from the commands it ran
  * (`rc_dashboard/reducers/phase_segment.py`), in the words the page uses for
  * them: a session row's band and line, and the inspector's chart (the phases behind
- * its process starts) and list.
+ * its process starts) and list. Every row is read: an agent's tool calls, and where
+ * no agent ran the session (a person's login, an editor's terminal), the commands its
+ * terminals ran (`PhaseBlock.driver`), which the words say: `tool calls` or `commands`.
  *
  * Labels, colours, and sentences are all here so the row and the inspector say
  * the same thing. The colours are the existing series slots, never a new hue;
@@ -12,6 +14,7 @@
 import type {
   Phase,
   PhaseBlock,
+  PhaseDriver,
   PhaseHousekeeping,
   PhaseKind,
   PhasesUnavailable,
@@ -59,12 +62,13 @@ export function isBlock(x: PhaseBlock | PhasesUnavailable | null | undefined): x
   return x != null && Array.isArray((x as PhaseBlock).list);
 }
 
-/** What the service says of an agent whose commands it does not read; these words if it says none. */
+/** What a service that read agents alone said of an agent whose commands it did not read; these words if it says none.
+ *  The service now reads every row and sends a block for each, so the page says it only of such an older service's rows. */
 export const PHASES_UNAVAILABLE = 'phases not available for this agent type';
 
-/** Why an agent's session has no phases, for an agent of a type whose commands are not read: what its `{unavailable}` says,
- *  or `PHASES_UNAVAILABLE` where that says nothing. Null for a row with a block, and for a person or an IDE: the service sends
- *  them `{unavailable}` too, but no phase was ever on offer for them, so their row and their inspector say nothing (R41). */
+/** Why an agent's session has no phases, for a row an older service sent `{unavailable}` (it read Claude Code and Codex
+ *  alone): what that says, or `PHASES_UNAVAILABLE` where it says nothing. Null for a row with a block, and for a person or
+ *  an IDE, of whom that service read nothing and said nothing (R41). */
 export function phasesUnread(r: { actor3: string | null; phases?: PhaseBlock | PhasesUnavailable }): string | null {
   const ph = r.phases;
   return r.actor3 === 'agent' && ph && !isBlock(ph) && typeof ph.unavailable === 'string'
@@ -81,7 +85,16 @@ const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim();
 const andList = (xs: string[]): string =>
   xs.length < 3 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')}, and ${xs[xs.length - 1]}`;
 
-const calls = (n: number): string => `${fint(n)} ${n === 1 ? 'tool call' : 'tool calls'}`;
+/** Whose calls a block was read from: `agent`, unless it says `terminal` (a service that read agents alone says neither). */
+export const driverOf = (b: { driver?: PhaseDriver | null } | null | undefined): PhaseDriver =>
+  b?.driver === 'terminal' ? 'terminal' : 'agent';
+
+/** What a call is called: an agent's `tool call`, and a terminal's `command`, for `n` of them. */
+export const callWord = (driver: PhaseDriver = 'agent', n = 1): string =>
+  driver === 'terminal' ? (n === 1 ? 'command' : 'commands') : n === 1 ? 'tool call' : 'tool calls';
+
+/** `22 tool calls`, or for a terminal's block `22 commands`. */
+export const calls = (n: number, driver: PhaseDriver = 'agent'): string => `${fint(n)} ${callWord(driver, n)}`;
 
 /** `Read x` as `read x`: a label that follows a count or a time. */
 export const lowerFirst = (s: string): string => s.charAt(0).toLowerCase() + s.slice(1);
@@ -173,7 +186,12 @@ const WAITS_ON: Record<string, string> = {
   command: 'something else',
 };
 
-const IDLE_WHAT = "no tool calls: the user's turn, or the agent thinking";
+/** What an idle phase was: no call began in it. An agent's is the user's turn or its own thinking; a terminal's, the person
+ *  reading, thinking, or away. */
+const IDLE_WHAT: Record<PhaseDriver, string> = {
+  agent: "no tool calls: the user's turn, or the agent thinking",
+  terminal: 'no commands: reading, thinking, or away',
+};
 
 /** What a gap says of a call the agent had moved past that was still running as the gap began:
  *  `linktest.sh still running since 13:05:44`. A task's gap names the call (`TaskGap.alive`): by the script it ran or
@@ -182,9 +200,9 @@ const IDLE_WHAT = "no tool calls: the user's turn, or the agent thinking";
  *  still running has no preview of its own (R65), and with no name either it is `a call still running since 13:05:44`.
  *  It says when the call began, and not that it is running now: it may have ended inside the gap, and no end is said.
  *  An idle phase's detail (`phaseWhat`) and a task's gap line (`gapLine`, tasks.ts) say it alike. */
-export function aliveClause([preview, since, name]: [string | null, number, (string | null)?]): string {
+export function aliveClause([preview, since, name]: [string | null, number, (string | null)?], driver: PhaseDriver = 'agent'): string {
   const what = (name ? oneLine(name) : '') || (preview ? shortCmd(preview) : '');
-  return `${what || 'a tool call'} still running since ${clock(since)}`;
+  return `${what || `a ${callWord(driver)}`} still running since ${clock(since)}`;
 }
 
 /** Calls that ran past their phase, as many as `phaseWhat` names before it counts the rest. */
@@ -205,22 +223,22 @@ const RAN_PAST_NAMED = 3;
  *  Then, for any phase holding guessed slices that is not a loop, how many and why; for each call that
  *  ran past its phase `train.py kept running for 2.7 h` (never one still running, R65); and for a phase
  *  with a call still running, `a call in it is still running, seen through sleep and ugrep`. */
-export function phaseWhat(p: Phase): string {
+export function phaseWhat(p: Phase, driver: PhaseDriver = 'agent'): string {
   if (p.kind === 'idle') {
     const alive = p.alive?.[0];
-    return alive ? `${IDLE_WHAT} · ${aliveClause(alive)}` : IDLE_WHAT;
+    return alive ? `${IDLE_WHAT[driver]} · ${aliveClause(alive, driver)}` : IDLE_WHAT[driver];
   }
   if (p.kind === 'edit_guess') return oneLine(p.guess ?? '') || 'a pause read as editing (guess)';
   const top = p.top ?? [];
   const segs: string[] = [];
   const general = () => {
-    segs.push(calls(p.n));
+    segs.push(calls(p.n, driver));
     const mix = mixText(p.mix ?? []);
     if (mix) segs.push(mix);
     if (top.length) segs.push(commands(top));
   };
   if (p.kind === 'loop') {
-    const runs = p.rounds != null ? `${fint(p.rounds)} ${p.rounds === 1 ? 'run' : 'runs'}` : calls(p.n);
+    const runs = p.rounds != null ? `${fint(p.rounds)} ${p.rounds === 1 ? 'run' : 'runs'}` : calls(p.n, driver);
     const cmd = namedBy(top, p.rounds);
     segs.push(cmd ? `${runs} of ${cmd}` : runs);
   } else if (p.kind === 'wait' && p.waits_on != null) {
@@ -243,10 +261,10 @@ export function phaseWhat(p: Phase): string {
   }
   const past = [...(p.ran_past ?? [])].sort((a, b) => b[1] - a[1]);
   for (const [cmd, s] of past.slice(0, RAN_PAST_NAMED)) {
-    segs.push(`${cmd ? oneLine(cmd) : 'a tool call'} kept running for ${dur(s)}`);
+    segs.push(`${cmd ? oneLine(cmd) : `a ${callWord(driver)}`} kept running for ${dur(s)}`);
   }
   if (past.length > RAN_PAST_NAMED) segs.push(`${fint(past.length - RAN_PAST_NAMED)} more kept running`);
-  const open = phaseOpen(p);
+  const open = phaseOpen(p, driver);
   if (open) segs.push(open);
   return segs.join(' · ');
 }
@@ -255,37 +273,39 @@ export function phaseWhat(p: Phase): string {
  *  on, and `a call in it was still running when the record ended` on a pinned one, which will not grow: chosen as the
  *  edge's `not known yet` and `not known` are. An open phase says it (`phaseOpen`), and so does an open task, in its
  *  tooltip (`taskTip`, tasks.ts). */
-export function openClause(): string {
-  return clockPinned() ? 'a tool call in it was still running when the record ended' : 'a tool call in it is still running';
+export function openClause(driver: PhaseDriver = 'agent'): string {
+  const one = `a ${callWord(driver)} in it`;
+  return clockPinned() ? `${one} was still running when the record ended` : `${one} is still running`;
 }
 
 /** What an open phase adds to its line and its tooltip: `openClause`, a call in it still running, seen through its
  *  children (R56), never drawn as finished. Then the programs seen under it, `, seen through sleep and ugrep`: its own
  *  command line is not recorded until it exits, and its first child's text is no command of its own (R65). Empty for a
  *  phase that is not open. */
-export function phaseOpen(p: Phase): string {
+export function phaseOpen(p: Phase, driver: PhaseDriver = 'agent'): string {
   if (!p.open) return '';
   const seen = p.seen ?? [];
-  return seen.length ? `${openClause()}, seen through ${andList(seen.map(oneLine))}` : openClause();
+  return seen.length ? `${openClause(driver)}, seen through ${andList(seen.map(oneLine))}` : openClause(driver);
 }
 
 /** What says that a session's call log was cut, so that what lies after the cut is not all there: `incomplete from
  *  14:03:22: the call log was full`, from when the first call the log left out began (`cut_at`), and `incomplete: the
  *  call log was full` where the block has no time for it. The list of phases says it under its rows (PhaseList), and a
  *  task the cut may have taken calls of says it in its tooltip (`taskTip`, tasks.ts). */
-export function incompleteFrom(cutAt: number | null | undefined): string {
-  return `incomplete${cutAt != null ? ` from ${clock(cutAt)}` : ''}: the tool-call log was full`;
+export function incompleteFrom(cutAt: number | null | undefined, driver: PhaseDriver = 'agent'): string {
+  return `incomplete${cutAt != null ? ` from ${clock(cutAt)}` : ''}: the ${driver === 'terminal' ? 'command' : 'tool-call'} log was full`;
 }
 
 /** The note under the list of phases for a session whose call log was full: `phases are incomplete from 14:03:22: the call
  *  log was full, so 12 later calls are counted but in no phase` (`incompleteFrom` has the first half, and a task's tooltip
  *  says it too). Where the block has no time for the cut, the calls are not said to be later ones. Null where nothing was
  *  cut. */
-export function cutNote(block: Pick<PhaseBlock, 'cut' | 'cut_at'>): string | null {
+export function cutNote(block: Pick<PhaseBlock, 'cut' | 'cut_at' | 'driver'>): string | null {
   const n = block.cut;
   if (!(n > 0)) return null;
-  const left = `${fint(n)} ${block.cut_at != null ? 'later ' : ''}${n === 1 ? 'tool call is' : 'tool calls are'}`;
-  return `phases are ${incompleteFrom(block.cut_at)}, so ${left} counted but in no phase`;
+  const driver = driverOf(block);
+  const left = `${fint(n)} ${block.cut_at != null ? 'later ' : ''}${callWord(driver, n)} ${n === 1 ? 'is' : 'are'}`;
+  return `phases are ${incompleteFrom(block.cut_at, driver)}, so ${left} counted but in no phase`;
 }
 
 /* ------------------------------------------------ a phase, on a chart or a band */
@@ -294,10 +314,10 @@ export function cutNote(block: Pick<PhaseBlock, 'cut' | 'cut_at'>): string | nul
  *  ` · a call in it is still running, seen through sleep` (`… was still running when the record ended`
  *  on a pinned clock; `phaseOpen`). Idle and a guess add what they are, which their look alone does not
  *  say. The session row's band and the inspector's chart both say it. */
-export function phaseTip(p: Phase): string {
-  const open = phaseOpen(p);
+export function phaseTip(p: Phase, driver: PhaseDriver = 'agent'): string {
+  const open = phaseOpen(p, driver);
   const head = `${phaseLbl(p.kind)} · ${clock(p.t0)}–${clock(p.t1)} · ${dur(p.t1 - p.t0)}${open ? ` · ${open}` : ''}`;
-  return p.kind === 'idle' || p.kind === 'edit_guess' ? `${head}\n${phaseWhat(p)}` : head;
+  return p.kind === 'idle' || p.kind === 'edit_guess' ? `${head}\n${phaseWhat(p, driver)}` : head;
 }
 
 /** A guessed slice of a phase: named as a guess, with the reason the phase gives for it. */
@@ -506,18 +526,37 @@ export function edgeTip(now: TrajRunning['now'] | null | undefined, from: number
   return why ? `${head}\n${why}` : head;
 }
 
+/** True for a session running now whose block has no phase yet: no call of it has ended, so none has a record, while the
+ *  census shows something running in its tree (a training run started by its first call, say). Its row and its inspector
+ *  draw the live edge alone, and say that, never `no tool calls`: its calls are running, not missing. */
+export function runningUnread(block: Pick<PhaseBlock, 'list'> | null | undefined, now: TrajRunning['now'] | null | undefined): boolean {
+  return !!block && block.list.length === 0 && now?.state === 'running';
+}
+
+/** What a session running now with no phase yet says in its summary's place (`runningUnread`): `No tool call has ended yet:
+ *  python and srun are running now, and its phases come as its calls end.`, the census's commands named as the edge names
+ *  them, and `commands` for a session no agent ran. */
+export function runningUnreadText(now: TrajRunning['now'] | null | undefined, driver: PhaseDriver = 'agent'): string {
+  const cmds = (now?.cmds ?? []).map(([c]) => (c === '?' ? 'unnamed' : c));
+  const what = cmds.length ? `${andList(cmds)} ${cmds.length === 1 ? 'is' : 'are'} running now` : 'something is running now';
+  return `No ${callWord(driver)} has ended yet: ${what}, and its phases come as its ${callWord(driver, 2)} end.`;
+}
+
 /** Where the live edge lies on a view `[v0, v1]`. It runs from the last phase's end to `nowS`, and like every
- *  phase it is cut at the view's edges. Returns the whole stretch and the part in view, or null when the list
- *  is empty or none of it is in view: a chart whose axis ends before it (the read ends at its newest record,
- *  which is where the last phase ends) has no room for it, and the list under it says it. */
+ *  phase it is cut at the view's edges. A session with no phase yet, whose first call has not ended, runs it from
+ *  `start`, its first record: the census shows what runs, though no call has a record yet. Returns the whole
+ *  stretch and the part in view, or null when there is nowhere for it to start or none of it is in view: a chart
+ *  whose axis ends before it (the read ends at its newest record, which is where the last phase ends) has no room
+ *  for it, and the list under it says it. */
 export function edgeSpan(
   list: Phase[],
   nowS: number,
   v0: number,
   v1: number,
+  start?: number | null,
 ): { from: number; to: number; a: number; b: number } | null {
-  if (!list.length) return null;
-  const from = list[list.length - 1].t1;
+  const from = list.length ? list[list.length - 1].t1 : start;
+  if (from == null) return null;
   const to = Math.max(nowS, from);
   const a = Math.max(from, v0);
   const b = Math.min(to, v1);
@@ -567,8 +606,14 @@ const USE_SHORT: Record<UseKind, string> = {
   git: 'git',
 };
 
-/** A category's `[short, label, colour]`, and a category this page does not know as itself, in grey. */
-export function categoryOf(c: string): [string, string, string] {
+/** A session no agent ran that ran no command: its chip and its rule, as an agent's `none` is an agent's (`driver`). */
+const TERMINAL_NONE: [short: string, label: string, colour: string] = ['no commands', 'No commands', 'none'];
+const TERMINAL_NONE_RULE = 'no command was run from its terminals. Reading, and what an editor or a shell runs for itself, leave none';
+
+/** A category's `[short, label, colour]`, and a category this page does not know as itself, in grey. A session no agent
+ *  ran (`driver` `terminal`) that ran nothing is `no commands`, not `no tool calls`. */
+export function categoryOf(c: string, driver: PhaseDriver = 'agent'): [string, string, string] {
+  if (c === 'none' && driver === 'terminal') return TERMINAL_NONE;
   return Object.hasOwn(CATEGORIES, c) ? CATEGORIES[c as SessionCategory] : [c, c, 'var(--sg)'];
 }
 
@@ -576,12 +621,13 @@ export function categoryOf(c: string): [string, string, string] {
 export function categoryTip(block: SessionKind): string {
   const c = block.category;
   if (!c) return '';
-  const rule = Object.hasOwn(CATEGORY_RULE, c) ? CATEGORY_RULE[c] : '';
+  const driver = driverOf(block);
+  const rule = c === 'none' && driver === 'terminal' ? TERMINAL_NONE_RULE : Object.hasOwn(CATEGORY_RULE, c) ? CATEGORY_RULE[c] : '';
   const uses = (block.uses ?? [])
     .map(([u, pct]) => `${Object.hasOwn(USE_SHORT, u) ? USE_SHORT[u] : u} ${pct >= 10 ? Math.round(pct) : pct}%`)
     .join(' · ');
   return [
-    `${categoryOf(c)[1]}${rule ? `: ${rule}` : ''}`,
+    `${categoryOf(c, driver)[1]}${rule ? `: ${rule}` : ''}`,
     uses ? `its work: ${uses}` : '',
     block.summary ?? '',
   ]
@@ -638,9 +684,11 @@ export function sequenceLine(list: Phase[], now?: TrajRunning['now'] | null): st
  *  begin before the first record), to its last phase's end, which is the latest end of any call, so that no call runs off
  *  it. A session running now runs on to now (`nowS`, on the service's clock), where the live edge ends it. A session row's
  *  band (TrajectoriesTab.tsx) and the inspector's map of the whole session (SessionMap.tsx) are both drawn on it, so the
- *  two agree. Null for a list with no phase. */
+ *  two agree. A list with no phase has an axis only for a session running now, from its first record to now, where
+ *  its live edge says what runs while no call has ended (`runningUnread`); null otherwise. */
 export function bandAxis(list: Phase[], first: number | null | undefined, nowS: number | null): [number, number] | null {
-  if (!list.length) return null;
+  // no phase yet: a session running now is drawn from its first record to now, its live edge all of it
+  if (!list.length) return first != null && nowS != null && nowS > first ? [first, nowS] : null;
   const last = list[list.length - 1].t1;
   return [Math.min(first ?? list[0].t0, list[0].t0), nowS != null ? Math.max(nowS, last) : last];
 }
@@ -651,20 +699,22 @@ export function bandAxis(list: Phase[], first: number | null | undefined, nowS: 
  *  can be among a block's `shapes`, and is kept out of the two the housekeeping line names. */
 export const HK_NEVER_EXITED = 'under a process that never exited';
 
-/** The housekeeping line's text, under the chart: `housekeeping, not the model: 214 commands (git, realpath)`.
+/** The housekeeping line's text, under the chart: `housekeeping, not the model: 214 commands (git, realpath)`, and for a
+ *  session no agent ran, whose housekeeping is what its shells and its editor ran for themselves, `housekeeping, not run by
+ *  hand: 214 commands (prompt, git)`.
  *
  *  Commands under a process that never exited are not known to be the agent's own, so they are not
  *  counted as "not the model": they follow apart, as `· 12 more under a process that never exited`.
  *  Their count is the block's own `never_exited`, not a look in `shapes`, which holds only the top five
  *  and may not list that shape at all (R43). */
-export function housekeepingText(hk: PhaseHousekeeping): string {
+export function housekeepingText(hk: PhaseHousekeeping, driver: PhaseDriver = 'agent'): string {
   const extra = hk.never_exited;
   const own = Math.max(0, hk.n - extra);
   const top = hk.shapes
     .filter(([s]) => s !== HK_NEVER_EXITED)
     .slice(0, 2)
     .map(([s]) => s);
-  let text = `housekeeping, not the model: ${fint(own)} ${own === 1 ? 'command' : 'commands'}`;
+  let text = `housekeeping, ${driver === 'terminal' ? 'not run by hand' : 'not the model'}: ${fint(own)} ${own === 1 ? 'command' : 'commands'}`;
   if (top.length) text += ` (${top.join(', ')})`;
   if (extra > 0) text += ` · ${fint(extra)} more under a process that never exited`;
   return text;

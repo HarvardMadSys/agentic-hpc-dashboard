@@ -1,7 +1,7 @@
 # RPM spec for the ebpfm login-node collector.
 #
 # Packages the standalone collector bundle (ebpf_trace.py, node_snapshot.py,
-# lib/, ebpfm.sh) into /usr/lib/ebpfm, installs a systemd unit with the paths
+# lib/, ebpfm.sh, README.md) into /usr/lib/ebpfm, installs a systemd unit with the paths
 # pre-substituted, and symlinks the entrypoint to /usr/bin/ebpfm.
 #
 # Version/Release are injected by the release workflow via rpmbuild --define:
@@ -86,6 +86,8 @@ install -m 0755 %{_sourcedir}/collector/ebpfm.sh         %{buildroot}%{ebpfm_lib
 install -m 0644 %{_sourcedir}/collector/lib/*.py         %{buildroot}%{ebpfm_libdir}/lib/
 # Vendoring manifest, used by `ebpfm check`.
 install -m 0644 %{_sourcedir}/collector/.vendored.sha256 %{buildroot}%{ebpfm_libdir}/.vendored.sha256
+# The unit's Documentation= points here.
+install -m 0644 %{_sourcedir}/collector/README.md        %{buildroot}%{ebpfm_libdir}/README.md
 
 # Entrypoint symlink -> /usr/bin/ebpfm
 install -d -m 0755 %{buildroot}%{_bindir}
@@ -119,6 +121,7 @@ install -m 0644 %{_sourcedir}/packaging/ebpfm.default %{buildroot}%{_sysconfdir}
 %{ebpfm_libdir}/ebpfm.sh
 %{ebpfm_libdir}/lib/*.py
 %{ebpfm_libdir}/.vendored.sha256
+%{ebpfm_libdir}/README.md
 %{_bindir}/ebpfm
 %{_unitdir}/ebpfm.service
 # Vendor sysctl drop-in in /usr/lib/sysctl.d (not %config): admins override in

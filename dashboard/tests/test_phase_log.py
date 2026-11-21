@@ -22,9 +22,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard.reducers.phase_log import (CAT, E, FLAGS, H, NO_ARGV, OPEN, P_CATS,  # noqa: E402
-                                             P_CMDS, P_FIRST, P_HELP, P_LAST, P_N, P_SID, P_SINCE,
-                                             P_SINCE_N, P_TEXT, P_WROTE, PAST, PID, PREV, S, WROTE,
-                                             PendingJoin, PhaseLog, fold_entry)
+                                             P_CMDS, P_FIRST, P_HELP, P_JOB, P_LAST, P_N, P_SID,
+                                             P_SINCE, P_SINCE_N, P_TEXT, P_WROTE, PAST, PID, PREV,
+                                             S, WROTE, PendingJoin, PhaseLog, fold_entry)
 from rc_dashboard.reducers.phase_rules import APP_READ                        # noqa: E402
 
 
@@ -513,8 +513,10 @@ class PendingTest(unittest.TestCase):
     def test_a_leaf_is_a_one_record_entry(self):
         pj = PendingJoin(cap=10)
         e = pj.leaf(5.0, 7.5, "slurm", "squeue", "squeue -u me", False, "sid9")
-        self.assertEqual(len(e), 11)
+        self.assertEqual(len(e), 12)
         self.assertIsNone(e[P_HELP])                                # no login helper (R72)
+        self.assertIs(e[P_JOB], False)                              # in no terminal's job
+        self.assertIs(pj.leaf(1, 2, "run", "x", None, False, "s", job=1)[P_JOB], True)
         self.assertEqual(
             (e[P_FIRST], e[P_LAST], e[P_N], e[P_CATS], e[P_TEXT], e[P_WROTE], e[P_SID]),
             (5.0, 7.5, 1, {"slurm": 1}, "squeue -u me", False, "sid9"))

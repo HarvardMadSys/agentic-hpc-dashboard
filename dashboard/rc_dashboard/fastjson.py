@@ -3,9 +3,11 @@
 orjson parses a collector line in about a third of the time the standard
 library takes, and the read is a third of a window build. It is optional: a
 deployment without it falls back to `json` and only runs slower. It also
-refuses a few things `json` accepts -- an integer wider than 64 bits, a lone
-surrogate -- so a line it rejects is retried with `json` before it counts as
-malformed: switching parsers must never drop a record the old one kept.
+refuses something `json` accepts -- a lone surrogate -- so a line it rejects is
+retried with `json` before it counts as malformed: switching parsers must never
+drop a record the old one kept. An integer wider than 64 bits it does not
+refuse: orjson 3.13 reads it as a float, where `json` keeps it exact. The
+collector writes none (docs/feed-parquet, Caveats).
 """
 import json
 

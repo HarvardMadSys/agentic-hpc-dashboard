@@ -60,8 +60,9 @@ PKG = os.path.dirname(os.path.abspath(__file__))
 # one's replica reads it (replica.py, where.py, feedparquet.py), what an offset into a compressed
 # day-file is (gz.py), the live tier's bins and roster
 # (buckets.py, roster.py), and the rest hours.py fingerprints for an hour.
-# Not hours.py itself, which a saved build never goes through (`windows._build`
-# saves only a scan), nor feeds.py, which finds the day-files: the fingerprint
+# And hours.py itself: a saved build is a scan (`windows._build`), but a
+# filtered one's exits took the own figures the hours worked out
+# (`hours.OwnFigures`). Not feeds.py, which finds the day-files: the fingerprint
 # holds the roots it resolves. Nor anonymize.py, whose home patterns the
 # trajectories read only to name a task's project when a read builds a phase
 # block, which no saved state keeps (`_phase_cache` is in its SNAPSHOT_SKIP).
@@ -70,7 +71,7 @@ PKG = os.path.dirname(os.path.abspath(__file__))
 CODE_FILES = ("normalize.py", "export.py", "windows.py", "snapshots.py", "redact.py",
               "roles.py", "procindex.py", "proctree.py", "tool_buckets.py", "fastjson.py",
               "gz.py", "feedfile.py", "replica.py", "where.py", "feedparquet.py",
-              "buckets.py", "roster.py")
+              "buckets.py", "roster.py", "hours.py")
 HELPER_MODULES = ("agent_lib", "tool_bucket_lib", "purpose_lib", "deep_traj_lib")
 
 

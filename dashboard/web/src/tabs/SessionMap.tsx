@@ -1,4 +1,4 @@
-/* What an agent did over its whole session: its tasks, and the phases under them, on the session's own clock.
+/* What a session did over its whole span: its tasks, and the phases under them, on the session's own clock.
  *
  * It answers the first question a reader has of an agent's session, before any process is read. The inspector's
  * chart (TrajectoryNav.tsx) is the read's: process starts on the axis of the records one read reached, and a read
@@ -16,7 +16,9 @@
  * - PHASES: a band for each phase, in the tint the inspector's chart gives it (`.tn-band`) and with a rule of its
  *   full colour along its foot, so neighbours that tint alike still read apart; named short where the name fits. A
  *   guess, and a guessed slice of any phase, is hatched; idle is an empty dashed outline, since a fill would draw it
- *   as work; and after the last phase of a session running now comes its live edge, as the row's band ends.
+ *   as work; and after the last phase of a session running now comes its live edge, as the row's band ends. A
+ *   session running now whose first call has not ended has no phase yet, and is its live edge alone, from its first
+ *   record (`runningUnread`).
  * Under them, the clock, and a key to the colours of the phases on it.
  *
  * A hover on a block or a band says what it was (`taskTip`, `phaseTip`) and what a click does (`zoomTip`). A click
@@ -36,6 +38,7 @@ import {
   LABEL_PAD,
   LEVELS,
   bandAxis,
+  driverOf,
   edgeLabel,
   edgeSpan,
   edgeTip,
@@ -109,7 +112,7 @@ export function SessionMap({
   onTask,
   onPhase,
 }: {
-  /** the row's block, with at least one phase */
+  /** the row's block, with at least one phase, or none for a session running now (`runningUnread`) */
   block: PhaseBlock;
   /** the row's first record, epoch seconds: the map starts there, or at the first phase where that is earlier */
   first?: number | null;
@@ -122,6 +125,7 @@ export function SessionMap({
   useClockPinned();
   const hatch = 'sm' + useId().replace(/[^\w-]/g, '');
   const list = block.list;
+  const driver = driverOf(block);
   const tasks = block.tasks ?? [];
   // a session running now runs on to now, which is read again with every live frame (lib/useNow.ts)
   const at = useNow(!!now);
@@ -217,7 +221,7 @@ export function SessionMap({
         return sx < lx + lw && sx + sw > lx;
       });
     bandMarks.push(
-      <g key={`p${i}`} className="sm-pick" data-kind={p.kind} data-tip={`${phaseTip(p)}\n${zoomTip(p.t0)}`} onClick={() => onPhase(p)}>
+      <g key={`p${i}`} className="sm-pick" data-kind={p.kind} data-tip={`${phaseTip(p, driver)}\n${zoomTip(p.t0)}`} onClick={() => onPhase(p)}>
         {guess ? (
           <>
             <rect x={x} y={bandY} width={w} height={BAND_H} fill={`url(#${hatch})`} />
@@ -244,7 +248,7 @@ export function SessionMap({
   });
 
   // The live edge of a session running now, after the last phase, as the row's band ends: not a phase, and no pick.
-  const e = now && (now.state === 'running' || now.state === 'idle' || now.state === 'unknown') && nowS != null ? edgeSpan(list, nowS, v0, v1) : null;
+  const e = now && (now.state === 'running' || now.state === 'idle' || now.state === 'unknown') && nowS != null ? edgeSpan(list, nowS, v0, v1, v0) : null;
   if (now && e) {
     const [x, w] = place(e.a, e.b, GAP);
     const col = now.state === 'running' ? phaseCol(now.cat) : 'none';

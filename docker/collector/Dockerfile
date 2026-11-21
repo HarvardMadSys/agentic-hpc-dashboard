@@ -6,8 +6,9 @@
 # (nfsiostat) and procps-ng (free/uptime/w); missing ones only blank individual
 # sections, but a login-node image should carry them.
 #
-# BASE_IMAGE is overridden by CI to pin an immutable base tag; the default is the
-# newest release's base, which the first vX.Y.Z tag publishes. Until then, build
+# BASE_IMAGE is set by CI to the base its ref builds on (collector-image.yml:
+# base:latest for a tag, base:edge for main, base:<branch> for a branch that
+# changed docker/base, else base:edge); the default is the newest release's base, which the first vX.Y.Z tag publishes. Until then, build
 # locally with --build-arg BASE_IMAGE=ghcr.io/harvardmadsys/agentic-hpc-dashboard/base:edge
 # (main's newest).
 ARG BASE_IMAGE=ghcr.io/harvardmadsys/agentic-hpc-dashboard/base:latest

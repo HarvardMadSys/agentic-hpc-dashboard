@@ -23,7 +23,7 @@ checks cover the rest:
   is not a loopback name (localhost, 127.0.0.0/8, ::1), the bind host
   (`server.host`), or one of `server.allowed_hosts` ("*" for any) gets a 403:
   a rebound name is none of them. With a password the check is off, so a
-  tunnel or a proxy that keeps its public name in the Host (deploy/fleet)
+  tunnel or a proxy that keeps its public name in the Host (hpc/deploy)
   needs no list; the cookie already defeats rebinding.
 
 Outside the sign-in (auth.py), so a request refused here costs no password

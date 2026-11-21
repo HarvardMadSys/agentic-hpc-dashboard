@@ -833,9 +833,11 @@ test("a task block's hover: its label and source, and what it holds; a lone stre
       const where = `${r.sid} ${t.label}`;
       const tip = T.taskTip(t, bl);
       assert.doesNotMatch(tip, /undefined|null|NaN|\[object/, where);
-      const want = t.kind === 'lone' ? [T.loneLine(t)] : [T.taskLabel(t) + (t.source ? ` · ${T.taskSource(t)}` : ''), T.taskWhat(t, bl)];
-      if (t.open) want.push(running);
-      if (t.incomplete) want.push(P.incompleteFrom(bl.cut_at));
+      // a session no agent ran says commands where an agent's says tool calls (`driver`)
+      const driver = P.driverOf(bl);
+      const want = t.kind === 'lone' ? [T.loneLine(t, driver)] : [T.taskLabel(t) + (t.source ? ` · ${T.taskSource(t)}` : ''), T.taskWhat(t, bl)];
+      if (t.open) want.push(driver === 'agent' ? running : P.openClause(driver));
+      if (t.incomplete) want.push(P.incompleteFrom(bl.cut_at, driver));
       assert.deepEqual(tip.split('\n'), want, where);
       nOpen += t.open ? 1 : 0;
       nIncomplete += t.incomplete ? 1 : 0;
@@ -883,17 +885,26 @@ test('the note under the phase list for a cut call log: with and without a time 
   assert.ok(blocks.some((r) => r.phases.cut > 0) && blocks.some((r) => !(r.phases.cut > 0)), 'a block that was cut, and one that was not');
   // the sentence's words are spelled in phases.ts and nowhere else in the page's code (a task's tooltip and the phase list both
   // take them from there), and the phase list calls the function, as it builds nothing of its own
-  assert.deepEqual(spelledIn(': the tool-call log was full`'), ['lib/phases.ts']);
+  assert.deepEqual(spelledIn(' log was full`'), ['lib/phases.ts']);
   assert.equal(callsOf('tabs/PhaseList.tsx', 'cutNote'), 1);
+  // a session no agent ran is read from its terminals: its log holds commands, and the note says so
+  assert.equal(P.cutNote({ cut: 3, cut_at: null, driver: 'terminal' }), 'phases are incomplete: the command log was full, so 3 commands are counted but in no phase');
+  assert.equal(P.cutNote({ cut: 1, cut_at: at, driver: 'terminal' }), `phases are incomplete from ${from}: the command log was full, so 1 later command is counted but in no phase`);
+  assert.equal(P.cutNote({ cut: 3, cut_at: null, driver: 'agent' }), P.cutNote({ cut: 3, cut_at: null }));
 });
 
 test('the basis line: tasks, then what they and the phases under them are read from, spelled in one place', () => {
   assert.equal(T.TASKS_BASIS, 'tasks · read from the commands the agent ran and the words it wrote in them');
+  // a session no agent ran is read from its terminals, and says so (`trajectories.TERMINAL_BASIS`)
+  assert.equal(T.TERMINAL_TASKS_BASIS, 'tasks · read from the commands run in its terminals and the words typed in them');
   // it is the service's own basis under the name of the level it opens with, so the two cannot drift
-  for (const r of blocks) assert.equal(T.TASKS_BASIS, `tasks · ${r.phases.basis}`, r.sid);
-  // the chart says it by this constant, and no other file of the page spells the basis, so the phases-only line is gone
+  for (const r of blocks) assert.equal(T.tasksBasis(r.phases), `tasks · ${r.phases.basis}`, r.sid);
+  assert.ok(blocks.some((r) => r.phases.driver === 'terminal') && blocks.some((r) => r.phases.driver === 'agent'));
+  assert.equal(T.tasksBasis({}), T.TASKS_BASIS, "a service that read agents alone sends no driver: an agent's");
+  // the chart says it by its block's driver, and no other file of the page spells the basis, so the phases-only line is gone
   assert.deepEqual(spelledIn('read from the commands the agent ran'), ['lib/tasks.ts']);
-  assert.match(readFileSync(new URL('tabs/TrajectoryNav.tsx', SRC), 'utf8'), /\bTASKS_BASIS\b/);
+  assert.deepEqual(spelledIn('read from the commands run in its terminals'), ['lib/tasks.ts']);
+  assert.match(readFileSync(new URL('tabs/TrajectoryNav.tsx', SRC), 'utf8'), /\btasksBasis\(block\)/);
 });
 
 test('what a click on a phase or a task does is said by one function, which the chart and the phase list call', () => {
@@ -906,26 +917,28 @@ test('what a click on a phase or a task does is said by one function, which the 
   assert.equal(callsOf('tabs/PhaseList.tsx', 'zoomTip'), 1, 'the rows of the list');
 });
 
-test("the glossary explains tasks: where one starts, what names it, that a quote is the agent's own words, and what a lone stretch is", () => {
+test("the glossary explains tasks: where one starts, what names it, that a quote is words written in the commands, and what a lone stretch is", () => {
   const g = G.GLOSS.tasks;
   assert.equal(typeof g, 'string');
   assert.match(g, /^tasks: /, 'it opens with its term, as the other entries do');
   // Where a task can start: after a gap with nothing waited on, when the work moves on, or after a commit. It can, not must: a commit
   // starts one only when the work around it changes, and a series of commits once. The page is not sent `gap_s`, so the copy names its
   // default, as a gap of an hour or more.
-  assert.match(g, /A task can start after an hour or more in which the agent waited on nothing/, 'where a task can start: after a gap');
+  assert.match(g, /A task can start after an hour or more in which it waited on nothing/, 'where a task can start: after a gap');
   assert.doesNotMatch(g, /A task starts/, 'never that it always starts there');
   assert.match(g, /when its work moves to something new/, 'where a task starts: new work');
   assert.match(g, /or after a commit or pull request\./, 'where a task starts: after a commit');
-  assert.match(g, /A quoted label is the agent’s own words\./, 'a quote is the agent’s own words');
+  // every session is read, so a quote is words written in its commands: an agent's own, or a person's
+  assert.match(g, /A quoted label is words written in its commands: the agent’s own, or a person’s\./, 'a quote is words written in the commands');
   assert.match(g, /Any other label is a verb and the names its commands used\./, 'what names the others');
-  assert.match(g, /A dashed block is a few tool calls hours from other work\./, 'what a lone stretch is, as it is drawn');
+  assert.match(g, /A dashed block is a few calls hours from other work\./, 'what a lone stretch is, as it is drawn');
   assert.doesNotMatch(g, /\bR\d+\b/, 'no ruling number');
   // a hover, not a page: no entry stands far above the others
   const longest = Math.max(...Object.entries(G.GLOSS).filter(([k]) => k !== 'tasks').map(([, v]) => v.length));
   assert.ok(g.length <= longest * 1.2, `${g.length} characters, and the longest other entry is ${longest}`);
-  // the phases keep their own entry
+  // the phases keep their own entry, which says a session no agent ran is read from its terminals
   assert.match(G.GLOSS.phases, /^phases: /);
+  assert.match(G.GLOSS.phases, /a session no agent ran, a person’s login or an editor’s terminal, is read from the commands its terminals ran/);
 });
 
 test('taskAt: the task or lone stretch that holds a time, as phaseAt holds a phase', () => {
@@ -1185,35 +1198,41 @@ test('the fixture: commands under a process that never exited, among the top fiv
   }
 });
 
-test('the fixture: a row no phases are read for says so, as the service sends it (R41)', () => {
-  // Claude Code and Codex are read. Every other row, an agent of another type, a person, and an IDE,
-  // carries `{unavailable}` and a null `n_calls`, and none of those is a block.
-  const read = new Set(['claude_code', 'codex']);
+test('the fixture: every row is read, an agent of any type by its tool calls, and a person and an IDE by their terminals', () => {
+  // The service reads every row: Claude Code and Codex by their own rules, any other agent by the general rule, and a
+  // session no agent ran (a person, an IDE) from the commands its terminals ran. Each carries a block and a count.
   for (const r of rows) {
-    const reads = r.actor3 === 'agent' && read.has(r.agent_type);
-    assert.equal(P.isBlock(r.phases), reads, `${r.sid} (${r.actor3}, ${r.agent_type})`);
-    if (reads) continue;
-    assert.deepEqual(r.phases, { unavailable: 'phases not available for this agent type' }, r.sid);
-    assert.equal(r.n_calls, null, r.sid);
+    assert.ok(P.isBlock(r.phases), `${r.sid} (${r.actor3}, ${r.agent_type})`);
+    assert.equal(typeof r.n_calls, 'number', r.sid);
+    assert.equal(P.phasesUnread(r), null, r.sid);
+    assert.equal(P.driverOf(r.phases), r.actor3 === 'agent' ? 'agent' : 'terminal', r.sid);
   }
-  // the page notes it under an agent of a type that is not read (Copilot here), and the service never says
-  // it of Codex, which is read
-  assert.ok(rows.some((r) => r.actor3 === 'agent' && r.agent_type === 'copilot' && !P.isBlock(r.phases)));
-  assert.ok(rows.every((r) => r.agent_type !== 'codex' || P.isBlock(r.phases)));
-  // a person and an IDE (the Cursor row among them) have the same, and the page says nothing under them
-  assert.ok(rows.some((r) => r.actor3 === 'human' && !P.isBlock(r.phases)));
-  assert.ok(rows.some((r) => r.actor3 === 'ide' && r.agent_type === 'cursor' && !P.isBlock(r.phases)));
+  // Copilot is read by the general rule, and a person and an IDE (the Cursor row among them) by their terminals
+  assert.ok(rows.some((r) => r.actor3 === 'agent' && r.agent_type === 'copilot' && r.phases.list.length > 0));
+  assert.ok(rows.some((r) => r.actor3 === 'human' && r.phases.list.length > 0));
+  assert.ok(rows.some((r) => r.actor3 === 'ide' && r.agent_type === 'cursor' && r.phases.list.length > 0));
+  // the page words a terminal's calls as commands, everywhere it counts them
+  const person = rows.find((r) => r.actor3 === 'human');
+  assert.equal(P.calls(person.n_calls, P.driverOf(person.phases)), `${F.fint(person.n_calls)} ${person.n_calls === 1 ? 'command' : 'commands'}`);
+  assert.equal(P.calls(1, 'agent'), '1 tool call');
+  assert.equal(P.callWord(), 'tool call');
+  assert.equal(P.callWord('terminal', 2), 'commands');
+  assert.equal(P.driverOf({}), 'agent', "a service that read agents alone sends no driver: an agent's");
+  // the row counts its calls by them, in the words of whoever ran it
+  assert.match(source('tabs/TrajectoriesTab.tsx'), /calls\(r\.n_calls \?\? 0, driverOf\(ph\)\)/);
 });
 
 test("the fixture: tasks tile every block's phases, and every phase names its task", () => {
   const BASIS = 'read from the commands the agent ran and the words it wrote in them';
+  const TERMINAL_BASIS = 'read from the commands run in its terminals and the words typed in them';
   const GAP_S = 3600; // `phase_tasks.DEFAULTS.gap_s`: a gap this long with nothing the agent waits on cuts a task
   const unread = /undefined|null|NaN|\[object|—/;
   const ids = new Set(rows.map((r) => r.sid));
   for (const r of blocks) {
     const b = r.phases;
     assert.equal(b.v, 2, r.sid);
-    assert.equal(b.basis, BASIS, r.sid);
+    assert.equal(b.basis, b.driver === 'terminal' ? TERMINAL_BASIS : BASIS, r.sid);
+    assert.equal(b.driver, r.actor3 === 'agent' ? 'agent' : 'terminal', r.sid);
     assert.ok(Array.isArray(b.tasks) && b.tasks.length >= 1, `${r.sid}: no tasks`);
     assert.ok(typeof b.headline === 'string' || b.headline === null, `${r.sid}: headline ${b.headline}`);
     assert.doesNotMatch(b.headline ?? '', unread, r.sid);
@@ -1281,7 +1300,7 @@ test("the fixture: tasks tile every block's phases, and every phase names its ta
       // the copy the page says of it reads
       const said = [T.taskLabel(t), T.taskWhat(t, b), t.gap ? T.gapLine(t.gap) : '', t.kind === 'lone' ? T.loneLine(t) : ''];
       for (const s of said) assert.doesNotMatch(s, unread, `${where}: ${s}`);
-      assert.match(T.taskWhat(t, b), /^\d[\d,]* phases? · \d[\d,]* tool calls?$/, where);
+      assert.match(T.taskWhat(t, b), b.driver === 'terminal' ? /^\d[\d,]* phases? · \d[\d,]* commands?$/ : /^\d[\d,]* phases? · \d[\d,]* tool calls?$/, where);
       assert.equal(T.taskLabel(t).startsWith('“'), t.source !== null, where);
       if (t.source !== null) assert.match(T.taskSource(t), /^(commit|log|PR( #\d+)?)$/, where);
       if (t.gap) assert.equal(/ still running since \d\d:\d\d:\d\d$/.test(T.gapLine(t.gap)), t.gap.alive.length > 0, `${where}: ${T.gapLine(t.gap)}`);
@@ -1574,7 +1593,7 @@ test("the zoom hint shows over the chart with no phases as it does over the one 
   // So each chart has a rule of its own, and neither is the other's.
   assert.match(css, /\.tn-strip:has\(svg\.strip:hover\) > \.zoomnote \.hint \{\s*visibility: visible;\s*\}/, 'the chart with phases');
   assert.match(css, /\.tn > \.zoomnote:has\(\+ \.tn-plot svg\.strip:hover\) \.hint \{\s*visibility: visible;\s*\}/, 'the chart with none');
-  assert.match(nav, /<ZoomNote[\s\S]*?\/>\s*\{merged && <BasisRow \/>\}\s*<div className="tn-plot">/, 'the plot follows the note, the basis line between them only where there are phases');
+  assert.match(nav, /<ZoomNote[\s\S]*?\/>\s*\{merged && phases && <BasisRow block=\{phases\} \/>\}\s*<div className="tn-plot">/, 'the plot follows the note, the basis line between them only where there are phases');
   assert.match(source('styles.css'), /\.zoomnote:has\(\+ svg:hover\) \.hint \{/, 'the other charts keep theirs');
 
   // The captions: which levels a chart has, and the rows they stand at, are read where the chart is drawn.
@@ -1724,7 +1743,7 @@ test("the three-level list is the phase list's rows under the tasks, and is word
   assert.match(list, /const opened = seen\.has\(p\.t0\);/);
   assert.match(list, /onClick=\{\(\) => setSeen\(\(s\) => flipped\(s, p\.t0\)\)\}/);
   assert.doesNotMatch(list, /chose\.get\(i\)|\.set\(i,|seen\.has\(at\)|flipped\(s, at\)/, 'no state kept by a place in the list');
-  assert.match(list, /<PhaseRow p=\{p\} onPick=\{onPhase\} \/>/);
+  assert.match(list, /<PhaseRow p=\{p\} onPick=\{onPhase\} driver=\{driverOf\(block\)\} \/>/);
 });
 
 test('the list of tasks as the page draws it for every row of the fixture: a row to each task, with its number, span, label, source, and what it holds, and the lines between them', async () => {
@@ -1738,13 +1757,13 @@ test('the list of tasks as the page draws it for every row of the fixture: a row
       const nums = T.taskNumbers(b.tasks);
       const want = [];
       b.tasks.forEach((t, i) => {
-        if (t.gap) want.push(['tl-gap', T.gapLine(t.gap)]);
+        if (t.gap) want.push(['tl-gap', T.gapLine(t.gap, P.driverOf(b))]);
         const state = T.taskState(t, b).join(' · ');
         const src = T.taskSource(t);
         // closed, as the page first shows it: a chevron, then the row's words
         want.push(
           t.kind === 'lone'
-            ? ['tl-row lone', `▸${T.loneLine(t)}${state}`]
+            ? ['tl-row lone', `▸${T.loneLine(t, P.driverOf(b))}${state}`]
             : ['tl-row', `▸${nums[i]}${F.clock(t.t0)}–${F.clock(t.t1)}${T.taskLabel(t)}${src ? ` · ${src}` : ''}${T.taskWhat(t, b)}${state}`],
         );
         seen.gap += t.gap ? 1 : 0;
@@ -2386,7 +2405,7 @@ test('the fixture: every block says what kind of session it was, and the chip sa
     }
     assert.equal(typeof b.summary, 'string', r.sid);
     assert.doesNotMatch(b.summary, unread, r.sid);
-    assert.ok(b.summary.includes(`${F.fint(b.n_calls)} tool call`), `${r.sid}: ${b.summary}`);
+    assert.ok(b.summary.includes(`${F.fint(b.n_calls)} ${P.callWord(P.driverOf(b), b.n_calls)}`), `${r.sid}: ${b.summary}`);
   }
   // a session across midnight is one block, so its day rows say one category and one summary
   const pair = blocks.filter((r) => r.phases.days);
@@ -2455,6 +2474,45 @@ test('sequenceParts: the parts of the row line, a phase each, and the `…` that
   assert.match(source('lib/phases.ts'), /export function sequenceLine\([^)]*\): string \{\s*const parts = sequenceParts\(list\)\.map\(\(s\) => s\.text\);/);
 });
 
+test('a session running now whose first call has not ended: its live edge alone, from its first record, and never "no tool calls"', async () => {
+  const now = { state: 'running', cmds: [['python', 3], ['srun', 1]], cat: 'run', at: api.now_epoch - 30 };
+  const hk = { n: 0, shapes: [], bins: [], cut: 0, never_exited: 0 };
+  const empty = { v: 2, basis: 'x', driver: 'agent', n_calls: 0, cut: 0, cut_at: null, housekeeping: hk, list: [], tasks: [], headline: null, category: 'none', uses: [], summary: 'No tool calls.' };
+  assert.equal(P.runningUnread(empty, now), true);
+  assert.equal(P.runningUnread(empty, { state: 'idle' }), false, 'the census shows nothing running: no call is missing');
+  assert.equal(P.runningUnread({ ...empty, list: [ph('run', 0, 1)] }, now), false, 'a call has ended: its phases say it');
+  assert.equal(P.runningUnread(empty, null), false);
+  assert.equal(P.runningUnread(null, now), false);
+  assert.equal(P.runningUnreadText(now), 'No tool call has ended yet: python and srun are running now, and its phases come as its tool calls end.');
+  assert.equal(P.runningUnreadText({ state: 'running', cmds: [['?', 1]] }), 'No tool call has ended yet: unnamed is running now, and its phases come as its tool calls end.');
+  assert.equal(P.runningUnreadText({ state: 'running' }, 'terminal'), 'No command has ended yet: something is running now, and its phases come as its commands end.');
+  // the edge runs from the session's first record to now, and with no first record it has nowhere to start
+  const first = api.now_epoch - 600;
+  assert.deepEqual(P.edgeSpan([], api.now_epoch, first, api.now_epoch, first), { from: first, to: api.now_epoch, a: first, b: api.now_epoch });
+  assert.equal(P.edgeSpan([], api.now_epoch, first, api.now_epoch), null);
+  assert.equal(P.sequenceLine([], now), 'running now');
+  const ui = await renderer();
+  mock.timers.enable({ apis: ['Date'], now: api.now_epoch * 1000 });
+  try {
+    const map = await ui.render('tabs/SessionMap.tsx', 'SessionMap', { block: empty, first, now, onTask() {}, onPhase() {} });
+    assert.match(map, /<g data-kind="edge" data-tip="running now · python, srun · /, 'the map is its live edge');
+    assert.doesNotMatch(map, /class="sm-pick"/, 'and no phase or task to pick');
+    const list = await ui.render('tabs/PhaseList.tsx', 'PhaseList', { block: empty, now, first, onPick() {} });
+    assert.match(list, /<div class="pl-row edge" data-kind="edge">/);
+    assert.match(textOf(list), /running now · python, srun/);
+    const nowhere = await ui.render('tabs/PhaseList.tsx', 'PhaseList', { block: empty, now, first: null, onPick() {} });
+    assert.doesNotMatch(nowhere, /pl-row edge/);
+  } finally {
+    mock.timers.reset();
+    await ui.close();
+  }
+  // the row draws the edge, names what runs, and leaves the `no tool calls` chip off; the inspector says it in the summary's place
+  const tab = source('tabs/TrajectoriesTab.tsx');
+  assert.match(tab, /if \(block && axis && \(block\.list\.length \|\| runningUnread\(block, edge\)\)\)/);
+  assert.match(tab, /\(list\.length \? sequenceLine\(list, edge\) : edgeLabel\(edge\)\)/);
+  assert.match(tab, /<CategoryChip of=\{isBlock\(ph\) && !runningUnread\(ph, r\.running\?\.now\) \? ph : null\} \/>/);
+});
+
 test('bandAxis: a session drawn whole, from its first record or its first phase to its last call, and on to now while it runs', () => {
   const list = [ph('explore', 100, 200), ph('run', 200, 500)];
   assert.deepEqual(P.bandAxis(list, 150, null), [100, 500], 'a first phase before the first record');
@@ -2462,21 +2520,24 @@ test('bandAxis: a session drawn whole, from its first record or its first phase 
   assert.deepEqual(P.bandAxis(list, null, null), [100, 500], 'no first record: the first phase');
   assert.deepEqual(P.bandAxis(list, undefined, 900), [100, 900], 'running: on to now');
   assert.deepEqual(P.bandAxis(list, undefined, 400), [100, 500], 'a now before the last call ends is the last call');
-  assert.equal(P.bandAxis([], 50, 900), null);
+  // no phase yet: a session running now is its live edge alone, from its first record to now; any other has no band
+  assert.deepEqual(P.bandAxis([], 50, 900), [50, 900], 'running, and no call has ended');
+  assert.equal(P.bandAxis([], 50, null), null, 'not running: nothing to draw');
+  assert.equal(P.bandAxis([], null, 900), null, 'no first record: nowhere to start');
+  assert.equal(P.bandAxis([], 950, 900), null, 'a now before the first record');
   // the row's band and the inspector's map are drawn on it, and neither works an axis out of its own
   assert.equal(callsOf('tabs/TrajectoriesTab.tsx', 'bandAxis'), 1);
   assert.equal(callsOf('tabs/SessionMap.tsx', 'bandAxis'), 1);
   assert.doesNotMatch(source('tabs/TrajectoriesTab.tsx'), /Math\.min\(r\.first/);
 });
 
-test("phasesUnread: an agent whose commands are not read says why, in the service's words; a person and an IDE say nothing", () => {
+test("phasesUnread: a row an older service did not read says why, in its words, under an agent; a person and an IDE say nothing", () => {
   assert.equal(P.phasesUnread({ actor3: 'agent', phases: { unavailable: 'not read for this one' } }), 'not read for this one');
   assert.equal(P.phasesUnread({ actor3: 'agent', phases: { unavailable: '' } }), P.PHASES_UNAVAILABLE);
   assert.equal(P.PHASES_UNAVAILABLE, 'phases not available for this agent type');
   for (const actor3 of ['human', 'ide', null]) assert.equal(P.phasesUnread({ actor3, phases: { unavailable: 'x' } }), null, String(actor3));
-  for (const r of blocks) assert.equal(P.phasesUnread(r), null, r.sid);
-  const copilot = rows.find((r) => r.actor3 === 'agent' && r.agent_type === 'copilot');
-  assert.equal(P.phasesUnread(copilot), 'phases not available for this agent type');
+  // the service now sends every row a block, so the page says it of none of the fixture's: only of an older service's row
+  for (const r of rows) assert.equal(P.phasesUnread(r), null, r.sid);
   // worded in one place, which the row and the inspector both ask
   assert.deepEqual(spelledIn('phases not available for this agent type'), ['lib/phases.ts']);
   assert.equal(callsOf('tabs/TrajectoriesTab.tsx', 'phasesUnread'), 1);
@@ -2498,7 +2559,7 @@ test("the map of the whole session: a block to each task and a band to each phas
       assert.match(html, new RegExp(`<svg viewBox="0 0 ${W} \\d+(?:\\.\\d+)?" width="${W}"`), `${r.sid}: drawn as wide as its plot`);
       // a band to each phase, in order: what it was on hover, and what a click does
       const bands = [...html.matchAll(/<g class="sm-pick" data-kind="([^"]+)" data-tip="([^"]*)">/g)].map(([, kind, tip]) => [kind, textOf(tip)]);
-      assert.deepEqual(bands, b.list.map((p) => [p.kind, `${P.phaseTip(p)}\n${P.zoomTip(p.t0)}`]), `${r.sid}: the bands`);
+      assert.deepEqual(bands, b.list.map((p) => [p.kind, `${P.phaseTip(p, P.driverOf(b))}\n${P.zoomTip(p.t0)}`]), `${r.sid}: the bands`);
       // a block to each task and lone stretch, in order: its hover, and its number and label where they fit, as the list has them
       const lane = [...html.matchAll(/<g class="sm-pick" data-tip="([^"]*)">(.*?)<\/g>/g)].map(([, tip, inner]) => ({
         tip: textOf(tip),
@@ -2620,7 +2681,10 @@ test("the inspector tells the session's story before its processes: the facts, t
   assert.doesNotMatch(header, /<Segmented|expand all|pop out/);
   // the story is the row's, so it waits for no read: the headline, the gist, and what it did are drawn as soon as the row is here
   assert.doesNotMatch(ins, /d\?\.found && axis && block\?\.(?:headline|summary)/);
-  assert.match(ins, /\{block && block\.list\.length > 0 && \(\s*<section className="ins-sec"/);
+  assert.match(ins, /\{block && \(block\.list\.length > 0 \|\| waiting\) && \(\s*<section className="ins-sec"/);
+  // running now with no call ended: what runs stands in the summary's place, and the section draws the edge alone
+  assert.match(ins, /const waiting = runningUnread\(block, edge\);/);
+  assert.match(ins, /\{runningUnreadText\(edge, driverOf\(block\)\)\}/);
   // the map and the list pick as everything else does
   assert.match(ins, /<SessionMap block=\{block\} first=\{r\?\.first\} now=\{edge\} onTask=\{onTask\} onPhase=\{onPhase\} \/>/);
   // what the read covers is said first in its part, before how it was read, and is never a tooltip

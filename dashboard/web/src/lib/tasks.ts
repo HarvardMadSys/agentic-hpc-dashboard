@@ -6,17 +6,36 @@
  * source (`commit`, `PR #235`, or `log`) where there is room for it. A label built from the names in the task's
  * commands shows neither, so a reader never takes it for something the agent wrote.
  */
-import type { Phase, PhaseBlock, PhaseDay, Task, TaskGap } from '../api/types';
+import type { Phase, PhaseBlock, PhaseDay, PhaseDriver, Task, TaskGap } from '../api/types';
 import { clock, dur, fint } from './format';
-import { GAP, aliveClause, incompleteFrom, labelFits, lowerFirst, onAxis, openClause, phaseAt, placeBand } from './phases';
+import {
+  GAP,
+  aliveClause,
+  callWord,
+  calls,
+  driverOf,
+  incompleteFrom,
+  labelFits,
+  lowerFirst,
+  onAxis,
+  openClause,
+  phaseAt,
+  placeBand,
+} from './phases';
 
 /** `3 phases`, `1 phase`: a count in the page's own format, and the word that fits it. */
 const plural = (n: number, one: string, many: string): string => `${fint(n)} ${n === 1 ? one : many}`;
 
 /** The basis line above the inspector's chart: what the tasks, and the phases under them, are read from. It is the
  *  service's own `basis` for a block (`phase_segment.BASIS`) under the name of the level it opens with, and no other
- *  file of the page spells it. Its first word is a glossary term (`tasks`). */
+ *  file of the page spells it. Its first word is a glossary term (`tasks`). A session no agent ran is read from its
+ *  terminals (`TERMINAL_TASKS_BASIS`, the service's `TERMINAL_BASIS`); `tasksBasis` picks by the block's `driver`. */
 export const TASKS_BASIS = 'tasks · read from the commands the agent ran and the words it wrote in them';
+export const TERMINAL_TASKS_BASIS = 'tasks · read from the commands run in its terminals and the words typed in them';
+
+/** The basis line for a block, by whose calls it was read from (`driver`). */
+export const tasksBasis = (b: { driver?: PhaseDriver | null } | null | undefined): string =>
+  driverOf(b) === 'terminal' ? TERMINAL_TASKS_BASIS : TASKS_BASIS;
 
 /* ------------------------------------------------------------ labels */
 
@@ -48,9 +67,10 @@ export function taskPhases(t: Task, b: PhaseBlock): Phase[] {
   return next?.gap && own[own.length - 1]?.kind === 'idle' ? own.slice(0, -1) : own;
 }
 
-/** What a task's row says after its label: `6 phases · 208 calls`, and `1 phase · 1 call`. */
+/** What a task's row says after its label: `6 phases · 208 tool calls`, and `1 phase · 1 tool call`; `commands` for a
+ *  session no agent ran. */
 export function taskWhat(t: Task, b: PhaseBlock): string {
-  return `${plural(taskPhases(t, b).length, 'phase', 'phases')} · ${plural(t.n, 'tool call', 'tool calls')}`;
+  return `${plural(taskPhases(t, b).length, 'phase', 'phases')} · ${calls(t.n, driverOf(b))}`;
 }
 
 /** The number each of the tasks has, which the lane and the list both show: its place among the tasks, from 1. A lone stretch
@@ -85,10 +105,11 @@ export function taskInView(tasks: Pick<Task, 't0' | 't1'>[], view: [number, numb
  *  open (`openClause`), and that the call log was full, where the cut may have taken calls of it, from when the block was
  *  cut (`incompleteFrom`, `cut_at`). Empty for a task that is neither. The running line comes first. The task's hover has
  *  them on lines of their own (`taskTip`) and its row in the list has them as a muted part of it. */
-export function taskState(t: Task, b: Pick<PhaseBlock, 'cut_at'>): string[] {
+export function taskState(t: Task, b: Pick<PhaseBlock, 'cut_at' | 'driver'>): string[] {
   const out: string[] = [];
-  if (t.open) out.push(openClause());
-  if (t.incomplete) out.push(incompleteFrom(b.cut_at));
+  const driver = driverOf(b);
+  if (t.open) out.push(openClause(driver));
+  if (t.incomplete) out.push(incompleteFrom(b.cut_at, driver));
   return out;
 }
 
@@ -96,16 +117,16 @@ export function taskState(t: Task, b: Pick<PhaseBlock, 'cut_at'>): string[] {
  *  still running as the gap began, the first of them follows, by the name the service gives it, else by its command:
  *  `2.1 h with no new calls · linktest.sh still running since 13:05:44`, or `· a call still running since …` for one
  *  with neither (`aliveClause`). */
-export function gapLine(g: TaskGap): string {
-  const head = `${dur(g.s)} with no new tool calls`;
-  return g.alive.length ? `${head} · ${aliveClause(g.alive[0])}` : head;
+export function gapLine(g: TaskGap, driver: PhaseDriver = 'agent'): string {
+  const head = `${dur(g.s)} with no new ${callWord(driver, 2)}`;
+  return g.alive.length ? `${head} · ${aliveClause(g.alive[0], driver)}` : head;
 }
 
 /** The line for a lone stretch: `1 call at 16:46:03 · read harness/x.py`, and `3 calls at …`. A quote keeps its
  *  capital, inside its quotation marks, as it was written. The list draws it as a row to click, in `--ink-2`, and not
  *  muted as the gap line is. */
-export function loneLine(t: Task): string {
-  return `${plural(t.n, 'tool call', 'tool calls')} at ${clock(t.t0)} · ${lowerFirst(taskLabel(t))}`;
+export function loneLine(t: Task, driver: PhaseDriver = 'agent'): string {
+  return `${calls(t.n, driver)} at ${clock(t.t0)} · ${lowerFirst(taskLabel(t))}`;
 }
 
 /* ------------------------------------------------------- the row line */
@@ -128,7 +149,7 @@ export function taskSequence(b: PhaseBlock, keep = 2): string {
  *  in the words the list of phases uses for them (`taskState`). */
 export function taskTip(t: Task, b: PhaseBlock): string {
   const source = taskSource(t);
-  const head = t.kind === 'lone' ? loneLine(t) : `${taskLabel(t)}${source ? ` · ${source}` : ''}\n${taskWhat(t, b)}`;
+  const head = t.kind === 'lone' ? loneLine(t, driverOf(b)) : `${taskLabel(t)}${source ? ` · ${source}` : ''}\n${taskWhat(t, b)}`;
   return [head, ...taskState(t, b)].join('\n');
 }
 

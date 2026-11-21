@@ -283,7 +283,7 @@ export function leveragePoints(row: UserRow, fleet: UsersFleet | null | undefine
     tip: 'a session is open from its first record to its last; a typical one is the median',
   });
   if (row.calls == null) {
-    out.push({ k: 'uses', label: 'used for', text: 'not read: the service reads the commands of Claude Code and Codex' });
+    out.push({ k: 'uses', label: 'used for', text: 'not read: this service read the commands of Claude Code and Codex alone' });
   } else if (!l.uses.length) {
     out.push({ k: 'uses', label: 'used for', text: `too few actions to say (${fint(l.actions)})` });
   } else {

@@ -1,4 +1,5 @@
-"""Phases in the trajectories reducer: every agent row carries its tool calls' phases.
+"""Phases in the trajectories reducer: every row carries its calls' phases, an agent's tool calls
+or, where no agent ran the session, the jobs its terminals' shells ran.
 
 Records are built as the collector writes them (`test_sessions.rec`), a child's exit before the
 process that waited on it, and reduced through the reducer set a window build uses. Schema 8
@@ -29,7 +30,6 @@ from rc_dashboard.windows import PanelView                  # noqa: E402
 from test_sessions import HOME, SNAP, cfg, claude_session, ranked, rec, reduce   # noqa: E402
 
 SNAP8 = SNAP.replace("/bin/zsh -c", "/bin/bash -c")     # schema 8 records the shell as `bash`
-UNAVAILABLE = {"unavailable": "phases not available for this agent type"}
 CODEX = HOME + "/.codex/bin/codex"
 HELPER = CODEX + " --codex-run-as-fs-helper"
 
@@ -528,23 +528,48 @@ class TrajPhasesTest(unittest.TestCase):
         self.assertEqual(row["n_calls"], 4)
         self.assertEqual(row["fragments"], 3)
 
-    def test_an_unsupported_agent_says_so(self):
+    def test_an_agent_of_any_type_has_its_calls_read(self):
+        # a Cursor agent's CLI: the general rule reads its direct children as Codex's are read
         kw = dict(agent_pid=100, tree_root=100, agent_type="cursor")
         row = row_of(reduce([
             rec("residency", T0, 100, 50, "cursor-agent", "cursor-agent", is_agent=True,
                 age_s=60, **kw),
             rec("exit", T0 + 5, 201, 100, "bash", "/bin/bash -c ls", **kw),
         ]))
-        self.assertEqual(row["phases"], UNAVAILABLE)
-        self.assertIsNone(row["n_calls"])         # not recognized is not none: null, not zero
+        self.assertEqual(row["n_calls"], 1)
+        self.assertEqual(kinds(row), ["explore"])
+        self.assertEqual(row["phases"]["list"][0]["top"], [["ls", 1]])
 
-    def test_a_person_has_no_phases(self):
+    def test_a_copilot_session_is_read_by_the_general_rule(self):
+        kw = dict(root=900, agent_type="copilot")
+        row = row_of(reduce([
+            root8(T0, root=900, command="copilot", args="copilot", agent_type="copilot"),
+            s8(T0 + 10, 901, 900, "bash", "/bin/bash -c pytest -q tests", duration_s=20.0, **kw),
+            s8(T0 + 40, 902, 900, "copilot", "copilot --version", **kw),
+            s8(T0 + 60, 903, 900, "rg", "rg -n foo src", **kw),
+        ]), 900)
+        self.assertEqual(row["n_calls"], 2)
+        self.assertEqual(row["phases"]["driver"], "agent")
+        self.assertEqual(row["phases"]["housekeeping"]["shapes"], [["probe", 1]])
+        self.assertEqual(sorted(c for p in row["phases"]["list"] for c, _ in p["top"]),
+                         ["pytest -q tests", "rg -n foo src"])
+        self.assertIn("2 tool calls", row["phases"]["summary"])
+
+    def test_a_person_whose_groups_were_not_kept_has_a_block_with_no_calls(self):
+        # an older collector, or one without the feature, writes no `pgrp` and `sid`: nothing
+        # says which process was a job, so none is, and the row still says what it read
         payload = reduce([rec("exit", T0 + 5, 901, 900, "ls", "ls -la", agent_pid=None,
                               tree_root=None, actor="human", actor3="human", agent_type=None,
                               tty="pts/3", user="bob")])
         row, = [r for r in ranked(payload) if r["actor3"] == "human"]
-        self.assertEqual(row["phases"], UNAVAILABLE)
-        self.assertIsNone(row["n_calls"])
+        # not read, and not held for a later record either: counted
+        self.assertEqual(buffer_of(payload, "phase_ungrouped", "phase_pending", "phase_exited"),
+                         (1, 0, 0))
+        self.assertEqual(row["n_calls"], 0)
+        self.assertEqual(row["phases"]["list"], [])
+        self.assertEqual(row["phases"]["driver"], "terminal")
+        self.assertEqual(row["phases"]["category"], "none")
+        self.assertEqual(row["phases"]["summary"], "No commands run from a terminal.")
 
     def test_a_call_still_running_at_the_edge_is_open(self):         # R37
         # Test runs one after another under a shell that has not exited: only its children are
@@ -809,13 +834,20 @@ class LateChildTest(unittest.TestCase):
         self.assertEqual(buffer_of(traj.result(), "phase_reparented", "phase_late_routed",
                                    "phase_pending"), (2, 0, 0))
 
-    def test_a_late_child_of_an_agent_whose_calls_are_not_read_is_counted(self):
+    def test_a_late_child_of_any_agents_call_is_that_calls(self):
+        # Copilot's calls are read by the general rule, so a stage that outlived its shell is
+        # placed in the call, as a Claude call's is
         kw = dict(root=900, agent_type="copilot")
         traj = fed([root8(T0, root=900, command="copilot", args="copilot", agent_type="copilot"),
                     s8(T0 + 10, 901, 900, "bash", "bash -c 'a | grep x'", duration_s=9.0, **kw),
                     s8(T0 + 60, 902, 901, "grep", "grep x", depth=2, duration_s=55.0, **kw)])
-        self.assertEqual(buffer_of(traj.result(), "phase_late_unplaced", "phase_late_routed",
-                                   "phase_pending"), (1, 0, 0))
+        payload = traj.result()
+        self.assertEqual(buffer_of(payload, "phase_late_unplaced", "phase_late_routed",
+                                   "phase_pending"), (0, 0, 0))
+        row = row_of(payload, 900)
+        self.assertEqual(row["n_calls"], 1)
+        past = [r for p in row["phases"]["list"] for r in (p["ran_past"] or ())]
+        self.assertEqual(len(past), 1)          # the grep ran past its shell, and is its call's
 
     def test_an_entry_an_earlier_process_left_under_a_reused_pid_is_refused_and_counted(self):
         # Final Important 5. Two children of a process 300 whose own record never came wait under
@@ -1296,6 +1328,126 @@ def by_time(recs):
 
 def app_reads(row):
     return dict(row["phases"]["housekeeping"]["shapes"]).get("app assets", 0)
+
+
+def h8(t, pid, ppid, command, args, pgrp, sid, user="bob", tty="pts/3", **kw):
+    """A person's process, schema 8: no agent above it, a terminal, and the groups it ran in."""
+    return rec("exit", t, pid, ppid, command, args, agent_pid=None, tree_root=None,
+               actor="human", actor3="human", agent_type=None, tty=tty, user=user,
+               pgrp=pgrp, sid=sid, schema_version=8, **kw)
+
+
+def person_of(payload, user="bob"):
+    rows = [r for r in ranked(payload) if r["actor3"] == "human" and r["user"] == user]
+    if len(rows) != 1:
+        raise AssertionError("%d rows for %s" % (len(rows), user))
+    return rows[0]
+
+
+SH = 500        # a login shell: it leads the terminal's session, and a process group of its own
+
+
+def login(t):
+    """What a person did in one login: the shell's startup helper and its prompt's git, in its own
+    group; then jobs, each in a group of its own: vim, a build with its compilers under it, a
+    pipeline, a test run, six polls of the queue, and `( cd x && make )` in a forked subshell."""
+    out = [h8(t + 1, 501, SH, "id", "/usr/bin/id -un", SH, SH),
+           h8(t + 2, 502, SH, "git", "git rev-parse --git-dir --is-inside-work-tree", SH, SH),
+           h8(t + 400, 510, SH, "vim", "vim train.py", 510, SH, duration_s=380)]
+    out += [h8(t + 420 + i, 521 + i, 520, "cc", "cc -c f%d.c" % i, 520, SH) for i in range(4)]
+    out += [h8(t + 430, 520, SH, "make", "make -j8", 520, SH, duration_s=15),
+            h8(t + 500, 530, SH, "ls", "ls -la", 530, SH),
+            h8(t + 500.2, 531, SH, "grep", "grep py", 530, SH),
+            h8(t + 600, 540, SH, "python", "python -m pytest -q", 540, SH, duration_s=40)]
+    out += [h8(t + 900 + 120 * i, 550 + i, SH, "squeue", "squeue -u bob", 550 + i, SH)
+            for i in range(6)]
+    out += [h8(t + 2000, 571, 570, "make", "make", 570, SH, duration_s=5),
+            h8(t + 2006, 570, SH, "bash", "-bash", 570, SH, argv_source="inherit", duration_s=6.5)]
+    return out
+
+
+class TerminalSessionTest(unittest.TestCase):
+    """A session no agent runs, a person's login or an editor's terminal, is read from the jobs its
+    terminals' shells ran, known by the process groups the collector records."""
+
+    def test_a_persons_jobs_are_calls_and_the_shells_own_are_not(self):
+        row = person_of(reduce(login(T0)))
+        ph = row["phases"]
+        self.assertEqual(row["n_calls"], 12)
+        self.assertEqual(ph["n_calls"], 12)
+        self.assertEqual(ph["driver"], "terminal")
+        self.assertEqual(ph["basis"], trajmod.TERMINAL_BASIS)
+        tops = {c for p in ph["list"] for c, _ in p["top"]}
+        self.assertTrue({"vim train.py", "make -j8", "ls -la", "grep py", "squeue -u bob"} <= tops)
+        # the compilers are the build's, never calls of their own
+        self.assertFalse(any(c.startswith("cc ") for c in tops))
+        shapes = dict(ph["housekeeping"]["shapes"])
+        self.assertEqual((shapes.get("login shell startup"), shapes.get("prompt")), (1, 1))
+        self.assertIn("12 commands", ph["summary"])
+        self.assertNotIn("tool call", ph["summary"])
+        # the subshell is named by what ran under it
+        self.assertIn("make", tops)
+
+    def test_a_job_still_running_is_a_call_and_what_waits_under_the_shell_is_not(self):
+        # `./run.sh` has not exited: its steps, in its group, are a call still running at the
+        # edge. The tmux server, forked off with no exec, leads a session of its own: no call.
+        last = T0 + 3000
+        scope = "/user.slice/user-1000.slice/session-7.scope"     # one login: one session key
+        recs = [h8(T0 + 10, 510, SH, "ls", "ls", 510, SH)]
+        # steps at a person's own uneven pace: a job's work, not a loop polling something
+        starts = [last - 600 + sum((31, 44, 18, 52, 27, 39, 61, 22, 35, 48)[:i]) for i in range(11)]
+        recs += [h8(t + 15, 581 + i, 580, "python", "python step%d.py" % i, 580, SH,
+                    duration_s=15) for i, t in enumerate(starts)]
+        recs += [h8(T0 + 20, 900, 1, "tmux", "tmux new -s w", 900, 900, tty=None,
+                    argv_source="inherit", duration_s=15)]
+        for r in recs:
+            r["cgroup"] = scope
+        ph = person_of(reduce(recs))["phases"]
+        opened = [p for p in ph["list"] if p.get("open")]
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0]["kind"], "run")
+        self.assertIn(["terminal multiplexer", 1], ph["housekeeping"]["shapes"])
+
+    def test_an_editors_terminal_is_read_and_what_the_editor_runs_is_its_own(self):
+        V = dict(agent_pid=800, tree_root=800, agent_type="vscode", actor="agent",
+                 actor3="human-vscode", user="carol", schema_version=8)
+        recs = [rec("residency", T0, 800, 1, "node", HOME + "/.vscode-server/cli/servers/x/server/"
+                    "node server-main.js --connection-token=x", is_agent=True, age_s=60, depth=0, **V)]
+        # the extension host's source control polls git on its own, steadily: never a call, not
+        # even one still running
+        recs += [rec("exit", T0 + 60 * i, 811 + i, 801, "git", "git status -z -uall", pgrp=800,
+                     sid=800, depth=2, **V) for i in range(30)]
+        # the terminal: its shell leads its session, and each command is a job
+        recs += [rec("exit", T0 + 70, 821, 820, "python3", "python3 train.py", pgrp=821, sid=820,
+                     tty="pts/7", depth=3, duration_s=30, **V),
+                 rec("exit", T0 + 200, 822, 820, "git", "git diff", pgrp=822, sid=820,
+                     tty="pts/7", depth=3, **V)]
+        row = row_of(reduce(recs), 800)
+        self.assertEqual(row["actor3"], "ide")
+        self.assertEqual(row["n_calls"], 2)
+        self.assertEqual(row["phases"]["driver"], "terminal")
+        self.assertFalse(any(p.get("open") for p in row["phases"]["list"]))
+        self.assertEqual(sorted(c for p in row["phases"]["list"] for c, _ in p["top"]),
+                         ["git diff", "python3 train.py"])
+        self.assertIn(["under a process that never exited", 30],
+                      row["phases"]["housekeeping"]["shapes"])
+
+    def test_a_persons_session_survives_merging_hours(self):
+        b = seam(5400)
+        raw = sorted(login(b - 1200) + [
+            # a job across the seam: its steps under it in both hours, and its own record after
+            *[h8(b - 300 + 60 * i, 601 + i, 600, "python", "python step%d.py" % i, 600, SH,
+                 duration_s=50) for i in range(10)],
+            h8(b + 400, 600, SH, "bash", "bash run.sh", 600, SH, duration_s=720)],
+            key=lambda r: r["ts_epoch"])
+        one = TM.materialize(TM.one_pass(TM.normalized(raw)))
+        saved, carry, fresh = TM.hour_states(TM.normalized(raw))
+        self.assertGreaterEqual(len(saved), 2)
+        got = TM.materialize(TM.merged(saved, fresh, carry))
+        a, g = person_of(one), person_of(got)
+        self.assertEqual(a["phases"], g["phases"])
+        self.assertEqual(a["n_calls"], 13)
+        self.assertIn("bash run.sh", {c for p in a["phases"]["list"] for c, _ in p["top"]})
 
 
 class CodexAppReadsTest(unittest.TestCase):

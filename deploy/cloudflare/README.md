@@ -9,9 +9,9 @@ made up for fictional login nodes and users, and nothing in them was measured.
 
 ## Deploy
 
-You need the Cloudflare account that holds the `agentic-system.org` zone, on the Workers Paid
-plan (Containers run on that plan). You also need Docker running locally, because
-`wrangler deploy` builds the image (`linux/amd64`), and Node 20 or later.
+Needs the Cloudflare account that holds the `agentic-system.org` zone, on the Workers Paid
+plan (Containers run there); Docker running locally (`wrangler deploy` builds the image,
+`linux/amd64`); and Node 22.12 or later (what the pinned wrangler needs; CI uses 22).
 
 ```bash
 cd deploy/cloudflare
@@ -42,24 +42,26 @@ crosses the network in the clear.
 [`.github/workflows/demo-deploy.yml`](../../.github/workflows/demo-deploy.yml) runs the same
 `npx wrangler deploy` on every push to `develop` that changes what the demo runs: the
 service (`dashboard/rc_dashboard`, `pyproject.toml`, `uv.lock`), the page (`dashboard/web`),
-`docker/demo`, or this folder. A change to the collector or to a test does not redeploy. You
-can also run the workflow by hand from the repository's Actions tab (*demo-deploy*, *Run
-workflow*, on `develop`). Do that after rotating the token, or after a security fix to a
-base image: `docker/demo/Dockerfile` names the base images by tag, so a rebuilt image only
-reaches the demo at the next deploy. Only `develop` deploys. A run started from any other
-branch is skipped.
+`docker/demo`, or this folder, and only once every test suite (`ci.yml`) has passed: if one
+fails, the demo stays as it is. A change to the collector, or to a test outside
+`dashboard/web`, does not redeploy (the page's own checks, `dashboard/web/mock/check_*.mjs`,
+are under the page's folder, so a change to one does). Nor does a docs-only change: no
+`*.md` file, this one included, is read by the image's build, the service or the Worker. It can
+also be run by hand from the repository's Actions tab (*demo-deploy*, *Run workflow*, on
+`develop`): after rotating the token, or after a security fix to a base image, since
+`docker/demo/Dockerfile` names them by tag and a rebuilt one reaches the demo only at the
+next deploy. Only `develop` deploys; a run started from another branch is skipped.
 
-As with a deploy by hand, the runner's Docker builds the image, and wrangler is the version
-pinned in `package.json`. `npm run typecheck` runs first, because wrangler's bundler strips
-types without checking them. Deploys queue instead of cancelling one another, because a
-deploy is not transactional: the new Worker can be live before its image has rolled out.
-GitHub keeps only one waiting run. If several pushes land during a deploy, the newest one
-deploys next, and the runs it replaced show as cancelled.
+The runner's Docker builds the image, and wrangler is the version pinned in `package.json`,
+as for a deploy by hand. `npm run typecheck` runs first, since wrangler's bundler strips
+types without checking them. Deploys queue rather than cancel one another, because a deploy
+is not transactional: the new Worker can be live before its image has rolled out. GitHub
+keeps one waiting run, so of several pushes during a deploy the newest is the one that
+deploys next, and the ones it replaced show as cancelled.
 
-The workflow needs two secrets from the Cloudflare account that holds the
-`agentic-system.org` zone. Put them on the **`demo` environment**, not on the repository.
-That way no other workflow or branch can read a token that can edit that account's Workers
-and Containers.
+It needs two secrets from the Cloudflare account that holds the `agentic-system.org` zone.
+Put them on the **`demo` environment**, not on the repository, so that no other workflow or
+branch can read a token that edits that account's Workers and Containers:
 
 1. *Settings*, *Environments*, *New environment*, `demo`. Do this before the workflow's first
    run. A run that finds no `demo` environment creates one with no branch rule, and that
@@ -79,11 +81,12 @@ Never add them as repository secrets as well (*Settings*, *Secrets and variables
 *Actions*, *Repository secrets* should hold no `CLOUDFLARE_*`). Any workflow on any branch can
 read a repository secret, whatever the environment's rule says.
 
-Until both secrets are set, the workflow fails at its first step and names the missing one,
-so a push to `develop` never looks deployed when it wasn't. Cloudflare's docs name the
-template for Workers and the Containers permission. They don't say what else attaching the
-Custom Domain needs beyond the template. If a deploy fails at the domain, add
-**Zone · DNS · Edit** for `agentic-system.org` to the token.
+Until both are set, the deploy job fails at its first step, after the tests, and names the
+missing secret, so a
+push to `develop` never looks deployed when it was not. Cloudflare's docs name the template
+for Workers and the Containers permission. They do not say what attaching the Custom Domain
+needs beyond the template: if a deploy fails at the domain, add **Zone · DNS · Edit** for
+`agentic-system.org` to the token.
 
 ## What runs
 

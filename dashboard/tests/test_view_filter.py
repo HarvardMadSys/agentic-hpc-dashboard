@@ -25,7 +25,7 @@ from rc_dashboard.aggregator import Aggregator     # noqa: E402
 from rc_dashboard.export import make_predicate, parse_filters   # noqa: E402
 from rc_dashboard.normalize import Normalizer      # noqa: E402
 from rc_dashboard.reducers.facets import TOP_USERS, FacetReducer   # noqa: E402
-from rc_dashboard.windows import (NO_FILTER, PanelView, ViewFilter,   # noqa: E402
+from rc_dashboard.windows import (NO_FILTER, ViewFilter,   # noqa: E402
                                   WindowRegistry, view_key)
 from test_ingest import DAY, line                  # noqa: E402
 from test_window_cache import WIN, CacheCase, skipped_rec, varied_exit   # noqa: E402

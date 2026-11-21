@@ -1,10 +1,11 @@
 # ebpfm — login-node collector, one bash entry point
 
 A **standalone** collector for FASRC-style login nodes. Everything it needs is in this
-folder, with no `../` imports, so it runs anywhere you can copy it. You can also hand
-over a single self-extracting file built by `ebpfm.sh bundle`. See [VENDORED.md](VENDORED.md) for the four
+folder: no `../` imports, so it runs anywhere you can copy it (or hand over one
+self-extracting file from `ebpfm.sh bundle`). See [VENDORED.md](VENDORED.md) for the six
 copied modules and the sync rule, and [COVERAGE.md](COVERAGE.md) for the field-by-field
-crosswalk of what each tier collects and what replaced what.
+crosswalk of what each tier collects and what replaced what, and
+[WHAT-IT-COLLECTS.md](WHAT-IT-COLLECTS.md) for every signal in plain words.
 
 ## Two tiers, chosen by privilege
 
@@ -30,7 +31,7 @@ sudo ./ebpfm.sh check           # expect 0 FAIL
 sudo ./ebpfm.sh start           # both tiers; the eBPF one in system.slice (see below)
 sudo ./ebpfm.sh status
 sudo ./ebpfm.sh stop            # SIGTERM -> flushes live processes as `truncated`
-sudo ./ebpfm.sh install-unit    # persistent systemd unit, for a fleet deployment
+sudo ./ebpfm.sh install-unit    # persistent systemd units, one per tier
 ```
 
 `EBPFM_TIER=node|ebpf|all` overrides the default, which is based on privilege. The node
@@ -42,17 +43,27 @@ node its per-process tier and nothing else.** The effect is per host, not fleet-
 
 ### Supervision
 
-`start` uses a *transient* `systemd-run` scope. That is fine for a one-off, but the scope
-does not survive a reboot and has no restart policy. For a fleet, `install-unit` writes
-`ebpfm.service` (`Restart=on-failure`, `Slice=system.slice`). The repo keepalive
-(`run.sh`) deliberately does **not** manage the eBPF tier, because `run.sh` is
-unprivileged and cannot `sudo` across the fleet. Instead, systemd supervises the eBPF
-tier, and `collect/healthcheck.py` notices when it dies.
+`start` runs the eBPF tier as a *transient* systemd service (`systemd-run
+--unit=ebpfm-<host>`): fine for a one-off, but it does not survive a reboot and has no
+restart policy. For a fleet, `install-unit` writes
+`ebpfm.service` (`Restart=on-failure`, `Slice=system.slice`). The measurement repository's
+keepalive (its own `run.sh`, not `dashboard/run.sh` here) deliberately does **not** manage the eBPF tier — it is unprivileged and cannot
+`sudo` across the fleet — so systemd supervises it and `collect/healthcheck.py` is what
+notices when it dies.
 
-The unit uses `Restart=on-failure`, never `always`, and nothing restarts the collector
-periodically. SIGTERM makes it flush every live tracked process as `truncated`, so a
-restart every cycle would corrupt the trace. This is the same rule `run.sh` documents
-for the pollers.
+`install-unit` also writes `ebpfm-node.service`, the node tier's loop (the one `start`
+runs with `nohup`) under systemd, writing to `EBPFM_NODE_OUTPUT_DIR`. Neither unit is
+enabled by it: `systemctl enable --now ebpfm ebpfm-node`. While `ebpfm-node` is active,
+`start`, `stop` and `status` defer to it, and `install-unit` refuses while a loop `start`
+began still runs, so the loop never runs twice. Beside the eBPF
+tier it collects in `SNAPSHOT_MODE=node`; on a host without the eBPF tier, set
+`SNAPSHOT_MODE=full` in `/etc/default/ebpfm`. `EBPFM_UNIT_DIR` installs both somewhere
+other than `/etc/systemd/system`. [`deploy/`](../deploy/README.md) runs both units on each
+server of its two modes.
+
+`Restart=on-failure`, never `always`, and nothing restarts it periodically: SIGTERM makes
+it flush every live tracked process as `truncated`, so a cycle-time restart would corrupt
+the trace. Same rule `run.sh` documents for the pollers.
 
 ---
 
@@ -80,11 +91,10 @@ $ sudo cat /proc/self/cgroup
 0::/user.slice/user-20006.slice/session-27.scope     # still capped
 ```
 
-A collector launched with `sudo` would therefore silently share the user's one CPU with
-everything else that user runs, which brings back the exact bottleneck it exists to
-escape. `ebpfm.sh
-start` therefore launches via `systemd-run --scope --slice=system.slice`, and we verified
-the result:
+So a `sudo`-launched collector would silently share the user's one CPU with everything
+else that user runs, reintroducing the exact bottleneck it exists to escape. `ebpfm.sh
+start` therefore launches it as a transient service in `system.slice` (`systemd-run
+--unit=ebpfm-<host> --slice=system.slice`), verified:
 
 ```
 $ sudo ./ebpfm.sh status
@@ -92,9 +102,11 @@ ebpfm: RUNNING on node0 (unit ebpfm-node0.service, pid 106680)
   cgroup: /system.slice/ebpfm-node0.service
 ```
 
-`ebpfm.sh check` reports the cgroup the collector would land in **and that cgroup's
-`cpu.max`**, so you can verify the escape on each node instead of assuming it. Where
-systemd is absent, `start` falls back to `nohup` and prints a warning.
+`ebpfm.sh check` reports the cgroup it runs in itself **and that cgroup's `cpu.max`**, what
+`once` or the `nohup` fallback would be charged to, and says that `start` escapes a capped
+one; `status` names the running unit's cgroup, as above. So the escape is verifiable per
+node rather than assumed. Where systemd is
+absent it falls back to `nohup` with a printed warning.
 
 ---
 
@@ -182,30 +194,32 @@ work on the exec path, so the measurement had to be redone:
 | loopback TCP | 121 ms | 119 ms | −1.7 % |
 | disk write (`dd` 2 GB) | 3 675 ms | 3 707 ms | +0.9 % |
 
-**The drain is unchanged: 157.8 µs/event at 2 011 events/s**, compared with v4's
-157 µs and 2 011/s, using 31.7 % of one core (v4: 31.5 %). `perf_lost` stayed at zero
-throughout, and the per-BPF-program costs measured equal to or *lower* than v4, so the
-kernel side did not get more expensive.
+`ebpfm.sh overhead` now writes 512 MiB with `dd`, not the 2 GB these rows name, so its
+disk row does not compare with them.
 
-Read the fork/exec row with care. The v4 and v5 runs used the same host but not at the
-same time, and the *baseline alone* swung between 3 490 and 3 675 ms across runs, so
-+4.0 % against +9.3 % is not a tight comparison. The per-event drain cost, which is
-identical, is the reliable number.
+**The drain is unchanged: 157.8 µs/event at 2 011 events/s**, against v4's 157 µs
+and 2 011/s, using 31.7 % of one core (v4: 31.5 %). `perf_lost` zero throughout,
+and the per-BPF-program costs measured equal or *lower* than v4 — the kernel side
+did not get more expensive.
 
-This re-measurement caught one regression, which was fixed before it shipped. The code
-read the sandbox state for **every** process whose state was unknown. That charged
-roughly 15 000 extra `/proc` operations to this 3 000-exec benchmark (a reproducible
-+12 % and 194 µs/event), all for processes that the actor filter then dropped and never
-emitted. The predicate now reads sandbox state only for a process that will actually be
-reported (one with a tty or agent ancestry), which matches what the `cwd` predicate
-already does. That change alone brought the cost from 194 µs/event back to 157.8.
+Read the fork/exec row with care: the v4 and v5 runs share a host but not an
+instant, and the *baseline alone* swung 3 490–3 675 ms across runs, so +4.0 %
+against +9.3 % is not a tight comparison. The per-event drain cost, which is
+identical, is the solid number.
 
-**The two measurements corroborate each other**, which is why either can be trusted.
-Fork + exec + exit at 9 652 + 14 037 + 11 413 ns × 3 000 execs predicts ≈ 102 ms of
-kernel-side cost, against +146 ms observed. That is the same order of magnitude, and the
-difference goes in the expected direction.
+One regression was found this way and fixed rather than shipped: reading the
+sandbox state for **every** process whose state was unknown charged roughly
+15 000 extra `/proc` operations to this 3 000-exec benchmark — a reproducible
++12 % and 194 µs/event — for processes the actor filter then dropped and never
+emitted. The predicate now reads only for a process that will actually be
+reported (a tty, or agent ancestry), mirroring what the `cwd` predicate already
+does. That alone took 194 µs/event back to 157.8.
 
-The event counts prove that the probes were attached for the whole window: there were
+**The two measurements corroborate each other**, which is the reason to trust either:
+fork + exec + exit at 9 652 + 14 037 + 11 413 ns × 3 000 execs ≈ 102 ms of predicted
+kernel-side cost, against +146 ms observed. Same order, right direction.
+
+The event counts are the proof the probes were actually attached for the whole window —
 3 011 exec events for a benchmark that runs exactly 3 000 execs. An earlier run of this
 harness reported *negative* overhead. The feature probe (~40 s on a cold kernel) had used
 up the window, so the benchmarks ran against a collector that was not yet attached.
@@ -309,10 +323,12 @@ per decoded event above. On a busy node, each syscall is also spread over more r
 
 ## What it collects
 
-This section covers the **eBPF tier**. For the node tier's 36-key snapshot schema, see
-`collect/login/README.md` and `docs/DATA_COLLECTION.md`. The node tier is the same
-collector, writing the same schema, that the login poller has always written, so every
-existing `log/login` consumer keeps working.
+This section is the **eBPF tier**. For the node tier's snapshot, 40 keys, see
+[WHAT-IT-COLLECTS.md](WHAT-IT-COLLECTS.md) (each signal, in plain words) and
+[COVERAGE.md](COVERAGE.md) (each key, and which tier reads it). It is the same collector and
+the same schema the measurement repository's login poller has always written
+(`collect/login/README.md` and `docs/DATA_COLLECTION.md` there), which is what keeps every
+existing `log/login` consumer working.
 
 `SCHEMA_VERSION = 8`. JSONL, one record per line,
 split across **two files per host per day**:
@@ -699,10 +715,11 @@ How the endpoint is found:
   so **`net_tx_bytes`/`net_rx_bytes` cover more from schema 7 on**, which is one
   reason for the version bump. The v4-mapped send path, where `udpv6_sendmsg` calls
   `udp_sendmsg` on the same socket, is counted once.
-- **Read, never deleted while alive.** Userspace reads the whole table each tick, and
-  again before it writes a networked process's record. A live process's entries are
-  never deleted, because a delete would race the kernel's increments and 4.18 has no
-  atomic read-and-delete. An exited process's entries are deleted.
+- **Read, never deleted while alive.** Userspace reads each reported process's entries
+  every tick, the whole table every `NETP_SWEEP_TICKS` (10) ticks (schema 8, above), and
+  before it writes a networked process's record. A live process's entries are never
+  deleted, because a delete would race the kernel's increments and 4.18 has no atomic
+  read-and-delete; an exited process's are.
 - **Names come from argv, never from traffic.** `host` is set only when the process's
   own command line names the endpoint (see below). Nothing parses DNS answers, TLS or
   HTTP. `provider` is still the existing CIDR bucket, and behind a proxy the endpoint is
@@ -912,14 +929,14 @@ cheaper than filtering `sched_switch`. It is the path for older kernels. When bo
 available, `task` is preferred.
 **Both are inert without `kernel.sched_schedstats=1`**, which `bootstrap` sets.
 
-**3. Network usage**, in three parts.
-  - **Standing flows.** The four-tuple is stored at `SYN_SENT` as a **join key**,
-    because netlink names the endpoint but carries **no pid**, and `ss -p` only gets a
-    pid by scanning every `/proc/*/fd`. Each tick, the collector queries
-    `NETLINK_SOCK_DIAG` directly (`SOCK_DIAG_BY_FAMILY`, `NLM_F_DUMP`, AF_INET +
-    AF_INET6, TCP then UDP), parses `inet_diag_msg` + `INET_DIAG_INFO`, and joins on the
-    tuple. Rows with no map entry are still emitted, with a uid and no pid. Fallback
-    order: netlink → `ss --info --tcp` → `/proc/net/tcp`.
+**3. Network usage** — three parts.
+  - **Standing flows.** The four-tuple is stored at `SYN_SENT` as a **join key**:
+    netlink names the endpoint but carries **no pid**, and `ss -p` only gets one by
+    scanning every `/proc/*/fd`. Each tick, query `NETLINK_SOCK_DIAG` directly
+    (`SOCK_DIAG_BY_FAMILY`, `NLM_F_DUMP`, AF_INET + AF_INET6, TCP then UDP), parse
+    `inet_diag_msg` + `INET_DIAG_INFO`, join on the tuple. Rows with no map entry still
+    emit with uid and no pid. Netlink only (`lib/sockdiag.py`): where the dump fails, the
+    tick has no socket rows to join, and their stats are null.
   - **Per-process totals, all protocols.** kretprobes on `tcp_sendmsg`/`tcp_recvmsg`/
     `udp_sendmsg`/`udp_recvmsg` → `net_tx_bytes`, `net_rx_bytes`, `net_calls`. **This is
     what makes QUIC visible.** Unix-socket MCP traffic is excluded by family.
@@ -930,26 +947,26 @@ available, `task` is preferred.
     same tracepoint. `SYN_SENT`→`ESTABLISHED` is connect latency, and `SYN_SENT`→`CLOSE`
     without `ESTABLISHED` is a refused or timed-out connect.
 
-**4. Wait channel and kernel stack.** `d_stack` on `residency`, plus `d_stack_top`, a
-per-tree histogram of blocking frames. For each tracked process in `D` at the tick, the
-collector reads the top 5 frames of `/proc/<pid>/stack` as root. **Reading a kernel
-stack touches no filesystem**, so it cannot hang on the mount being diagnosed. This
-replaces the `ptrace_may_access`-gated `wchan` for all users, and it names the stuck
-server. It is capped by `EBPFM_DSTACK_MAX`.
+**4. Wait channel and kernel stack** — `d_stack` on `residency`, each tree's top 5
+blocking frames, and `d_stack_top` on `residency_totals`, the node's top 10. For each tracked process in `D` at the tick, read
+`/proc/<pid>/stack` as root, top 5 frames. **Reading a kernel stack touches no
+filesystem**, so it cannot hang on the mount being diagnosed. Replaces the
+`ptrace_may_access`-gated `wchan` for all users and names the stuck server. Capped by
+`EBPFM_DSTACK_MAX`.
 
-**5. Live processes at stop.** On SIGTERM, the collector writes one `event="truncated"`
-per live tracked process. It **drains the D-state and `netbytes` hashes first**, so the
-record carries real accumulated counters rather than only what `/proc` shows at that
-instant. That makes it strictly better than the poller's version. SIGKILL is
-unrecoverable, but a missing `stop` record already signals a truncated file. A process
-that cannot be read is skipped and counted in the stop record's `handler_errors`
-(`flush_live`). If the flush fails as a whole, `truncated` is left null, not 0. The
-residency tick does the same per process (`residency_proc`).
+**5. Live processes at stop** — `event="truncated"` per live tracked process on SIGTERM.
+**Drains the D-state and `netbytes` hashes first**, so the record carries real
+accumulated counters rather than only what `/proc` shows at that instant — strictly
+better than the poller's version. SIGKILL is unrecoverable; a missing `stop` record
+already signals a truncated file. A process that cannot be read is skipped and counted
+in the stop record's `handler_errors` (`flush_live`); a flush that fails as a whole
+leaves `truncated` null, not 0. The residency tick does the same per process
+(`residency_proc`).
 
-**6. Unattributed user processes.** **`EBPFM_MIN_UID` is the discriminator, not the
-cgroup.** The cgroup cannot be trusted because it depends on how the session was
-established: tty-attached human processes sat in `/system.slice/ssh.service`, while
-another user's VS Code sat in a `user-1000.slice` session scope. A non-system uid with no
+**6. Unattributed user processes** — **`EBPFM_MIN_UID` is the discriminator, not the
+cgroup.** The cgroup cannot be trusted: tty-attached human processes sat in
+`/system.slice/ssh.service` while another user's VS Code sat in a `user-1000.slice`
+session scope, so it depends on how the session was established. A non-system uid with no
 agent ancestry and no tty is still a user's process. `attribution` on the identity block
 takes `ancestry` | `tty` | `uid`. This keeps the three physical `actor3` classes intact
 for the Hive partitioning, while letting you filter the recovered set. It recovers the
@@ -1013,14 +1030,15 @@ int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC
 | Verb | Does |
 |---|---|
 | `bootstrap` | detect distro and kernel, install missing dependencies, set required sysctls, delete the feature cache, re-verify |
-| `check` | privilege, toolchain, kernel config, sysctls, tracepoints, kprobe symbols, netlink reachability, the cgroup the collector would land in and its `cpu.max`, vendored-file divergence |
+| `check` | privilege, toolchain, kernel config, sysctls, tracepoints, kprobe symbols, netlink reachability, its own cgroup and that cgroup's `cpu.max`, vendored-file divergence; exit code = FAIL count |
 | `features` | probe the BPF blocks, print the resolved set as JSON |
 | `dump-c` | emit the generated BPF C (for debugging a rejected block) |
 | `once [secs]` | foreground capture |
-| `start` / `stop` / `status` | daemon with a pidfile, via `systemd-run --scope --slice=system.slice`; `status` gives each stream's records and size today |
+| `start` / `stop` / `status` | the tiers in the background, with a pidfile: the eBPF tier as a transient `ebpfm-<host>` service in `system.slice` (`systemd-run`; `nohup` where there is no systemd), the node tier as a `nohup`'d loop; `status` gives each stream's records and size today |
 | `overhead` | the one-off measurement above |
 | `tail [n] [stream]` | last n records of today's files |
-| `bundle` | emit the whole folder as one self-extracting `.sh` |
+| `install-unit` / `uninstall-unit` | the persistent `ebpfm.service` for the eBPF tier, with this folder's paths substituted, and its removal (the RPM ships the unit itself) |
+| `bundle [out]` | the runtime files, `README.md`, `VENDORED.md` and `.vendored.sha256` as one self-extracting `.sh` |
 
 ### Bootstrap, on a fresh Ubuntu 24.04
 
@@ -1034,11 +1052,28 @@ int kretprobe__tcp_sendmsg(struct pt_regs *ctx) { _netb_add((s64)(s32)PT_REGS_RC
 3. Runs `sysctl -w kernel.sched_schedstats=1 kernel.task_delayacct=1`, persisted to
    `/etc/sysctl.d/99-ebpfm.conf`. **Two of the eight data points are inert without
    these.**
-4. Re-runs `check`, and exits non-zero on any FAIL.
-5. Is idempotent. On RHEL/Rocky it uses `dnf` with `bcc-tools python3-bcc kernel-devel`.
+4. Re-runs `check`, exiting non-zero on any FAIL.
+5. Is idempotent. On RHEL/Rocky uses `dnf` for whichever of `python3-bcc`,
+   `kernel-devel-$(uname -r)`, `bpftool`, `iproute` and `jq` are missing.
 
 ### Environment
 
+Where the day-files go, unless `EBPFM_OUTPUT_DIR` (eBPF tier) and `EBPFM_NODE_OUTPUT_DIR`
+(node tier) say otherwise: as root, `/scratch/ebpfm` and `/scratch/ebpfm-login` where
+`/scratch` is writable, else `/var/log/ebpfm` and `/var/log/ebpfm-login`; as a user,
+`~/.ebpfm/login` (and `~/.ebpfm/ebpf`). The systemd unit, and so the RPM, sets
+`EBPFM_OUTPUT_DIR` to `/scratch/ebpfm`. An `EBPFM_OUTPUT_DIR` in `/etc/default/ebpfm`
+overrides it (systemd's `EnvironmentFile=` wins over `Environment=`), but the unit's
+`RequiresMountsFor=/scratch`, and `ebpfm status` and `tail`, which read their own
+environment, do not follow it.
+
+`ebpfm.sh`: `EBPFM_TIER` (`node`, `ebpf` or `all`; by default, by privilege) ·
+`EBPFM_PID_DIR` (`/run`; a user's `~/.run`) · `EBPFM_NODE_INTERVAL` (300 s between node
+snapshots) · `EBPFM_NODE_TOP_N` (25) · `EBPFM_BENCH_REPS` (3, for `overhead`) ·
+`EBPFM_DIR_MODE` / `EBPFM_FILE_MODE` (0750 / 0640) and `EBPFM_GROUP` (a group to own them),
+read by `ebpfm.sh` and the eBPF tier.
+
+The eBPF tier (`ebpf_trace.py`):
 `EBPFM_ARGS_MAXLEN` (0 = no cap on emitted `args`) · `EBPFM_ARGV_KMAX` (4096; bytes of
 argv read in-kernel at exec, the real limit when uncapped) ·
 `EBPFM_SANDBOX` (on) · `EBPFM_SANDBOX_ALWAYS` (off; read on every exec, for validation) ·
@@ -1058,14 +1093,21 @@ behind kernel time events are applied) · `EBPFM_SUBMIT_BUDGET` (8192; bytes of 
 tool's output captured) · `EBPFM_MIN_CPU` /
 `_DURATION` · `EBPFM_PERF_PAGES` · `EBPFM_POLL_MS` · `EBPFM_FEATURES` (force a block
 set) · `EBPFM_FEATURE_CACHE` · `EBPFM_PROBE_VERBOSE=1` (print the compiler line for a
-rejected block).
+rejected block) · `EBPFM_COMPRESS` (on: a sealed day's files become `.jsonl.gz`; `0`
+leaves them plain) · `EBPFM_WRITE_KMAX` (1024; bytes captured per `write()`) ·
+`EBPFM_SUBMIT_COMMS` (`sbatch,salloc,srun`: the tools whose output `submit` captures) ·
+`EBPFM_KEEP_TIMERS` (off: a `sleep` that is no agent and used no CPU or I/O is not written;
+`EBPFM_TIMER_COMMS`, `sleep,usleep`, names them) · `EBPFM_INCLUDE_ROOTS` (on; `0` = no
+record for an agent's own process) · `EBPFM_CWD` (on; `0` = no `cwd` read) ·
+`EBPFM_GC_GRACE` (300 s an exited process's state is kept) · `EBPFM_HOST` (in the container
+image, the node's name for its day-files, in place of `hostname -s`).
 
 ---
 
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -q     # 476 tests, no root, no BPF needed
+python3 -m unittest discover -s tests -q     # no root, no BPF needed
 python3 tests/bpf_compile_check.py           # compile every block with BCC, no root
 ```
 
@@ -1115,7 +1157,7 @@ stays with `collect/compute/`, which runs `collect/common/snapshot.py` unchanged
 | Collector | Status |
 |---|---|
 | `collect/agents/` (poll tracer + census) | **retired** behind `EBPF_LIVE=1` — the eBPF tier's `exit` records are a declared strict superset of `proc_trace.py`'s, and `residency` / `residency_totals` replace the census at 60 s instead of ~300 s |
-| `collect/nettcp/` | **retired** behind `EBPF_LIVE=1` — replaced by `tcp` / `accept` / `conn`. It had no downstream consumers |
+| `collect/nettcp/` | **retired** behind `EBPF_LIVE=1` — replaced by `exit.conns` and `conn` (schema 6 folded `tcp` and `accept` into the exit record). It had no downstream consumers |
 | `collect/login/` | **narrowed, not retired.** Its collector is vendored here as `node_snapshot.py` and runs as the node tier; `log/login` keeps its schema and its path |
 | `collect/agents_ebpf/` (v1) | superseded by this collector on every field |
 | `collect/eBPF_marthen/` (v3) | superseded on the login tier. v3 has only `dstate_task`, which needs kernel 5.19+, so on FASRC's 4.18 login nodes it would emit **no D-state dwell at all** — on the exact nodes whose known failure mode is an autofs/NFS wedge. This collector carries `dstate_stat` as the 4.18 path |
