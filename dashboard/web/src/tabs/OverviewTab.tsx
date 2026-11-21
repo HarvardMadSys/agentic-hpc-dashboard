@@ -46,12 +46,7 @@ interface UnitRow {
 
 const groupsOf = (nodes: NodeWords): Record<NonNullable<UnitRow['group']>, [string, string]> => ({
   node: [`on the ${nodes.many}`, `measured on the ${nodes.many} the collector runs on`],
-  slurm: [
-    'asked of Slurm',
-    `what the jobs submitted from these ${nodes.many} REQUESTED on their sbatch / srun / salloc command lines. ` +
-      'A request in the script\'s #SBATCH lines is not seen, and GPU use on the compute nodes is not measured: ' +
-      `the collector watches only these ${nodes.many}, and the scheduler's accounting (sacct) is not read here`,
-  ],
+  slurm: ['asked of Slurm', `what jobs submitted from these ${nodes.many} asked for on their command lines`],
 });
 
 export const OverviewTab = memo(function OverviewTab({
@@ -98,7 +93,7 @@ export const OverviewTab = memo(function OverviewTab({
   const slBy = sl.by_class ?? {};
   const units: UnitRow[] = ([
     { k: 'processes exited', all: countedIn(tmBy), get: (c) => tmBy[c]?.calls ?? null,
-      tip: GLOSS.exited + '; a shell is counted as the command it ran' },
+      tip: GLOSS.exited },
     { k: 'CPU time', all: countedIn(tmBy, resBy), get: (c) => {
         const v = tmBy[c]?.cpu_s ?? resBy[c]?.cpu_s;
         return v == null ? null : v / 3600;
@@ -109,15 +104,15 @@ export const OverviewTab = memo(function OverviewTab({
     { k: 'network sent', all: countedIn(ioBy), get: (c) => netOf(c, 'net_tx_mb'), fmt: (n) => mb(n), tip: GLOSS.tx, io: 'tx_mb' },
     { k: 'network received', all: countedIn(ioBy), get: (c) => netOf(c, 'net_rx_mb'), fmt: (n) => mb(n), tip: GLOSS.rx, io: 'rx_mb' },
     { k: 'peak memory', all: countedIn(res.series?.resident), get: peakGb, fmt: (n) => (n == null ? DASH : fmt(n) + ' GB'),
-      tip: 'the most memory the class held at once in the window, sampled while processes ran; hover a cell for the single largest process',
+      tip: 'the most memory the class held at once in the window; hover a cell for the largest single process',
       cellTip: (c) => topTip(c, 'peak_rss_mb', (v) => mb(v), 'largest single process') },
     { k: 'sessions', all: countedIn(traj?.summary), get: (c) => traj?.summary?.[c]?.sessions ?? null,
-      tip: GLOSS.session + '; scripts that only probe an agent are not counted' },
+      tip: GLOSS.session },
     { k: 'jobs submitted', group: 'slurm', all: countedIn(slBy), get: (c) => slurmOf(c, (x) => x.jobs),
-      tip: 'sbatch / srun / salloc submissions that came back with a job id; dry runs (--test-only) are not jobs' },
+      tip: 'sbatch / srun / salloc submissions that came back with a job id' },
     { k: 'GPUs asked', group: 'slurm', all: countedIn(slBy), get: (c) => slurmOf(c, (x) => x.gpus),
       fmt: (n) => (n == null ? DASH : `${fint(n)} GPU${n === 1 ? '' : 's'}`),
-      tip: 'GPUs on the command line (--gres gpu:N, --gpus), times the tasks of an array; a #SBATCH request in the script is not seen\n' +
+      tip: 'GPUs asked on the command line; a #SBATCH request in a script is not seen\n' +
         have.map((c) => `${CLS_LBL[c] ?? c}: ${fint(sl.by_class?.[c]?.gpu_jobs ?? 0)} GPU jobs`).join(' · ') },
     { k: 'GPU-hours asked', group: 'slurm', all: countedIn(slBy), get: (c) => slurmOf(c, (x) => (x.gpu_jobs ? x.gpu_h : 0)),
       fmt: (n) => (n == null ? DASH : `${fint(n)} GPU·h`),

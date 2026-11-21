@@ -156,7 +156,7 @@ function CatBar({ row, w = 76 }: { row: Pick<UserRow, 'cats' | 'calls' | 'calls_
   const total = loggedCalls(row);
   if (row.calls == null) {
     return (
-      <span className="nm" data-tip="this service read the commands of Claude Code and Codex alone, and this user’s agents are neither, so their tool calls are not counted: unread, which is not none. A service that reads every agent counts them">
+      <span className="nm" data-tip="this service reads only Claude Code’s and Codex’s commands: unread, which is not none">
         not read
       </span>
     );
@@ -242,13 +242,13 @@ function Plates({ U, rows }: { U: UsersResponse; rows: UserRow[] }) {
       <Plate
         k={`agent users · last ${win}`}
         total={f ? f.users : null}
-        tip="accounts with at least one agent session in the window: an agent process seen at the root of its tree, as the Sessions tab’s plates count one"
+        tip="accounts with at least one agent session in the window"
         note={f ? `${fint(running)} with an agent running now` : undefined}
       />
       <Plate
         k="agent sessions"
         total={f ? f.sessions : null}
-        tip="one session is one agent run, its rows on two days together; a typical one is the median"
+        tip="one session is one agent run; a typical one is the median"
         note={f ? `typically open ${dur(f.wall_p50_s)} · ${f.calls_p50 != null ? plural(f.calls_p50, 'tool call') : 'tool calls not read'}` : undefined}
       />
       <Plate
@@ -256,14 +256,14 @@ function Plates({ U, rows }: { U: UsersResponse; rows: UserRow[] }) {
         total={bp?.pct ?? null}
         fmtFn={(n) => pc(n)}
         alarm={(f?.approval.bypassed ?? 0) > 0}
-        tip={`${GLOSS.bypass}. A share of the sessions whose launch is known: a Codex app server takes its policy per thread, and a session whose own record was not seen says nothing`}
+        tip={GLOSS.bypass}
         note={bp?.known ? `${fint(f?.approval.bypassed ?? 0)} of ${fint(bp.known)} sessions whose launch is known` : undefined}
       />
       <Plate
         k="driven from a script"
         total={sc?.pct ?? null}
         fmtFn={(n) => pc(n)}
-        tip="sessions with no one at a terminal: claude -p, codex exec, the Agent and Codex SDKs, an MCP server. A share of the sessions where that is known"
+        tip="sessions with no one at a terminal (claude -p, codex exec, an SDK), of those where that is known"
         note={sc?.known ? `${fint(sc.n)} of ${fint(sc.known)} sessions` : undefined}
       />
     </div>
@@ -313,7 +313,7 @@ function Roster({
     <div className="u-panel">
       {held.length > 0 && (
         <div className="u-summary">
-          <span className="eyebrow" data-tip="each trait is one rule over the user's numbers; hover one for its rule. Click to list only the users who hold it">traits</span>
+          <span className="eyebrow">traits</span>
           {held.map(([id, n]) => {
             const t = catalogue.find((x) => x.id === id);
             return (
@@ -343,7 +343,7 @@ function Roster({
           onChange={setView}
           options={[
             { k: 'table', lbl: 'table', tip: 'one row a user, sortable' },
-            { k: 'figures', lbl: 'figures', tip: 'each user drawn from their numbers, in the table’s order; hover a part of a figure for what it says' },
+            { k: 'figures', lbl: 'figures', tip: 'each user drawn from their numbers; hover a part for what it says' },
           ]}
         />
         <span className="nm">click a user for their portrait</span>
@@ -390,15 +390,15 @@ function Roster({
             <thead>
               <tr>
                 <SortTh s={s} k="user" first="asc">user</SortTh>
-                <SortTh s={s} k="sessions" num tip="agent sessions in the window, an agent's rows on two days together">sessions</SortTh>
+                <SortTh s={s} k="sessions" num tip="agent sessions in the window">sessions</SortTh>
                 <th data-tip="sessions by agent">agents</th>
                 <th data-tip={GLOSS.surface}>driven from</th>
                 <SortTh s={s} k="bypass" num tip="sessions started with a bypass flag, of those whose launch is known">bypass flag</SortTh>
-                <SortTh s={s} k="calls" num tip="tool calls, and what the agents' commands do: explore, edit, build, test, run, Slurm, wait, git. Read from commands: the agent's own Read and Edit tools leave none">tool calls</SortTh>
-                <SortTh s={s} k="wall" num tip="how long a typical session was open, first record to last: the median">typical</SortTh>
+                <SortTh s={s} k="calls" num tip="tool calls, by what each command does">tool calls</SortTh>
+                <SortTh s={s} k="wall" num tip="the median time a session was open">typical</SortTh>
                 <SortTh s={s} k="open" num tip="the most sessions open at one moment">at once</SortTh>
-                <SortTh s={s} k="last" num tip="minutes in which an agent began a tool call, by hour of day, and when one last did; sorts by the latter">when</SortTh>
-                <th data-tip="plain statements about how this user's agents were used, each from one rule; hover one for its rule">traits</th>
+                <SortTh s={s} k="last" num tip="active minutes by hour of day, and the last; sorts by the last">when</SortTh>
+                <th data-tip="each from one rule; hover a trait for it">traits</th>
               </tr>
             </thead>
             {sorted.map((r) => {
@@ -433,7 +433,7 @@ function Roster({
                   </tr>
                   <tr className="ur-sumrow" onClick={toggle}>
                     <td colSpan={10}>
-                      <span className="ur-sumline" data-tip="how they leverage agents, from the numbers on this row; their portrait says it point by point">
+                      <span className="ur-sumline">
                         {leverageHeadline(r)}
                       </span>
                     </td>
@@ -451,7 +451,7 @@ function Roster({
         {(U.unattributed ?? 0) > 0 && (
           <span
             className="nm"
-            data-tip="an agent session whose records named no user and no uid is no one’s row: there is no one to draw and no name to open it by. The Sessions tab lists it with the rest"
+            data-tip="no user was read for them; the Sessions tab lists them"
           >
             {plural(U.unattributed ?? 0, 'agent session')} whose user was not read {U.unattributed === 1 ? 'is' : 'are'} not listed
           </span>
@@ -469,9 +469,7 @@ function Leveraging({ p, row }: { p: UserPortrait; row: UserRow }) {
   const points = leveragePoints(row, p.fleet, p.tz);
   return (
     <section className="ur-lev" aria-label="how they leverage agents">
-      <div className="eyebrow" data-tip={p.basis?.leverage ?? 'how this user leverages their agents, from the numbers below'}>
-        how they leverage agents
-      </div>
+      <div className="eyebrow">how they leverage agents</div>
       <p className="ur-lev-head">{leverageHeadline(row)}</p>
       <dl className="ur-lev-points">
         {points.map((x) => (
@@ -492,8 +490,8 @@ function Head({ p, row, catalogue }: { p: UserPortrait; row: UserRow; catalogue:
     ['tool calls', row.calls == null ? 'not read' : fint(row.calls), GLOSS.toolcall],
     ['active minutes', fint(row.active_min), 'minutes in which an agent began a tool call'],
     ['processes', fint(row.processes), GLOSS.exited],
-    ['CPU time', dur(row.cpu_s), 'CPU used by every process their agents ran, each counted once'],
-    ['disk read · written', `${mb(row.rd_mb)} · ${mb(row.wr_mb)}`, GLOSS.diskbytes + ', each process’s own'],
+    ['CPU time', dur(row.cpu_s), 'CPU used by every process their agents ran'],
+    ['disk read · written', `${mb(row.rd_mb)} · ${mb(row.wr_mb)}`, GLOSS.diskbytes],
     ['network sent · received', `${mb(row.net_tx_mb)} · ${mb(row.net_rx_mb)}`],
     ['peak memory', row.peak_rss_mb ? mb(row.peak_rss_mb) : 'not measured', 'the most memory any one process held'],
   ];
@@ -677,7 +675,7 @@ function Launch({ row, fleet }: { row: UserRow; fleet: UsersFleet | null | undef
         fleet={fleet?.surfaces}
         label={(s) => SURFACE_LBL[s as Surface] ?? s}
         color={(s) => (s === 'terminal' ? 'var(--s2)' : s === 'script' ? 'var(--s4)' : s === 'unknown' ? 'var(--sg)' : 'var(--s8)')}
-        rest="the agent’s own record was not read, so nothing says where it was driven from"
+        rest="the agent’s own record was not read"
       />
       <Shares
         title="approval at launch"
@@ -689,11 +687,11 @@ function Launch({ row, fleet }: { row: UserRow; fleet: UsersFleet | null | undef
         label={(a) => AP_SHORT[a] ?? a}
         tipOf={(a) => AP_LABEL[a] ?? a}
         color={(a) => AP_COL[a] ?? 'var(--sg)'}
-        rest="a Codex app server takes its policy per thread, and a session whose own record was not seen says nothing"
+        rest="an app server sets it per thread, and an unseen record says nothing"
       />
       <Shares
         title="tool calls sandboxed"
-        tip="whether each session's tool calls ran sandboxed, read from each process's namespaces (/proc/<pid>/ns), as the Security tab counts them"
+        tip="whether each session's tool calls ran sandboxed"
         order={SESSION_ORDER}
         known={SESSION_KNOWN}
         counts={row.sandbox}
@@ -701,7 +699,7 @@ function Launch({ row, fleet }: { row: UserRow; fleet: UsersFleet | null | undef
         label={(k) => SESSION_SHORT[k] ?? k}
         tipOf={(k) => SESSION_LABEL[k] ?? k}
         color={(k) => SB_COL[k as SessionSandboxState] ?? 'var(--sg)'}
-        rest="sessions whose tool calls could not be judged, or that made none the check reads"
+        rest="sessions whose tool calls could not be judged, or made none"
       />
     </div>
     {fleet && fleet.users > 1 && <ShareKey />}
@@ -717,7 +715,7 @@ function HourBars({ hours, tz }: { hours: number[]; tz?: string | null }) {
   const y = (n: number) => H - B - ((H - B - T) * n) / max;
   return (
     <div className="ur-chart">
-      <div className="eyebrow" data-tip={`minutes in which one of their agents began a tool call, by the hour of day${tz ? `, in ${tz}, the service's time zone` : ''}`}>
+      <div className="eyebrow" data-tip={`active minutes by hour of day${tz ? `, in ${tz}` : ''}`}>
         when their agents work{tz ? ` · ${tz}` : ''}
       </div>
       <Svg w={W} h={H} label="active minutes by hour of day">
@@ -797,7 +795,7 @@ function Timeline({ sessions, minutes, total }: { sessions: PortraitSession[]; m
   const ticks = timeTicks(lo, hi, 6);
   return (
     <div className="ur-chart">
-      <div className="eyebrow" data-tip="each session from its first record to its last, packed into rows so that sessions open at the same time sit on separate rows; a running one reaches now">
+      <div className="eyebrow" data-tip="each session from its first record to its last; a running one reaches now">
         sessions over the window
         {spans.length < total ? ` · the newest ${fint(spans.length)} of ${fint(total)}` : ''}
       </div>
@@ -851,10 +849,10 @@ function Rhythm({ p, row }: { p: UserPortrait; row: UserRow }) {
   return (
     <div className="ur-rhythm">
       <dl className="ur-nums">
-        {stat('typical session', dur(row.wall_p50_s), fleet ? dur(fleet.wall_p50_s) : null, 'the median session, open from its first record to its last; beside it the median of every session in the window')}
+        {stat('typical session', dur(row.wall_p50_s), fleet ? dur(fleet.wall_p50_s) : null, 'the median time a session was open; beside it, the window’s median')}
         {stat('longest', dur(row.wall_max_s))}
         {stat('open at once', row.peak_open ? fint(row.peak_open) : DASH, fleet?.peak_open_p50 != null ? fint(fleet.peak_open_p50) : null, 'the most sessions open at one moment; beside it the median user’s')}
-        {stat('active minutes', fint(row.active_min), fleet?.active_min_p50 != null ? fint(fleet.active_min_p50) : null, 'minutes in which an agent began a tool call; beside it the median user’s')}
+        {stat('active minutes', fint(row.active_min), fleet?.active_min_p50 != null ? fint(fleet.active_min_p50) : null, 'beside it, the median user’s')}
       </dl>
       <div className="ur-pair">
         <HourBars hours={row.hours} tz={p.tz} />
@@ -879,7 +877,7 @@ function Work({ p, row }: { p: UserPortrait; row: UserRow }) {
     <div className="ur-work">
       <div className="ur-pair">
         <div className="ur-shares">
-          <div className="eyebrow" data-tip="tool calls by what each command does, counted from each session's call log. The agent's own Read and Edit tools run no command and are not here">tool calls · counted</div>
+          <div className="eyebrow" data-tip="by what each command does; the agent's own Read and Edit tools run no command and are not here">tool calls · counted</div>
           {row.calls == null ? (
             <div className="nm">not read: this service read the commands of Claude Code and Codex only</div>
           ) : cats.length ? (
@@ -899,7 +897,7 @@ function Work({ p, row }: { p: UserPortrait; row: UserRow }) {
           )}
         </div>
         <div className="ur-shares">
-          <div className="eyebrow" data-tip={`${GLOSS.phases}. Time from the same phase blocks the Sessions tab’s rows show`}>time · by phase</div>
+          <div className="eyebrow" data-tip={GLOSS.phases}>time · by phase</div>
           {busy.length ? (
             <ShareRows
               items={busy.map(([k, v]) => ({
@@ -924,7 +922,7 @@ function Work({ p, row }: { p: UserPortrait; row: UserRow }) {
       </div>
       {(p.commands?.length ?? 0) > 0 && (
         <div className="ur-cmds">
-          <div className="eyebrow" data-tip="the commands their agents ran most, as tool calls; masked as every command is">commands run most</div>
+          <div className="eyebrow" data-tip="masked as every command is">commands run most</div>
           <ol>
             {p.commands!.map(([c, n], i) => (
               <li key={i} data-tip={c}>
@@ -951,7 +949,7 @@ function Tasks({ p, row, openTraj }: { p: UserPortrait; row: UserRow; openTraj: 
     <div className="ur-tasks">
       {row.projects.length > 0 && (
         <div>
-          <div className="eyebrow" data-tip="the folder each session's agent was started in, or, when that is a home folder or named for a person, the folder its commands change into most">projects</div>
+          <div className="eyebrow">projects</div>
           <span className="u-chips">
             {row.projects.map(([name, n]) => (
               <span key={name} className="u-chip">
@@ -1014,7 +1012,7 @@ function Scheduler({ row }: { row: UserRow }) {
     ['jobs submitted', fint(s.jobs), 'submissions that came back with a job id'],
     ['refused', s.rejected ? `${fint(s.rejected)} of ${fint(s.asked)}` : DASH, GLOSS.refused],
     ['queue checks', `${fint(s.queries)}${s.queries_per_job != null ? ` · ${fmt(s.queries_per_job)} a job` : ''}`, GLOSS.queuecheck],
-    ['polling the queue', s.polling_sessions ? `${plural(s.polling_sessions, 'session')} · ${dur(s.polling_s)}` : 'no', 'a session that checked the queue at least every 3 min for 10 min or more'],
+    ['polling the queue', s.polling_sessions ? `${plural(s.polling_sessions, 'session')} · ${dur(s.polling_s)}` : 'no'],
     ['longest stretch', l ? `every ${dur(l.every_s)} for ${dur(l.span_s)}` : DASH, 'its longest stretch of checks no more than 3 min apart'],
     ['--parsable', s.parsable_pct != null ? `${pc(s.parsable_pct)} of submissions` : DASH, GLOSS.parsable],
     ['cancels', s.cancels ? fint(s.cancels) : DASH],
@@ -1073,11 +1071,11 @@ function Sessions({ p, openTraj }: { p: UserPortrait; openTraj: (sid: string) =>
           <tr>
             <SortTh s={s} k="started">started</SortTh>
             <SortTh s={s} k="agent" first="asc">agent</SortTh>
-            <SortTh s={s} k="project" first="asc" tip="what kind of session it was, its project, and the names that recur across its tasks, as its row on the Sessions tab heads it">project</SortTh>
+            <SortTh s={s} k="project" first="asc" tip="its kind, its project, and the names that recur across its tasks">project</SortTh>
             <SortTh s={s} k="open" num tip="open from its first record to its last">open for</SortTh>
             <SortTh s={s} k="calls" num gloss="toolcall">tool calls</SortTh>
             <SortTh s={s} k="tasks" num gloss="tasks">tasks</SortTh>
-            <th data-tip={`${GLOSS.phases}. Its time in each, idle left out`}>phases</th>
+            <th data-tip="its time in each phase, idle left out">phases</th>
             <SortTh s={s} k="cpu" num>CPU</SortTh>
             <th />
           </tr>
@@ -1162,7 +1160,7 @@ function Portrait({
   }, [name, arrived]);
   const winLbl = p?._window?.label ?? null;
   const closeBtn = (
-    <button className="btn" onClick={close} data-tip="close this portrait">close</button>
+    <button className="btn" onClick={close}>close</button>
   );
   const row = p?.row;
   const fleetNote =

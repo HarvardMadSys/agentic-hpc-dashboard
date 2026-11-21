@@ -111,10 +111,7 @@ function FaultCell({
  * median, and p99 start on, and the rest open on a click (roadmap note 28).
  * The max names the process behind it on hover (note 27); the min does not,
  * since many processes usually share it. Each class's columns wear its colour. */
-const LIFETIME_TIP =
-  'how long the process existed. For most processes it is counted from when the program ' +
-  'started (exec), while CPU time counts the whole process, including the moments before ' +
-  'exec, so a very short process can show more CPU time than lifetime.';
+const LIFETIME_TIP = 'how long the process existed, counted from exec';
 const DIST_ROWS: [key: (typeof QUANT_KEYS)[number], label: string, f: (v: number) => string, tip: string][] = [
   ['cpu_s', 'CPU time', dur, 'CPU time each process used itself (its children are not added)'],
   ['duration_s', 'lifetime', dur, LIFETIME_TIP],
@@ -208,7 +205,7 @@ function DistTable({ byClass, have, on }: { byClass: Resources['by_class']; have
                   <Term tip={tip}>{label}</Term>
                   {aside > 0 && (
                     <div className="sub" data-tip={
-                      `${fint(aside)} processes ran longer on a CPU than their lifetime as measured (it was counted from exec), ` +
+                      `${fint(aside)} processes ran longer on a CPU than their measured lifetime, ` +
                       'so their share cannot be read; they are left out rather than shown as 100%'}>
                       {fint(aside)} set aside
                     </div>

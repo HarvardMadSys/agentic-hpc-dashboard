@@ -293,13 +293,13 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           k="agent tool calls sandboxed"
           total={callIso.agent?.pct ?? null}
           fmtFn={(n) => (n == null ? DASH : pc(n))}
-          tip="a tool call is a sandbox-wrapper invocation or a Claude Code Bash shell; a sandbox that failed to start counts as not sandboxed, an unreadable wrapped command is left out"
+          tip="a sandbox that failed to start counts as not sandboxed; an unreadable wrapped command is left out"
           note={agentOf(callIso.agent, 'agent tool calls', 'whose outcome is known')}
         />
         <Plate
           k="agent sandboxes failed to start"
           total={failedAgent}
-          tip="a bwrap / codex-linux-sandbox call that exited non-zero with no wrapped command under it: the sandbox was tried and did not come up"
+          tip="a sandbox wrapper call that exited non-zero and ran no command: the sandbox did not come up"
           note={
             wrapperCalls
               ? `of ${fint(wrapperCalls)} sandbox wrapper calls`
@@ -311,7 +311,7 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           total={sessBypass.agent?.pct ?? null}
           alarm={(sessBypass.agent?.pct ?? 0) > 0}
           fmtFn={(n) => (n == null ? DASH : pc(n))}
-          tip="read off each session root's own command line. Settings files, codex config.toml and a mid-session switch are invisible; for `codex app-server` the command line can’t tell, so it is left out of the share."
+          tip="settings files and a mid-session switch are not seen; a `codex app-server` session, whose flags can’t be read, is left out of the share"
           note={agentOf(sessBypass.agent, 'agent sessions', 'whose launch flags are readable')}
         />
       </div>
@@ -560,7 +560,7 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
                 <tbody>
                   {src.map(([k, v]) => (
                     <tr key={k}>
-                      <td className="lbl" data-tip={`${GLOSS[k === 'denied' ? 'exitedbeforeread' : k === 'inherit' ? 'inherit' : k.replace(':', '_')] ?? k}\nas the collector names it: ${k}`}>{SRC_LBL[k] ?? k}</td>
+                      <td className="lbl" data-tip={GLOSS[k === 'denied' ? 'exitedbeforeread' : k === 'inherit' ? 'inherit' : k.replace(':', '_')] ?? k}>{SRC_LBL[k] ?? k}</td>
                       <td>
                         <ShareCell pct={tot ? (100 * v) / tot : null} sub={fint(v)} c="var(--s2)" />
                       </td>

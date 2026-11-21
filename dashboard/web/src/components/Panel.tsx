@@ -150,8 +150,8 @@ export function Building({ w }: { w: WindowStatus }) {
           : merging
             ? `combining the saved hours of the ${w.label} window`
             : resuming
-            ? `resuming the saved ${w.label} reduction, reading only what the collector wrote since it was built — ${p.records.toLocaleString()} records across ${p.files} file(s)`
-            : `these panels carry no time index, so the ${w.label} window is being reduced from the rows — ${p.records.toLocaleString()} records across ${p.files} file(s)`}
+            ? `reading what was written since the saved ${w.label} build — ${p.records.toLocaleString()} records across ${p.files} file(s)`
+            : `reading the ${w.label} window — ${p.records.toLocaleString()} records across ${p.files} file(s)`}
       </p>
     </div>
   );

@@ -197,7 +197,7 @@ export function securityChecks(P: Panels, cls: Cls[]): Check[] {
       state: failed > 0 ? 'flag' : 'clear',
       what: failed > 0 ? `${plural(failed, 'agent sandbox', 'agent sandboxes')} failed to start` : 'No agent sandbox failed to start',
       note: wrapperCalls
-        ? `of ${plural(wrapperCalls, 'sandbox wrapper call')}${failed > 0 ? ' · the sandbox was tried, and the command it wraps did not run' : ''}`
+        ? `of ${plural(wrapperCalls, 'sandbox wrapper call')}`
         : 'no sandbox wrapper ran in the window',
       to: at('security', slug(WRAPPERS_TITLE)), where: `Security › ${WRAPPERS_TITLE}`,
     });
@@ -216,7 +216,7 @@ export function securityChecks(P: Panels, cls: Cls[]): Check[] {
     const sections = all.filter((sc) => sc.kind === 'credentials');
     if (!sections.length) {
       out.push({ key: 'cred', axis: 'exposure', state: 'unchecked', what: 'Credentials on a command line: not checked',
-        note: 'this cluster’s risk profile has no credentials section, so no credential rule is counted (risk.sections)',
+        note: 'this cluster’s risk profile has no credentials section',
         to: at('risk', slug('Rules in effect')), where: 'Risks › Rules in effect' });
     }
     const scanned = risk.secrets ? `${plural(risk.secrets.args_scanned, 'command line')} scanned` : null;
@@ -362,10 +362,7 @@ export function SecurityChecks({ P, cls }: { P: Panels; cls: Cls[] }) {
           );
         })}
       </ul>
-      <div className="attn-foot">
-        each line is one question, answered by a state or a rule the service already applies; none is a score,
-        and none is weighed against another
-      </div>
+      <div className="attn-foot">no check is a score, and none is weighed against another</div>
     </Panel>
   );
 }
@@ -571,10 +568,10 @@ export const SecurityTab = memo(function SecurityTab({ P, cls }: { P: Panels; cl
         <SecurityChecks P={P} cls={cls} />
       </div>
       <div className="grid-gap" />
-      <div className="rowlabel">launch and confinement · were agents launched to ask first, and did their tool calls run sandboxed?</div>
+      <div className="rowlabel">launch and confinement</div>
       <SandboxTab P={P} cls={cls} />
       <div className="grid-gap" />
-      <div className="rowlabel">reach · where agents wrote outside the folder they were started in</div>
+      <div className="rowlabel">reach</div>
       <div className="grid wider">
         <OutsideWrites P={P} cls={cls} />
       </div>

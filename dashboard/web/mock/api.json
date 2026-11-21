@@ -7468,7 +7468,7 @@
       "n": 125,
       "dstate_wait_s": 0,
       "dstate_coverage_pct": 100,
-      "reading": "wrapper, read at its own exec before it unshares -- says nothing about the call it wraps; see the tool-call outcomes"
+      "reading": "the wrapper itself: says nothing about the call it wraps; see the tool-call outcomes"
      },
      {
       "ancestry": "codex-linux-sandbox",
@@ -7477,7 +7477,7 @@
       "n": 51,
       "dstate_wait_s": 0,
       "dstate_coverage_pct": 100,
-      "reading": "wrapper, read at its own exec before it unshares -- says nothing about the call it wraps; see the tool-call outcomes"
+      "reading": "the wrapper itself: says nothing about the call it wraps; see the tool-call outcomes"
      },
      {
       "ancestry": "none",
@@ -7486,7 +7486,7 @@
       "n": 16,
       "dstate_wait_s": 0,
       "dstate_coverage_pct": 100,
-      "reading": "in its own namespaces with no agent sandbox wrapper above it: a container, apptainer, a systemd unit, or a reused pid inheriting one -- not an agent sandbox"
+      "reading": "in its own namespaces with no sandbox wrapper above it (a container, apptainer, a systemd unit, or a reused pid inheriting one): not an agent sandbox"
      },
      {
       "ancestry": "none",

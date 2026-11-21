@@ -34,10 +34,7 @@ import type { Panels } from '../lib/panels';
 /* `depth` is the collector's count of process generations between a process
  * and its nearest agent ancestor: its depth in that agent's process tree. */
 const DEPTH_TIP =
-  "depth in the agent's process tree:\n\n" +
-  '0 = the agent process itself\n1 = started directly by the agent (e.g. a tool-call shell)\n' +
-  '2 = started by one of those (e.g. the command that shell ran)\nand so on down the tree\n\n' +
-  "— = no agent above it: a human's own process";
+  "depth in the agent's process tree: 0 is the agent, 1 a command it ran, 2 what that ran; — no agent above it";
 
 function depthLabel(d: number | null | undefined): string {
   if (d == null) return DASH;

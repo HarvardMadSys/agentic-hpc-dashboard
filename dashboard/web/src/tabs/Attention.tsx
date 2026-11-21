@@ -120,7 +120,7 @@ export function Attention({ P, cls, feeds }: { P: Panels; cls: Cls[]; feeds: Fee
       flags.push({
         key: 'slurm:polling', kind: 'slurm',
         what: `${plural(a.polling_sessions, 'agent session')} polled the queue`,
-        note: `${fmt(a.polling_h)} h of polling: a queue check at least every 3 minutes for 10 minutes or more`,
+        note: `${fmt(a.polling_h)} h of polling`,
         by: split('polling_sessions'), to: at('slurm', 'sec-sessions-at-the-scheduler'), where: 'HPC › Sessions at the scheduler',
       });
     }

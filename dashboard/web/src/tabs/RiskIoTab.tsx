@@ -264,7 +264,6 @@ function RulesInEffect({ r }: { r: RiskRules | undefined }) {
         {changed ? ` · ${fint(changed)} changed or added for this cluster` : ''}
         {r.disabled.length ? ` · ${fint(r.disabled.length)} switched off` : ''}
         {unsectioned.length ? ` · ${fint(unsectioned.length)} in no section, so not counted` : ''}
-        {' · set in the risk section of the config, or a profile file (dashboard/risk-profiles/)'}
       </p>
       {r.sections && (
         <p className="paths" style={{ marginTop: 0 }}>
@@ -437,7 +436,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
                 by={Object.fromEntries(have.map((c) => [c, lc?.by_class?.[c]?.cpu_h ?? (lc ? 0 : null)]))}
                 fmtFn={(n) => fmt(n)}
                 unit="CPU-h"
-                tip="agents' CPU in builds and interpreters (make, gcc, python, …) on a login node, which is shared and not for compute; the other classes beside it"
+                tip="agents' CPU in builds and interpreters (make, gcc, python, …) on a shared login node"
                 note={lc ? `${fint(lc.by_class?.agent?.users ?? 0)} agent users · all classes ${pc(lc.share_of_all_cpu_pct)} of the ${nodes.many}’ CPU` : undefined}
               />
             );
@@ -452,7 +451,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
                 total={cls.includes('agent') ? by.agent ?? 0 : null}
                 by={by}
                 fmtFn={fint}
-                tip={`credentials agents wrote into a command line, where any user on the ${nodes.one} can read them with ps; the other classes beside it. Counted, never shown.`}
+                tip={`credentials agents typed into a command line, where any user on the ${nodes.one} can read them with ps; counted, never shown`}
                 note={sec ? `of ${fint(sec.args_scanned)} command lines scanned · values never shown` : undefined}
               />
             );
@@ -471,7 +470,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
               alarm={cls.includes('agent') && (by.agent ?? 0) > 0}
               by={by}
               fmtFn={fint}
-              tip={`agents' runs matching this section's rules (${sc.rules.length}); the other classes beside it`}
+              tip={`agents' runs matching this section's ${sc.rules.length} rules`}
               note={top.length ? top.map((r) => `${r.command} ×${fint(r.classes?.agent ?? 0)}`).join(' · ') : 'none in the window'}
             />
           );
@@ -694,7 +693,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
               <table>
                 <thead>
                   <tr>
-                    <SortTh s={sortOf('io-quant')} k="metric" first="asc" tip="the counter each row describes; hover a name for what it counts and its raw field name">metric</SortTh>
+                    <SortTh s={sortOf('io-quant')} k="metric" first="asc" tip="hover a name for what it counts">metric</SortTh>
                     <SortTh s={sortOf('io-quant')} k="cls" first="asc">class</SortTh>
                     <QuantHead s={sortOf('io-quant')} />
                   </tr>
@@ -705,7 +704,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
                       : quantVal(byClass[c]?.quants?.[qk], k)),
                   ).map(([qk, c]) => (
                       <tr key={qk + c}>
-                        <td className="lbl" data-tip={`${GLOSS[qk] ?? qk}\nraw field: ${qk}`}>
+                        <td className="lbl" data-tip={GLOSS[qk] ?? qk}>
                           {QUANT_SORT[qk] ? (
                             <IoNum q={{ title: `${quantLbl(qk)} · ${CLS_LBL[c] ?? c}`, sort: QUANT_SORT[qk]!, class: [c], ...coveredBy(io) }}>{quantLbl(qk)}</IoNum>
                           ) : quantLbl(qk)}
@@ -731,7 +730,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
             building, not reduced or not sent, the panel's envelope says which */}
         {sections.length === 0 && (
           <Panel title="Risk sections" p={risk} span empty
-            emptyWhat="this cluster's risk profile lists no sections (risk.sections)" />
+            emptyWhat="this cluster's risk profile lists no sections" />
         )}
         {sections.map((sc) =>
           sc.kind === 'login_compute' ? (

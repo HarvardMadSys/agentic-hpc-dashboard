@@ -116,7 +116,7 @@ const METRICS: { k: Metric; lbl: string; tip: string }[] = [
   { k: 'cpu', lbl: 'CPU', tip: 'CPU seconds the processes used' },
   { k: 'io', lbl: 'disk I/O', tip: 'disk bytes read and written' },
   { k: 'net', lbl: 'network', tip: 'bytes sent and received over the network' },
-  { k: 'mem', lbl: 'memory', tip: 'each process’s peak memory, summed: how much memory the processes held at their highest' },
+  { k: 'mem', lbl: 'memory', tip: 'each process’s peak memory, summed' },
 ];
 const rowVal = (r: ToolBucketRow | undefined, m: Metric): number | null =>
   !r ? null : m === 'calls' ? r.calls : m === 'cpu' ? r.cpu_s : m === 'io' ? r.io_mb ?? null

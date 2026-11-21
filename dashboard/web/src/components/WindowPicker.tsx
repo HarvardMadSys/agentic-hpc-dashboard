@@ -166,7 +166,7 @@ export function WindowPicker({
       {reading && (
         <span
           className="winnote build"
-          data-tip={`the service re-reads the collector's files on every start, newest first, so the bins fill from now backwards: ${reading.records.toLocaleString()} records so far`}
+          data-tip={`filling from now backwards: ${reading.records.toLocaleString()} records so far`}
         >
           reading history · {reading.pct}%
         </span>
@@ -175,7 +175,7 @@ export function WindowPicker({
       {building && (
         <span
           className="winnote build"
-          data-tip={`the historical panels hold no time index, so this window is being reduced from the rows: ${building.progress.files} file(s), ${building.progress.records.toLocaleString()} records so far`}
+          data-tip={`reading this window: ${building.progress.files} file(s), ${building.progress.records.toLocaleString()} records so far`}
         >
           {building.progress.mode === 'resume' ? 'catching up' : 'rebuilding'} {building.label} ·{' '}
           {building.progress.pct}%

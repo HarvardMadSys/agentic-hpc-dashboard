@@ -83,15 +83,11 @@ const RANK_LBL: Record<TrajRank, string> = {
   distinct_tools: 'distinct tools',
 };
 const RANK_TIP: Record<TrajRank, string> = {
-  recent: 'the session with the newest process first: one at work climbs to the top',
+  recent: 'the session with the newest process first',
   events: 'the sessions that ran the most processes first',
   cpu_s: 'the sessions that used the most CPU first',
-  peak_rss_mb:
-    'the sessions whose largest process held the most memory first: peak memory (RSS) ' +
-    '(DRAM) of any one process that exited, not the session added up',
-  io_mb:
-    'the sessions that read and wrote the most bytes on disk first. Each process counts ' +
-    'its own: a shell is not counted again for the commands it ran',
+  peak_rss_mb: 'the sessions whose largest process held the most memory first, not the session added up',
+  io_mb: 'the sessions that read and wrote the most bytes on disk first',
   net_mb: 'the sessions that sent and received the most bytes over the network first',
   distinct_tools: 'the sessions that ran the most different tools first',
 };
@@ -415,10 +411,8 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
           total={agent?.sessions ?? null}
           by={byCls((d) => d.sessions)}
           tip={
-            'a session is one agent process and everything it ran (for agents), or one ' +
-            'login / terminal (for the human and IDE classes).\n\n' +
-            'an agent-type process with no agent above it -- a script checking ' +
-            '`codex --version` every minute -- is not a session and is counted apart.'
+            'an agent and everything it ran, or, for the human and IDE classes, one login or terminal; ' +
+            'a one-off probe, such as a script checking `codex --version`, is not one'
           }
           note={
             agent ? (
@@ -453,10 +447,7 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
           total={agent?.wall_p50_s ?? null}
           by={byCls((d) => d.wall_p50_s)}
           fmtFn={(n) => dur(n)}
-          tip={
-            'first to last process INSIDE the window: in a 1 h window no session reads ' +
-            'longer than an hour, and one idle at its end reads shorter than it was open.'
-          }
+          tip="first to last process INSIDE the window: never longer than the window, and an idle end is not counted"
           note={
             agent?.longest
               ? `longest ${dur(agent.longest.wall_s)} · ${agent.longest.user ?? '?'}, ${
@@ -470,11 +461,7 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
           total={agent?.wait_pct ?? null}
           by={byCls((d) => d.wait_pct)}
           fmtFn={(n) => (n == null ? DASH : pc(n))}
-          tip={
-            'processes whose only job is to wait on something else: polling the ' +
-            'process table (ps, pgrep, top, sleep loops) or the scheduler (squeue, ' +
-            'sacct, scontrol, watch).'
-          }
+          tip="processes that only wait: ps, pgrep, top, sleep loops, squeue, sacct, scontrol, watch"
           note={agent ? `of ${fint(agent.tool_calls)} processes in real agent sessions` : undefined}
         />
       </div>

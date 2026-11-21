@@ -83,14 +83,14 @@ const EventsExplorer = lazyTab(() => import('./components/EventsExplorer').then(
 /* `also`: the names a tab had before, which "go to" still finds it by. */
 type Tab = { k: string; lbl: string; eyebrow: string; icon: IconName; group: string; parent?: 'nodes'; also?: string };
 const TABS: Tab[] = [
-  { k: 'live', lbl: 'Live', eyebrow: 'right now, over the window, and who uses what', icon: 'live', group: 'Monitor', also: 'overview who uses what' },
-  { k: 'users', lbl: 'Users', eyebrow: 'a portrait of each user, from how they use coding agents', icon: 'users', group: 'Monitor' },
+  { k: 'live', lbl: 'Live', eyebrow: 'what runs, and who runs it', icon: 'live', group: 'Monitor', also: 'overview who uses what' },
+  { k: 'users', lbl: 'Users', eyebrow: 'how each user works with coding agents', icon: 'users', group: 'Monitor' },
   { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, and the tools they ran', icon: 'agents', group: 'Monitor' },
   { k: 'trajectories', lbl: 'Sessions', eyebrow: 'one session at a time: what it ran, and when', icon: 'trajectories', group: 'Monitor', also: 'trajectories trajectory' },
   { k: 'security', lbl: 'Security', eyebrow: 'how agents were launched and sandboxed, what they exposed, and where they reached', icon: 'security', group: 'Monitor', also: 'sandbox approval bypass credentials secrets blast radius' },
   { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O', icon: 'resources', group: 'Monitor', parent: 'nodes' },
   { k: 'risk', lbl: 'Risks', eyebrow: 'what should not run here', icon: 'risk', group: 'Monitor', parent: 'nodes', also: 'risk warning' },
-  { k: 'slurm', lbl: 'HPC', eyebrow: 'the Slurm scheduler: what each session asks of it, and what looks abnormal', icon: 'hpc', group: 'Monitor', also: 'slurm scheduler jobs queue abnormal cluster' },
+  { k: 'slurm', lbl: 'HPC', eyebrow: 'what sessions ask of the Slurm scheduler, and what looks abnormal', icon: 'hpc', group: 'Monitor', also: 'slurm scheduler jobs queue abnormal cluster' },
   { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask a language model about this window', icon: 'chat', group: 'More' },
   { k: 'events', lbl: 'Search & export', eyebrow: 'every process record, filtered and downloadable', icon: 'events', group: 'More' },
   { k: 'internal', lbl: 'Internal', eyebrow: 'not settled yet', icon: 'internal', group: 'More' },
@@ -175,13 +175,13 @@ function pillOf(
         tip: 'new records stream in as the collector writes them' };
     case 'polling':
       return { status: 'stale', text: 'refreshing every 15 s', beat: false,
-        tip: 'the live stream is unavailable, so the page asks for new data every 15 seconds' };
+        tip: 'the live stream is unavailable' };
     case 'connecting':
       return { status: 'empty', text: 'connecting…', beat: false,
         tip: 'opening the live stream to the dashboard service' };
     default:
       return { status: 'missing', text: 'disconnected · retrying', beat: false,
-        tip: 'the dashboard service is not answering; the page keeps retrying' };
+        tip: 'the dashboard service is not answering' };
   }
 }
 
@@ -665,7 +665,7 @@ export default function App() {
             </span>
             <span className="mark-t">Agent Observatory</span>
           </div>
-          <div className="sub mono" data-tip="which deployment this is: site.name (RC_DASH_SITE_NAME)">
+          <div className="sub mono" data-tip="which deployment this is">
             {siteName || 'rc_measurement'}
           </div>
         </div>
@@ -755,7 +755,7 @@ export default function App() {
             form, so signing out works without the page's own code. */}
         {passwordSet && (
           <form className="rail-signout" method="post" action="/logout">
-            <button type="submit" data-tip="sign this browser out; the page then asks for the password again">
+            <button type="submit" data-tip="sign this browser out">
               <Icon name="signout" size={16} />
               <span>Sign out</span>
             </button>
@@ -812,8 +812,8 @@ export default function App() {
       <main ref={mainRef}>
         {synthetic.length > 0 && (
           <p className="fake-note" role="note">
-            <b>Fake data.</b> This is a demo: every record on this page was made up for
-            fictional login nodes, users and sessions. Nothing here was measured.
+            <b>Fake data.</b> A demo: every record on this page was made up. Nothing here was
+            measured.
           </p>
         )}
         <div className={`head${showControls ? ' with-bar' : ''}`}>
@@ -834,7 +834,7 @@ export default function App() {
                 <StatusPill
                   status="empty"
                   text="frozen capture"
-                  tip={`not a live feed: the service's clock is pinned to the capture's end and does not move\n${live.live.clock.source}`}
+                  tip={`not a live feed: the clock stops at the capture's end\n${live.live.clock.source}`}
                 />
                 <span className="stat" data-tip="every window ends here; nothing after it exists in this feed">
                   as of <b>{live.live.clock.as_of}</b>
@@ -846,10 +846,7 @@ export default function App() {
             {anonymized && (
               <span
                 className="pill"
-                data-tip={
-                  'names are replaced by stable aliases (user-…, lab-…) before anything leaves ' +
-                  'the service; email addresses and user IDs are hidden'
-                }
+                data-tip="names are stable aliases (user-…, lab-…); email addresses and user IDs are hidden"
               >
                 anonymized
               </span>
@@ -857,16 +854,13 @@ export default function App() {
             {synthetic.length > 0 && (
               <span
                 className="pill synthetic"
-                data-tip={
-                  `a demo: every record here was made up by rc_dashboard/demo -- fictional ${nodes.many}, ` +
-                  `users and sessions; nothing was measured\n${synthetic.join(', ')}`
-                }
+                data-tip={`made up by the demo:\n${synthetic.join(', ')}`}
               >
                 fake data
               </span>
             )}
             {hl.lag && !live.live?.clock?.pinned && (
-              <span className="stat" data-tip="how long ago the collector wrote the newest record the dashboard has; a few seconds is normal">
+              <span className="stat" data-tip="the age of the newest record; a few seconds is normal">
                 newest record <b>{hl.lag}</b> old
               </span>
             )}

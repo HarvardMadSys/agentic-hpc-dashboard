@@ -280,7 +280,7 @@ function Facts({ row, d }: { row: TrajRow | null; d: TrajectoryDetail | null }) 
           </span>
         )}
         {days.length > 1 && nth >= 0 && (
-          <span data-tip="it worked past midnight, so it is a row to a day: these figures are this day's, and its summary and what it did, below, are the whole session's">
+          <span data-tip="it worked past midnight: these figures are this day's; its summary and what it did, below, are the whole session's">
             day <b>{fint(nth + 1)}</b> of <b>{fint(days.length)}</b>
           </span>
         )}
@@ -442,16 +442,13 @@ function ReadLine({
       <div>
         <b>{fint(s.records)}</b>
         {` processes read, ${clock(s.first)} → ${clock(s.last)}`}
-        <span className="ins-scan">
-          {` · re-read ${bytes(s.bytes)} of ${fint(s.files)} day-file${s.files === 1 ? '' : 's'} in ${s.elapsed_s.toFixed(1)} s`}
-        </span>
         {b.stubs > 0 && (
-          <span data-tip="parents the records name that left no exit record in this read: the agent still running, or a shell that exited outside the span">
+          <span data-tip="named as parents, with no exit in this read: still running, or exited outside it">
             {` · ${fint(b.stubs)} parent${b.stubs === 1 ? '' : 's'} with no exit in the read`}
           </span>
         )}
         {d.cached && (
-          <span data-tip="the service keeps the trees it read recently, so going back to a session is instant; a session still running may have done more since">
+          <span data-tip="a session still running may have done more since">
             {` · kept from a read ${dur(Math.max(0, now / 1000 - s.computed_at))} ago · `}
             <button className="linkish" onClick={reread}>
               read again
@@ -468,19 +465,15 @@ function ReadLine({
           <div className="ins-limits-body">
             {b.counted > 0 && (
               <div>
-                {newest
-                  ? `${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): the oldest, past the newest ${fint(
-                      b.hold,
-                    )} in all or the newest ${fint(b.per_parent)} childless processes of one command under one parent`
-                  : `${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): past ${fint(
-                      b.per_parent,
-                    )} childless processes of one command under one parent, or ${fint(b.hold)} in all`}
+                {`${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): the ${
+                  newest ? 'oldest' : 'latest'
+                } past the budget`}
               </div>
             )}
             {b.elided > 0 && (
               <div>
-                {`${fint(b.elided)} processes are past the ${fint(b.nodes)}-row budget, allotted breadth first${
-                  newest ? ' and newest first: counted in ⋯ rows at the deepest levels of the oldest' : ': counted in ⋯ rows at the deepest levels'
+                {`${fint(b.elided)} processes are past the ${fint(b.nodes)}-row budget: counted in ⋯ rows at the deepest levels${
+                  newest ? ' of the oldest' : ''
                 }`}
               </div>
             )}
@@ -1043,9 +1036,7 @@ export function TrajectoryInspector({
         {block && waiting ? (
           // running now, and no call has ended: what runs, in the summary's place, and no `no tool calls` chip
           <p className="ins-gist" style={{ '--cat': 'var(--edge)' } as CSSProperties}>
-            <span data-tip="from the per-minute census: a call has a record only once it ends">
-              {runningUnreadText(edge, driverOf(block))}
-            </span>
+            <span>{runningUnreadText(edge, driverOf(block))}</span>
           </p>
         ) : (
           block?.summary && (
@@ -1054,7 +1045,7 @@ export function TrajectoryInspector({
               style={{ '--cat': gistColour(block.category, driverOf(block)) } as CSSProperties}
             >
               <CategoryChip of={block} />
-              <span data-tip="the session in a few sentences, from its own phases, calls, and tasks: no model writes it">
+              <span data-tip="built from its own phases, calls and tasks: no model writes it">
                 <Figures text={block.summary} />
               </span>
             </p>
@@ -1064,10 +1055,7 @@ export function TrajectoryInspector({
           <section className="ins-sec" aria-labelledby={`${uid}-did`}>
             <div className="ins-sec-h">
               <h4 id={`${uid}-did`}>What it did</h4>
-              <p>
-                {block.tasks?.length ? 'its tasks and the phases of each' : 'its phases'}, over the whole session · hover one for
-                what it was, click it to open its processes below
-              </p>
+              <p>{block.tasks?.length ? 'its tasks and the phases of each' : 'its phases'}, over the whole session</p>
             </div>
             <SessionMap block={block} first={r?.first} now={edge} onTask={onTask} onPhase={onPhase} />
             {block.tasks?.length ? (
@@ -1085,7 +1073,6 @@ export function TrajectoryInspector({
         <section className="ins-sec" aria-labelledby={`${uid}-procs`}>
           <div className="ins-sec-h">
             <h4 id={`${uid}-procs`}>Processes</h4>
-            <p>every program the session ran, each under the one that started it</p>
           </div>
           <ProcessMix row={row} d={d} onRun={onRun} />
           {q.error && <div className="err">{`/api/trajectory: ${q.error}`}</div>}
@@ -1133,7 +1120,7 @@ export function TrajectoryInspector({
                 onChange={setMode}
                 options={[
                   { k: 'tree', lbl: 'tree', tip: 'boxes joined by lines, opened a level at a time' },
-                  { k: 'table', lbl: 'table', tip: 'every process as a row, with its timeline; landmarks and the strip jump here' },
+                  { k: 'table', lbl: 'table', tip: 'every process as a row, with its timeline' },
                 ]}
               />
               {setOrder && (
@@ -1144,16 +1131,12 @@ export function TrajectoryInspector({
                     {
                       k: 'oldest',
                       lbl: 'oldest first',
-                      tip:
-                        "each process's children by when they started, the first at the top. In a busy session " +
-                        'the newest are the ones counted in ⋯ rows rather than drawn',
+                      tip: 'in a busy session, the newest are counted in ⋯ rows, not drawn',
                     },
                     {
                       k: 'newest',
                       lbl: 'newest first',
-                      tip:
-                        "each process's children by when they started, the latest at the top. The service reads " +
-                        'on to the session’s end and draws the newest in full; the oldest are the ones counted in ⋯ rows',
+                      tip: 'the newest are drawn in full; the oldest are counted in ⋯ rows',
                     },
                   ]}
                 />
@@ -1170,7 +1153,7 @@ export function TrajectoryInspector({
                 href={treePopHref(sid, win, from, hide, order, typos)}
                 target="_blank"
                 rel="noopener"
-                data-tip={'the tree in a tab of its own: pan, zoom, find, a minimap, details beside each box, and export\nshift-click for a new window'}
+                data-tip={'the tree in a tab of its own\nshift-click for a new window'}
               >
                 pop out ↗
               </a>
@@ -1183,11 +1166,8 @@ export function TrajectoryInspector({
                 <span
                   className="q-mark"
                   data-tip={
-                    'looks through every process the read served: its command, its command line, and the folder it ran in ' +
-                    '(its own, or its parent’s). Files and folders it only opened are not recorded, so they are found only where its command line names them. ' +
-                    'Every word must be in one process: `pytest myproj` finds pytest run in a folder named myproj. ' +
-                    'Processes counted rather than drawn are found by their command name only\n' +
-                    'Enter: the next match · Shift+Enter: the one before · Esc: clear'
+                    'looks through each process’s command, command line and folder; every word must be in one process, ' +
+                    'and a file it only opened is not found\nEnter: the next match · Shift+Enter: the one before · Esc: clear'
                   }
                 >
                   find
@@ -1231,12 +1211,12 @@ export function TrajectoryInspector({
                   </span>
                 )}
               </span>
-              <label data-tip="take out runs of the same command, the site's routine commands (ui.routine_commands), and the shells that ran nothing else, so the unusual processes stand out">
+              <label data-tip="take out runs of the same command, the site's routine commands, and shells that ran nothing else">
                 <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
                 hide routine
               </label>
               {hide && hid && <span className="nm">{`${fint(hid.routine)} hidden`}</span>}
-              <label data-tip="take out what a person mistyped at a terminal: a name the shell could not find, and a line that failed and was then typed again, corrected (the line that worked says so). An agent's failed calls stay">
+              <label data-tip="take out a person's typos at a terminal: a name the shell could not find, or a failed line typed again corrected; an agent's failed calls stay">
                 <input type="checkbox" checked={typos} onChange={(e) => setTypos(e.target.checked)} />
                 hide typos
               </label>

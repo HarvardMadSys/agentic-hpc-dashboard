@@ -273,7 +273,7 @@ export function typoLabel(e: ProcNode): string | null {
 
 export function typoTip(e: ProcNode): string | null {
   if (e.typo === 'not-found')
-    return `a typo: ${e.typed ? `“${e.typed}”, ` : ''}a name the shell could not find (exit ${e.exit_code ?? '?'}), so the fork it made for it ran nothing`;
+    return `a typo: ${e.typed ? `“${e.typed}”, ` : ''}a name the shell could not find (exit ${e.exit_code ?? '?'})`;
   if (e.typo === 'retried') return 'a typo: it failed, and the next line typed ran it again, corrected';
   if (e.tries)
     return `${fint(e.tries)} failed ${e.tries === 1 ? 'try' : 'tries'} of this line came just before it, typed again corrected`;

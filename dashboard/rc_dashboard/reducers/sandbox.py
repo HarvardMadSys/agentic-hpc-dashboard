@@ -124,15 +124,14 @@ def session_state(calls):
 def _reading(anc, kind, sb):
     if kind == "wrapper":
         if sb == "unsandboxed":
-            return ("wrapper, read at its own exec before it unshares -- says nothing "
-                    "about the call it wraps; see the tool-call outcomes")
+            return "the wrapper itself: says nothing about the call it wraps; see the tool-call outcomes"
         if sb == "sandboxed":
             return "wrapper already inside a sandbox (nested)"
         return None
     if sb == "sandboxed":
         if anc == "none":
-            return ("in its own namespaces with no agent sandbox wrapper above it: a container, "
-                    "apptainer, a systemd unit, or a reused pid inheriting one -- not an agent sandbox")
+            return ("in its own namespaces with no sandbox wrapper above it (a container, apptainer, "
+                    "a systemd unit, or a reused pid inheriting one): not an agent sandbox")
         return "under a sandbox wrapper, sandboxed"
     if sb == "unsandboxed" and anc != "none":
         return "under a sandbox wrapper, not sandboxed"

@@ -173,10 +173,9 @@ export function AnnotateControl({ a }: { a: AnnotateState }) {
   const left = Math.max(0, a.calls - known);
   const where = info.endpoint ? ` at ${info.endpoint}` : '';
   const tip =
-    `ask ${info.provider}${info.model ? ` (${info.model})` : ''}${where} what each tool call was for. ` +
-    `It is sent each call's command line as this page shows it -- masked -- and the folder it ran in, nothing else. ` +
-    `Answers are kept, so a call is asked about once. A purpose is a model's reading, marked ✦, never a measurement` +
-    (a.total > a.calls ? `\nthe first ${fint(a.calls)} of ${fint(a.total)} distinct calls are asked about (annotate.max_calls)` : '');
+    `ask ${info.provider}${info.model ? ` (${info.model})` : ''}${where} what each tool call was for, from its masked command line ` +
+    `and folder alone. A purpose is a model's reading, marked ✦, never a measurement` +
+    (a.total > a.calls ? `\nthe first ${fint(a.calls)} of ${fint(a.total)} distinct calls are asked about` : '');
   let status: string | null = null;
   if (busy && job && job.about != null && job.about !== a.sid)
     status = `waiting on another session's request to ${job.label}`;

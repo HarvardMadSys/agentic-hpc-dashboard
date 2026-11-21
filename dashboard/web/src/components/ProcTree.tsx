@@ -617,12 +617,8 @@ const RowView = memo(function RowView({
       );
     tip =
       c.k === 'agg'
-        ? `${
-            newest ? "the oldest, past the newest the inspector's hold budget draws" : "past the inspector's hold budget"
-          }: counted with their CPU and time span under this parent, but not drawn one by one`
-        : newest
-          ? 'past the number of rows the inspector serves, which it allots breadth first and newest first: counted here, the deepest levels of the oldest first to go'
-          : 'past the number of rows the inspector serves, which it allots breadth first: counted here, deepest levels first to go';
+        ? `${newest ? 'the oldest: ' : ''}counted with their CPU and time span under this parent, not drawn one by one`
+        : 'past the rows the inspector serves: counted here, not drawn';
     cells = [
       when(c.start, lo),
       <span key="d">{c.start != null && c.end != null ? dur(c.end - c.start) : DASH}</span>,
@@ -768,10 +764,8 @@ export const ProcTree = memo(function ProcTree({
                   }
                 : undefined
             }
-            data-tip={`each process's children by when they started, ${
-              newest
-                ? 'newest first. The newest are the ones drawn in full; the oldest are counted in ⋯ rows'
-                : 'oldest first. In a busy session the newest are the ones counted in ⋯ rows'
+            data-tip={`${
+              newest ? 'the oldest are counted in ⋯ rows' : 'in a busy session, the newest are counted in ⋯ rows'
             }${flip ? `\nclick: ${newest ? 'oldest' : 'newest'} first` : ''}`}
           >
             started
@@ -780,13 +774,13 @@ export const ProcTree = memo(function ProcTree({
             </span>
           </div>
           <div className="num">took</div>
-          <div className="num" data-tip="the process's own cpu_s">
+          <div className="num" data-tip="its own CPU">
             cpu s
           </div>
-          <div className="num" data-tip="own cpu_s plus everything below it; child_cpu_s is never added">
+          <div className="num" data-tip="its own CPU plus everything below it">
             Σ CPU s
           </div>
-          <div className="num" data-tip="bytes requested through read() and write() calls -- pipes and terminals included -- by it and everything below it; hover a cell for disk and network">
+          <div className="num" data-tip="bytes requested through read() and write(), pipes and terminals included, by it and everything below it">
             Σ I/O
           </div>
           <div className="num" data-tip="processes in the subtree, itself included">

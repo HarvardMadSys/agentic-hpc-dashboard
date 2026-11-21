@@ -54,7 +54,7 @@ export function rankEndpoints(rows: EndpointRow[], cls: readonly string[], by: E
 
 function whence(r: EndpointRow, rdns: boolean): string {
   if (r.pending) return 'name lookup in progress: listed by what is known so far';
-  if (r.source === 'dns') return 'named by reverse DNS, looked up where the dashboard runs';
+  if (r.source === 'dns') return 'named by reverse DNS';
   if (r.source === 'argv') {
     return rdns
       ? 'named by a process’s command line: reverse DNS has no name for it'
@@ -127,7 +127,7 @@ export function NetEndpoints({ ep, have, byClass }: {
             <thead>
               <tr>
                 <SortTh s={s} k="rank" num first="asc" tip={`the rank by ${by === 'calls' ? 'calls' : 'bytes'}`}>#</SortTh>
-                <SortTh s={s} k="name" first="asc" tip="reverse DNS, looked up where the dashboard runs, else a name a process’s command line gave, else the address; hover a name for its addresses and ports">endpoint</SortTh>
+                <SortTh s={s} k="name" first="asc" tip="a name from reverse DNS or a command line, else the address; hover for its addresses and ports">endpoint</SortTh>
                 <SortTh s={s} k="calls" num tip="send and receive calls">calls</SortTh>
                 <SortTh s={s} k="tx" num tip="bytes sent to it">sent</SortTh>
                 <SortTh s={s} k="rx" num tip="bytes received from it">received</SortTh>
@@ -174,10 +174,10 @@ export function NetEndpoints({ ep, have, byClass }: {
         <div className="nm">no endpoint was listed for the selected classes</div>
       )}
       <div className="nm net-ends-note">
-        {`${fint(ep.names)} endpoints from ${fint(ep.addresses)} addresses in the window, counted as each process exited.`}
+        {`${fint(ep.names)} endpoints from ${fint(ep.addresses)} addresses in the window.`}
         {panel > 0 && ` Endpoints are known for ${pc((100 * listed) / panel)} of the bytes in the per-class table.`}
         {lost > 0 && ` The collector listed no endpoint for ${mb(lost / MB)}.`}
-        {missing > 0 && ` ${fint(missing)} process${missing === 1 ? '' : 'es'} moved bytes without an endpoint list, from a collector before schema 7 or one without its endpoint probes.`}
+        {missing > 0 && ` ${fint(missing)} process${missing === 1 ? '' : 'es'} moved bytes without an endpoint list.`}
         {ep.pending > 0 && ` ${fint(ep.pending)} name${ep.pending === 1 ? ' is' : 's are'} still being looked up.`}
         {!ep.rdns && ' Reverse DNS is off, so only command lines name endpoints.'}
       </div>

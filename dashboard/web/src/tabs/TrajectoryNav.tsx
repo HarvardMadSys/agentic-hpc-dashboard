@@ -1049,7 +1049,7 @@ export function TrajectoryNav({
           />
         )
       ) : (
-        <div className="nm">{`no navigator in this payload ${DASH} the service predates it`}</div>
+        <div className="nm">{`no navigator ${DASH} the service predates it`}</div>
       )}
       <div className="tn-foot">
       <div className="tn-quick" role="toolbar" aria-label="jump to">

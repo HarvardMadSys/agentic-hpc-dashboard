@@ -19,11 +19,7 @@ import { ResourcesTab } from './ResourcesTab';
 export const InternalTab = memo(function InternalTab({ P, cls }: { P: Panels; cls: Cls[] }) {
   return (
     <>
-      <p className="intro">
-        Panels whose takeaway we have not settled yet, and the detail behind the operator tabs.
-        They are here for us to discuss, and may change, move to a main tab, or go.
-      </p>
-      <div className="rowlabel">resources and I/O · the distributions and counters behind the Resources tab</div>
+      <div className="rowlabel">resources and I/O</div>
       <ResourcesTab P={P} cls={cls} part="internal" />
     </>
   );
