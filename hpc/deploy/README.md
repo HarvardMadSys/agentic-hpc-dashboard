@@ -7,6 +7,8 @@ host to each node carries the node's collector files, compressed, into a private
 serves the page on `127.0.0.1`, behind a password. Everything is set in one file,
 `site.env`, and the kit needs no root on any machine.
 
+On servers where you have root, [`deploy/`](../../deploy/README.md) is simpler: one server
+that runs the collector and the dashboard, or a fleet whose files one host pulls with rsync.
 For a public page over synthetic data, use the demo instead:
 [`deploy/cloudflare`](../../deploy/cloudflare/README.md) and [`docker/demo`](../../docker/demo/Dockerfile).
 The demo writes its own made-up feed, and its Worker asks for a password of its own. This

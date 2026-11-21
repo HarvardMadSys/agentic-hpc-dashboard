@@ -162,9 +162,23 @@ As an image (`docker/demo/Dockerfile`), or on a public URL behind a Cloudflare W
 <https://dashboard-demo.agentic-system.org>: [`deploy/cloudflare`](deploy/cloudflare/README.md),
 redeployed from `develop` by `.github/workflows/demo-deploy.yml` whenever a push changes it.
 
-The real service, live, on a host of your own: [`hpc/deploy`](hpc/deploy/README.md)
-streams each node's collector files to that host over ssh (`hpc/fleet/fleet_stream.py`) and
-runs the dashboard over them behind a password, all set from one settings file.
+## Deploying -- the collector and the dashboard together
+
+The real service, live, behind a password, in one of three layouts:
+
+| Layout | What runs where | Guide |
+|---|---|---|
+| **single** | one server runs the collector and the dashboard, which reads the collector's folders | [`deploy/single`](deploy/single/README.md) |
+| **fleet** | every node runs the collector and keeps its files; one more host runs the dashboard and copies each node's files with rsync (`deploy/fleet/pull.py`) | [`deploy/fleet`](deploy/fleet/README.md) |
+| **HPC** | a cluster's login nodes, with no root anywhere: the nodes' files stream to a host of your own over ssh (`hpc/fleet/fleet_stream.py`), all set from one settings file | [`hpc/`](hpc/README.md) |
+
+```bash
+sudo deploy/single/install.sh                 # single: the collector's two units, then the dashboard's
+```
+
+The first two run the collector and the dashboard as systemd units on servers where you
+have root; [`deploy/README.md`](deploy/README.md) says what each piece is, where it keeps
+things, and how to open, watch, and upgrade it.
 
 ## Configuration -- Dashboard
 ```bash

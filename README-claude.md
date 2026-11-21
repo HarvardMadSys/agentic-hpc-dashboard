@@ -100,7 +100,8 @@ uv run python -m rc_dashboard demo                 # http://127.0.0.1:8080
 | [`collector/VENDORED.md`](collector/VENDORED.md) | the five copied modules, why copies rather than symlinks, and the sync rule `ebpfm.sh check` enforces |
 | [`dashboard/README.md`](dashboard/README.md) | feed resolution and config precedence, the history store (sealed days as Parquet), the 24 h window, the REST/WS API, the panel conventions, known collector limitations the page surfaces |
 | [`dashboard/web/README.md`](dashboard/web/README.md) | the SPA: tabs, charts, filter/URL state, the dev fixture, and the integrity rules the code enforces |
-| [`hpc/deploy/README.md`](hpc/deploy/README.md) | the live service on a host of your own: the fleet stream from each node, the settings file, the first deploy, memory and disk, and the hourly check |
+| [`deploy/README.md`](deploy/README.md) | the live service on servers where you have root, two ways: one server that runs the collector and the dashboard ([`single`](deploy/single/README.md)), or a fleet whose files one host copies with rsync ([`fleet`](deploy/fleet/README.md), and why the copy appends in place) |
+| [`hpc/README.md`](hpc/README.md) | what is HPC-specific and lives apart: the fleet stream over ssh, and [`hpc/deploy/README.md`](hpc/deploy/README.md), the no-root kit for a cluster's login nodes (the settings file, the first deploy, memory and disk, the hourly check) |
 | [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) | the demo, over a synthetic feed, on a public URL |
 
 ## The rules both halves obey
@@ -131,8 +132,10 @@ same rules:
 cd collector && python3 -m unittest discover -s tests -q    # no root, no BPF needed
 cd dashboard && uv run python -m unittest discover -s tests -q   # ingest: restarts, the hand-off, backfill order
 cd dashboard/web && npm run typecheck && npm run check:no-random
-python3 -m unittest discover -s hpc/fleet/tests -q      # the fleet stream, over a fake collector
-python3 -m unittest discover -s hpc/deploy/tests -q     # the deploy kit, with stand-ins for systemd, tmux, and ssh
+python3 -m unittest discover -s deploy/fleet/tests -q   # pull.py, with rsync for real and stand-in nodes
+python3 -m unittest discover -s deploy/common/tests -q  # the single and fleet installers, with stand-ins for systemd
+python3 -m unittest discover -s hpc/fleet/tests -q      # the HPC fleet stream, over a fake collector
+python3 -m unittest discover -s hpc/deploy/tests -q     # the HPC deploy kit, with stand-ins for systemd, tmux, and ssh
 ```
 
 ## A note on paths

@@ -29,7 +29,7 @@ sudo ./ebpfm.sh check           # expect 0 FAIL
 sudo ./ebpfm.sh start           # both tiers; the eBPF one in system.slice (see below)
 sudo ./ebpfm.sh status
 sudo ./ebpfm.sh stop            # SIGTERM -> flushes live processes as `truncated`
-sudo ./ebpfm.sh install-unit    # persistent systemd unit, for a fleet deployment
+sudo ./ebpfm.sh install-unit    # persistent systemd units, one per tier
 ```
 
 `EBPFM_TIER=node|ebpf|all` overrides the privilege-derived default. The node tier's
@@ -47,6 +47,15 @@ survive a reboot and has no restart policy. For a fleet, `install-unit` writes
 (`run.sh`) deliberately does **not** manage the eBPF tier — it is unprivileged and cannot
 `sudo` across the fleet — so systemd supervises it and `collect/healthcheck.py` is what
 notices when it dies.
+
+`install-unit` also writes `ebpfm-node.service`, the node tier's loop (the one `start`
+runs with `nohup`) under systemd, writing to `EBPFM_NODE_OUTPUT_DIR`. Neither unit is
+enabled by it: `systemctl enable --now ebpfm ebpfm-node`. While `ebpfm-node` is active,
+`start`, `stop` and `status` defer to it, so the loop never runs twice. Beside the eBPF
+tier it collects in `SNAPSHOT_MODE=node`; on a host without the eBPF tier, set
+`SNAPSHOT_MODE=full` in `/etc/default/ebpfm`. `EBPFM_UNIT_DIR` installs both somewhere
+other than `/etc/systemd/system`. [`deploy/`](../deploy/README.md) runs both units on each
+server of its two modes.
 
 `Restart=on-failure`, never `always`, and nothing restarts it periodically: SIGTERM makes
 it flush every live tracked process as `truncated`, so a cycle-time restart would corrupt
