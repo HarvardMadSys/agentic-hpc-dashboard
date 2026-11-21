@@ -2,7 +2,7 @@
 
 The collector writes each login node's day-files on that node's own disk. The programs here
 bring them to the one host that runs the dashboard, as they are written, so the dashboard
-reads every node at once. [`deploy/fleet`](../deploy/fleet/README.md) is the kit that sets
+reads every node at once. [`hpc/deploy`](../deploy/README.md) is the kit that sets
 them up and keeps them running; this page says what each program is, for running or
 changing one outside the kit.
 
@@ -60,7 +60,7 @@ python3 fleet_stream.py status --base <base>
 ## `seed_mirror.py`
 
 ```bash
-python3 fleet/seed_mirror.py PULL BASE [--hosts HOST ...] [--inflate] [--free-min-gb GB]
+python3 hpc/fleet/seed_mirror.py PULL BASE [--hosts HOST ...] [--inflate] [--free-min-gb GB]
 ```
 
 Copies each `PULL/<host>/<day>/<name>.jsonl.gz` into `BASE/mirror/<host>/<day>/`, checking
@@ -78,8 +78,8 @@ inflate, or no room); 2 if it refused.
 ## `pull-gz.sh`
 
 ```bash
-SOURCE_USER=<account> SOURCE_NODES="<node> ..." fleet/pull-gz.sh PULL
-(set -a; . deploy/fleet/site.env; fleet/pull-gz.sh PULL)     # the kit's settings
+SOURCE_USER=<account> SOURCE_NODES="<node> ..." hpc/fleet/pull-gz.sh PULL
+(set -a; . hpc/deploy/site.env; hpc/fleet/pull-gz.sh PULL)     # the kit's settings
 ```
 
 rsyncs only the sealed days, `*.jsonl.gz` under `SOURCE_ROOT` (default `/scratch/ebpfm`), from
@@ -92,7 +92,7 @@ Exit 0; 1 if a node failed (the others are still pulled); 2 for a usage error.
 ## Tests
 
 ```bash
-python3 -m unittest discover -s fleet/tests -q
+python3 -m unittest discover -s hpc/fleet/tests -q
 ```
 
 They run the sender and the receiver against a fake collector (`tests/fakecollector.py`),

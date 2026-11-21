@@ -86,7 +86,7 @@ NO_PASSWORD = ("this dashboard has no password, and Ask runs only behind one, si
 AGENT_ENV = frozenset((
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TERM",
     "LD_LIBRARY_PATH", "CODEX_HOME",
-    # systemd-run --user, as deploy/fleet runs the agent, finds the user manager by these
+    # systemd-run --user, as hpc/deploy runs the agent, finds the user manager by these
     "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
     "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
     # passed as they are, a user and password in the URL included (README, Ask LLM)
