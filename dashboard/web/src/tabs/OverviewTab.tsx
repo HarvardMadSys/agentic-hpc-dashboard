@@ -183,7 +183,6 @@ export const OverviewTab = memo(function OverviewTab({
           { panel: 'resources', keys: ['by_class', 'top', 'oncpu_set_aside'] },
           { panel: 'io_process', keys: ['by_class'] },
           { panel: 'slurm', keys: ['by_class'] },
-          { panel: 'live', keys: ['now'] },
         ]}
         p={tm}
         span

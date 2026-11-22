@@ -43,12 +43,11 @@ function latest(rate: LiveResponse['rate'], c: string): number | null {
 
 /* `roots` is the count of live agent and IDE session trees on the host: the
  * word a reader meets is "sessions" (roadmap note 14). A node's load and CPU
- * are the node tier's, on Login node health (tabs/NodeHealth.tsx): the live
- * frame's rows carry them as null, so this table has no column for them. */
+ * are the node tier's, on Login node health (tabs/NodeHealth.tsx), so this
+ * table has no column for them. */
 const HOST_COLS: [key: string, lbl: string, kind: 'int' | 'num', gloss?: string][] = [
   ['roots', 'sessions', 'int', 'sessions_now'],
   ['procs', 'running', 'int', 'running'],
-  ['events', 'exited', 'int', 'exited'],
   ['rss_gb', 'memory GB', 'num', 'rss'],
   ['d_state', 'D-state', 'int', 'dstate'],
   ['users', 'users', 'int', 'user'],
@@ -359,7 +358,7 @@ export const LiveTab = memo(function LiveTab({
 
         <Panel
           title={`${nodes.Many} right now`}
-          ask={[{ panel: 'live', keys: ['hosts', 'now'] }]}
+          ask={[{ panel: 'live', keys: ['hosts'] }]}
           span
           live
           feed={liveFeed?.name ?? 'live'}

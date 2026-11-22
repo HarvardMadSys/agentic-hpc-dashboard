@@ -885,7 +885,7 @@ export const ActiveUsers = memo(function ActiveUsers(props: UsersProps & { goto?
     <Panel
       id="live-users"
       title="Active users"
-      ask={[{ panel: 'live', keys: ['users', 'now'] }]}
+      ask={[{ panel: 'live', keys: ['users'] }]}
       span
       live
       feed="live"

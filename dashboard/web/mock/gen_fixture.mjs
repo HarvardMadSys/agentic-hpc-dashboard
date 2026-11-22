@@ -256,7 +256,7 @@ const EBPFM_PATHS = ['/var/log/ebpfm/exit_2026-09-14.jsonl', '/var/log/ebpfm/exi
 
 function toolMix() {
   const by_class = {};
-  const head = {};
+  const tools = {};
   for (const c of CLASSES) {
     const calls = CALLS[c];
     const cpu = CPU[c];
@@ -274,13 +274,28 @@ function toolMix() {
         };
       }),
     };
-    head[c] = TOOLS.slice(0, 12).map(([t], i) => {
+    // the busiest tools by every resource, each row carrying all of them (reducers/tools.py `_tools`)
+    const io = TOOLS.slice(0, 12).map(([t], i) => (t === 'rsync' || t === 'cat' ? 900 : 60) * (1 + wob(i, 7)));
+    const net = TOOLS.slice(0, 12).map(([t], i) => (t === 'git' || t === 'rsync' ? 240 * (1 + wob(i, 9)) : 0));
+    const ioTot = io.reduce((a, v) => a + v, 0) * 1.3;
+    const netTot = net.reduce((a, v) => a + v, 0) * 1.3;
+    tools[c] = TOOLS.slice(0, 12).map(([t, b], i) => {
       const cp = Number((22 / (i + 1.3)).toFixed(2));
+      const cup = Number((cp * (t === 'pgrep' || t === 'ps' ? 0.02 : 1.4)).toFixed(2));
+      const mem = 20 + (t === 'node' || t === 'python3' ? 900 : 60) * wob(i, 11);
       return {
         tool: t,
+        bucket: b,
         calls: Math.round((calls * cp) / 100),
         calls_pct: cp,
-        cpu_pct: Number((cp * (t === 'pgrep' || t === 'ps' ? 0.02 : 1.4)).toFixed(2)),
+        cpu_s: Number(((cpu * cup) / 100).toFixed(2)),
+        cpu_pct: cup,
+        io_mb: Number(io[i].toFixed(2)),
+        io_pct: Number(((100 * io[i]) / ioTot).toFixed(1)),
+        net_mb: Number(net[i].toFixed(2)),
+        net_pct: Number(((100 * net[i]) / netTot).toFixed(1)),
+        mem_mean_mb: Number(mem.toFixed(1)),
+        mem_max_mb: Number((mem * (2 + wob(i, 13))).toFixed(1)),
       };
     });
   }
@@ -288,7 +303,7 @@ function toolMix() {
     ...ENV('ebpfm', EBPFM_PATHS),
     buckets: BUCKETS,
     by_class,
-    head,
+    tools,
     dedup: {
       dropped: 1_884_662,
       dropped_pct: 21.4,
@@ -431,36 +446,33 @@ function resourceSeries(nowEpoch) {
   const start = Math.floor(nowEpoch / BIN) - N + 1;
   const t = Array.from({ length: N }, (_, i) => (start + i) * BIN);
   const out = (i) => i * 10 >= OUTAGE[0] - 10 && i * 10 < OUTAGE[1];
+  // processes per bin, then CPU, runqueue wait and major faults per process
   const PER_BIN = {
-    agent: [2_100, 0.042, 0.0009, 0.0006, 0.018],
-    'ide': [960, 0.11, 0.0011, 0.0004, 0.31],
-    human: [340, 0.36, 0.0021, 0.0002, 0.42],
+    agent: [2_100, 0.042, 0.0009, 0.018],
+    'ide': [960, 0.11, 0.0011, 0.31],
+    human: [340, 0.36, 0.0021, 0.42],
   };
   const RSS = { agent: 4_400, 'ide': 2_200, human: 38_500 };
   const by_class = {};
   const resident = {};
   for (const [ci, c] of CLASSES.entries()) {
-    const [n, cpu, wait, dst, maj] = PER_BIN[c];
-    const row = { n: [], cpu_s: [], sched_wait_s: [], dstate_wait_s: [], maj_flt: [] };
-    const res = { rss_mb: [], n_procs: [], d_state: [] };
+    const [n, cpu, wait, maj] = PER_BIN[c];
+    const row = { cpu_s: [], sched_wait_s: [], maj_flt: [] };
+    const res = { rss_mb: [] };
     for (let i = 0; i < N; i++) {
       const w = diurnal(i * 10) * (0.7 + 0.6 * wob(i, 40 + ci));
       const k = Math.round(n * w);
       const gap = out(i) || (c === 'human' && i % 23 === 0);
-      const nfs = i > 70 && i < 76; // an NFS hiccup: every class stalls at once
-      row.n.push(gap ? null : k);
       // one long-lived agent exiting: its whole life's CPU in a single bin
       row.cpu_s.push(gap ? null : Number((k * cpu * (c === 'agent' && i === 97 ? 18 : 1)).toFixed(3)));
       row.sched_wait_s.push(gap ? null : Number((k * wait * (1 + 3 * wob(i, 50 + ci))).toFixed(3)));
-      row.dstate_wait_s.push(gap ? null : Number((k * dst * (nfs ? 25 : 1)).toFixed(3)));
       row.maj_flt.push(gap ? null : Math.round(k * maj));
       res.rss_mb.push(out(i) ? null : Number((RSS[c] * (0.8 + 0.4 * diurnal(i * 10))).toFixed(1)));
-      res.n_procs.push(out(i) ? null : Number((40 * w).toFixed(2)));
-      res.d_state.push(out(i) ? null : nfs ? 3 : 0);
     }
     by_class[c] = row;
     resident[c] = res;
   }
+  // an NFS hiccup in bins 71 to 75: every tool stalls at once
   const stall = (i, j) =>
     out(i) ? null : Number(((i > 70 && i < 76 ? 40 : 0.4 * wob(i, 60 + j)) / (j + 1)).toFixed(3));
   return {
@@ -470,7 +482,6 @@ function resourceSeries(nowEpoch) {
     stall_by_tool: Object.fromEntries(TOOLS.slice(0, 6).map(([tool], j) => [tool, t.map((_, i) => stall(i, j))])),
     stall_other: t.map((_, i) => stall(i, 6)),
     resident,
-    resident_hosts: t.map((_, i) => (out(i) ? null : HOSTS.length)),
     skipped: { no_ts: 0, future: 0, clipped_bins: 0 },
   };
 }
@@ -1150,8 +1161,6 @@ function trajectories(nowEpoch) {
       session_scope: sids.filter((s) => rows[s].key_type === 'session_scope').length,
       cgroup: sids.filter((s) => rows[s].key_type === 'cgroup').length,
     },
-    dominant_user_share_pct: 71.4,
-    buffer: { capacity: 4_096, held: sids.length, evicted: 118 },
     basis: 'tool_rle is the run-length encoding of effective_comm in exit order; chains over 4096 runs are truncated',
   };
 }
@@ -1489,16 +1498,7 @@ function cascades(nowEpoch) {
     summary: { trees: 3, nested: 1, hosted: 0, agents: 4, agents_nested: 1, agents_implied: 1, max_agent_depth: 2, max_fanout: 1, trees_without_agents: 2 },
     depth_hist: { 1: 2, 2: 1 },
     fanout_hist: { 1: 1 },
-    edges: [{ parent: 'claude_code agent', child: 'codex agent', n: 1 }],
-    edge_via: { ancestor: 1 },
     trees,
-    role_census: [
-      { agent_type: 'claude_code', role: 'tool-shell', n: 14_212, cpu_s: 210.4, pct: 71.2 },
-      { agent_type: 'codex', role: 'helper', n: 3_120, cpu_s: 12.2, pct: 15.63 },
-      { agent_type: 'codex', role: 'probe', n: 2_210, cpu_s: 40.1, pct: 11.07 },
-      { agent_type: 'claude_code', role: 'agent', n: 412, cpu_s: 1_802.6, pct: 2.06 },
-      { agent_type: 'codex', role: 'sandbox', n: 6, cpu_s: 0.1, pct: 0.03 },
-    ],
     buffer: { nodes: 9, cap: 20_000, dropped: 0 },
     workspace: {
       agents: [
@@ -1963,15 +1963,9 @@ function nodePanel(nowEpoch) {
     const f = (fn) => t.map((_, i) => (gone(i) ? null : fn(i)));
     series.hosts[h] = {
       fork_exec_ms: f((i) => r2((h === slow ? 14 : 1.4) * (1 + 0.3 * wob(i, 70 + hi)) * (hiccup(i) && holy(h) ? 9 : 1))),
-      stat_local_ms: f((i) => r2(0.02 + 0.01 * wob(i, 80 + hi))),
       getent_ms: f((i) => r2((h === slow ? 220 : 4.2) * (1 + 0.4 * wob(i, 90 + hi)))),
       load_1: f((i) => r2((4 + hi * 1.8) * diurnal(i * 10) * (1 + 0.5 * wob(i, 100 + hi)))),
-      iowait_pct: f((i) => r2((hiccup(i) && holy(h) ? 18 : 0.4) * (1 + wob(i, 110 + hi)))),
-      mem_used_pct: f((i) => r2(28 + hi * 6 + 8 * diurnal(i * 10))),
-      d_state: f((i) => (hiccup(i) && holy(h) ? 6 + hi : 0)),
       nfs_rd_rtt_ms: f((i) => r2((hiccup(i) && holy(h) ? 140 : 1.2) * (1 + 0.5 * wob(i, 120 + hi)))),
-      nfs_wr_rtt_ms: f((i) => r2((hiccup(i) && holy(h) ? 310 : 5.1) * (1 + 0.5 * wob(i, 130 + hi)))),
-      nfs_retrans: f((i) => (hiccup(i) && holy(h) ? 2 + (i % 3) : 0)),
       snapshots: f(() => 2),
     };
   }
@@ -2030,8 +2024,7 @@ function nodePanel(nowEpoch) {
     thresholds: { disk_full_pct: 90, inode_full_pct: 90 },
     series: {
       bin_s: BIN, t, interval_s: 300,
-      fields: { fork_exec_ms: 'max', stat_local_ms: 'max', getent_ms: 'max', load_1: 'mean', iowait_pct: 'mean',
-                mem_used_pct: 'mean', d_state: 'max', nfs_rd_rtt_ms: 'max', nfs_wr_rtt_ms: 'max', nfs_retrans: 'max' },
+      fields: { fork_exec_ms: 'max', getent_ms: 'max', load_1: 'mean', nfs_rd_rtt_ms: 'max' },
       hosts: series.hosts, state: 'ready', passes: 4, error: null,
       read: { files: 12, lines: 6_912, bad: 0, bytes: 1_418_224_118 }, held_from: t[0] - 6 * 86_400, days: 8,
     },
@@ -2222,29 +2215,13 @@ function build() {
     },
   };
 
-  /* The plate's minute is the service's last full one: the row before the
-   * minute still filling, and its total is that row's sum. */
   const rate = rateRows(nowEpoch);
-  const lastFull = Object.fromEntries(CLASSES.map((c) => [c, rate[rate.length - 2][c]]));
-  const counted = Object.values(lastFull).filter((v) => v != null);
-  const now = {
-    exits_per_min: counted.length ? counted.reduce((a, v) => a + v, 0) : null,
-    exits_per_min_by_class: lastFull,
-    roots: { agent: 1_405, 'ide': 428, human: 951 },
-    procs: { agent: 18_442, 'ide': 4_118, human: 1_884 },
-    users: { agent: 38, 'ide': 61, human: 142 },
-    rss_gb: 418.6,
-    autonomous_roots: 478,
-  };
 
   const hosts = HOSTS.map((h, i) => ({
     host: h,
     roots: 118 + i * 61,
     procs: 1_884 + i * 418,
-    events: 188_442 - i * 18_000,
     rss_gb: Number((41.2 + i * 18.4).toFixed(1)),
-    cpu_pct: Number((188.4 + i * 61.2).toFixed(1)),
-    load_1: Number((8.4 + i * 3.1).toFixed(1)),
     d_state: i === 2 ? 14 : i === 4 ? 3 : 0,
     users: 18 + i * 7,
     tcp_open_ext: 88 + i * 24,
@@ -2267,7 +2244,6 @@ function build() {
   const live = {
     window: { minutes: BINS, from: new Date((nowEpoch - BINS * 60) * 1000).toISOString(), to: nowIso },
     rate,
-    now,
     hosts,
     events: events(nowEpoch, 400),
     submits,
@@ -2322,7 +2298,6 @@ function build() {
         },
       },
       full_built_at: nowIso,
-      purposes: ['poll', 'slurm_mon', 'slurm_sub', 'build', 'git', 'data', 'compute', 'runtime', 'editor', 'filesearch', 'other'],
     },
     live,
     trajectories: trajectories(nowEpoch),

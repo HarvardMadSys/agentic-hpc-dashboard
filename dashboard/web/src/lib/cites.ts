@@ -75,7 +75,6 @@ const SESSIONS = 'Sessions';
  *  so their rows are found on the tab rather than in a named panel. */
 const PLACES: [string, Place][] = [
   ['panels.tool_mix.tools', { tab: 'agents', panel: 'Top tools', anchor: 'sec-head-of-the-tool-distribution' }],
-  ['panels.tool_mix.head', { tab: 'agents', panel: 'Top tools', anchor: 'sec-head-of-the-tool-distribution' }],
   ['panels.tool_mix.n_tools', { tab: 'agents', panel: 'Top tools', anchor: 'sec-head-of-the-tool-distribution' }],
   ['panels.tool_mix.exits', { tab: 'agents', panel: 'Commands that failed', anchor: 'sec-commands-that-failed' }],
   ['panels.tool_mix', { tab: 'agents', panel: 'Tool mix', anchor: 'sec-tool-mix' }],
@@ -105,7 +104,6 @@ const PLACES: [string, Place][] = [
   ['panels.slurm.rejections', { tab: 'slurm', panel: 'Submissions the scheduler refused' }],
   ['panels.slurm', { tab: 'slurm', panel: 'How each class uses the scheduler' }],
   ['panels.cascades', { tab: 'agents', panel: 'Agents and their subagents', anchor: 'sec-agent-trees' }],
-  ['panels.workspace', { tab: 'agents', panel: 'Agents and their subagents', anchor: 'sec-agent-trees' }],
   ['panels.node.series', { tab: 'live', panel: 'Login node response', anchor: 'sec-node-response' }],
   ['panels.node', { tab: 'resources', panel: 'Login node health', anchor: 'sec-node-health' }],
   ['panels.trend', { tab: 'live', panel: 'Day by day', anchor: 'sec-day-by-day' }],

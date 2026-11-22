@@ -31,7 +31,7 @@ from rc_dashboard.reducers import trajectories as trajmod               # noqa: 
 from rc_dashboard.reducers.phase_log import (FLAGS, OPEN, PAST, PREV, SEEN, TAGS,   # noqa: E402
                                              PhaseLog)
 from rc_dashboard.windows import PanelView                              # noqa: E402
-from test_sessions import HOME, SNAP, cfg, ranked, rec, reduce          # noqa: E402
+from test_sessions import HOME, SNAP, cfg, ranked, rec, reduce, reduced   # noqa: E402
 from test_traj_phases import (T0, bash8, fed, quiet_t0, root8, row_of, s8,   # noqa: E402
                               seam)
 
@@ -128,9 +128,9 @@ class TagsTest(unittest.TestCase):
 
     def test_the_bound_counts_what_it_drops(self):
         with mock.patch.object(trajmod, "MAX_TAGSETS", 2):
-            payload = reduce([root8(T0)]
-                             + [bash8(T0 + 5 * i, 201 + i, "cat f%d.py" % i) for i in range(4)])
-        self.assertEqual(payload["trajectories"]["buffer"]["phase_tag_overflow"], 3)
+            view = reduced([root8(T0)]
+                           + [bash8(T0 + 5 * i, 201 + i, "cat f%d.py" % i) for i in range(4)])
+        self.assertEqual(view.reducers["trajectories"].tag_overflow, 3)
 
     def test_names_survive_the_hour_merge_and_a_pickle(self):
         # Hour one names a.py, the test, and the commit; hour two the test again, c.py, nothing,
@@ -282,11 +282,10 @@ class TagsTest(unittest.TestCase):
             merged = view.reducers["trajectories"]
             hour2 = snapshots.restore(fresh(), pickle.loads(saved[1]))["trajectories"]
             self.assertEqual(hour2.tag_overflow, 1)
-            payload = TM.materialize(view)
+            TM.materialize(view)
         self.assertEqual(ids_of(one), [1, 2, 1, 0, 0])
         self.assertEqual(ids_of(merged), ids_of(one))
         self.assertEqual((one.tag_overflow, merged.tag_overflow), (2, 2))
-        self.assertEqual(payload["trajectories"]["buffer"]["phase_tag_overflow"], 2)
         self.assertEqual(tag_sets(merged), tag_sets(one))
         self.assertTrue(consistent(merged))
 

@@ -347,11 +347,10 @@ export interface ToolClassBlock {
   mem_mb?: number;
   rows: ToolBucketRow[];
 }
-/** One agent type's processes alone: its mix, its top tools, its head. */
+/** One agent type's processes alone: its mix and its top tools. */
 export interface ToolTypeBlock {
   by: ToolClassBlock;
   tools: ToolCostRow[];
-  head: ToolHeadRow[];
   n_tools: number;
 }
 /** One tool, with every resource it used, for sorting by any of them. */
@@ -369,19 +368,12 @@ export interface ToolCostRow {
   mem_mean_mb: number | null;
   mem_max_mb: number | null;
 }
-export interface ToolHeadRow {
-  tool: string;
-  calls: number;
-  calls_pct: number | null;
-  cpu_pct: number | null;
-}
 export interface ToolMix extends PanelEnvelope {
   buckets: string[];
   by_class: Record<string, ToolClassBlock>;
-  head: Record<string, ToolHeadRow[]>;
   /** class -> the top tools by every resource, each with all of them */
   tools?: Record<string, ToolCostRow[]>;
-  /** distinct tools each class ran (the head lists only the top few) */
+  /** distinct tools each class ran (`tools` lists only the busiest) */
   n_tools?: Record<string, number>;
   /** class -> agent type ("" = untagged) -> its share of the class's calls and CPU */
   by_type?: Record<string, Record<string, { calls: number; calls_pct: number | null; cpu_s: number; cpu_pct: number | null }>>;
@@ -584,14 +576,13 @@ export interface ResSeries {
   /** epoch seconds at the start of each bin */
   t: number[];
   /** sums by exit time: a process's whole-life counters land in its exit bin */
-  by_class: Record<string, Record<'n' | 'cpu_s' | 'sched_wait_s' | 'dstate_wait_s' | 'maj_flt'
+  by_class: Record<string, Record<'cpu_s' | 'sched_wait_s' | 'maj_flt'
     | 'rchar_mb' | 'rd_mb' | 'wchar_mb' | 'wr_mb', Bins> & Partial<Record<'net_tx_mb' | 'net_rx_mb', Bins>>>;
   /** D-state seconds per bin for the heaviest stallers; 0 where measured and none */
   stall_by_tool: Record<string, Bins>;
   stall_other: Bins;
   /** sampled from residency ticks: per host mean over the bin, summed over hosts */
-  resident: Record<string, Record<'rss_mb' | 'n_procs' | 'd_state', Bins>>;
-  resident_hosts: (number | null)[];
+  resident: Record<string, Record<'rss_mb', Bins>>;
   skipped: { no_ts: number; future: number; clipped_bins: number };
 }
 export interface Resources extends PanelEnvelope {
@@ -1029,16 +1020,8 @@ export interface Trajectories extends PanelEnvelope {
   rows: Record<string, TrajRow>;
   by_class_counts: Record<string, number>;
   by_key_type: Record<string, number>;
-  fold?: {
-    raw_sessions: number;
-    sessions: number;
-    by_via: Partial<Record<OwnerVia, number>>;
-    index: { entries: number; cap: number; evicted: number } | null;
-  };
-  dominant_user_share_pct?: Partial<Record<TrajRank, number | null>> | null;
   /** Over every session in the window, per class (not just the listed rows). */
   summary?: Record<string, TrajSummary>;
-  buffer: unknown;
   basis: string;
 }
 
@@ -1532,10 +1515,7 @@ export interface Cascades extends PanelEnvelope {
   };
   depth_hist?: Record<string, number>;
   fanout_hist?: Record<string, number>;
-  edges?: { parent: string; child: string; n: number }[];
-  edge_via?: Partial<Record<CascadeVia, number>>;
   trees?: CascadeTree[];
-  role_census?: { agent_type: string | null; role: string; n: number; cpu_s: number; pct: number }[];
   buffer?: { nodes: number; cap: number; dropped: number };
   workspace?: Workspace | null;
   basis?: Record<string, unknown>;
@@ -1546,12 +1526,10 @@ export interface Cascades extends PanelEnvelope {
 export interface PanelsResponse {
   panels: Record<string, PanelEnvelope & Record<string, unknown>>;
   full_built_at: string | null;
-  node_built_at: string | null;
   window: WindowSpec;
   window_status: WindowStatus;
   filter?: ViewFilterBlock;
   facets?: Facets | null;
-  purposes: string[] | Record<string, string> | null;
 }
 
 /* ------------------------------------------------------------------ live */
@@ -1564,9 +1542,6 @@ export interface RateRow {
   human: number | null;
   ide: number | null;
   [k: string]: string | number | null;
-}
-export interface LiveNow {
-  [k: string]: number | string | null | undefined;
 }
 export interface LiveHost {
   host: string;
@@ -1779,7 +1754,6 @@ export interface LiveResponse {
     retained_minutes?: number | null;
   };
   rate: RateRow[];
-  now: LiveNow;
   hosts: LiveHost[];
   events: LiveEvent[];
   events_tail_depth?: number | null;
@@ -1825,10 +1799,6 @@ export interface LiveUserRow {
   last_epoch: number | null;
 }
 export interface LiveUsers {
-  /** distinct accounts: a person in three classes is one */
-  total: number;
-  by_class: Partial<Record<string, number>>;
-  with_live_agent: number;
   /** class -> agent type -> users with such a session running now */
   running_by_type?: Partial<Record<string, Record<string, number>>>;
   /** the busiest first; the frame carries only the top `rows.length` */
@@ -2563,9 +2533,7 @@ export interface NodeDisk {
   /** at or past the service's line for space or inodes (`thresholds`) */
   full?: boolean;
 }
-export type NodeField =
-  | 'fork_exec_ms' | 'stat_local_ms' | 'getent_ms' | 'load_1' | 'iowait_pct'
-  | 'mem_used_pct' | 'd_state' | 'nfs_rd_rtt_ms' | 'nfs_wr_rtt_ms' | 'nfs_retrans';
+export type NodeField = 'fork_exec_ms' | 'getent_ms' | 'load_1' | 'nfs_rd_rtt_ms';
 /** The node tier over the window, per host (rc_dashboard/nodehist.py). */
 export interface NodeSeries {
   bin_s: number;

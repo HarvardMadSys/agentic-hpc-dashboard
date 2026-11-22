@@ -38,20 +38,14 @@ from . import fastjson, gz
 from .feedfile import dated_dirs, host_of
 from .reducers.resources import BIN_STEPS_S, _local_epoch, bin_for
 
-# What each snapshot keeps, and how a bin of them is read: a latency is the
-# bin's worst -- the slowest probe a person could have met in it -- a level its
-# mean, and a count its most.
+# What each snapshot keeps -- the four probes Live draws (NodeResponse.tsx) --
+# and how a bin of them is read: a latency is the bin's worst, the slowest probe
+# a person could have met in it, and a level its mean.
 FIELDS = (
     ("fork_exec_ms", "max"),    # responsiveness: start a process
-    ("stat_local_ms", "max"),   # responsiveness: stat a local file
     ("getent_ms", "max"),       # responsiveness: look an account up
     ("load_1", "mean"),         # load average over a minute
-    ("iowait_pct", "mean"),     # CPU time waiting on I/O, every core
-    ("mem_used_pct", "mean"),   # memory in use, of the node's total
-    ("d_state", "max"),         # processes in D state, node-wide
     ("nfs_rd_rtt_ms", "max"),   # the slowest NFS mount's read round trip
-    ("nfs_wr_rtt_ms", "max"),   # ... and write round trip
-    ("nfs_retrans", "max"),     # NFS retransmissions in nfsiostat's interval, all mounts
 )
 KEYS = tuple(k for k, _how in FIELDS)
 
@@ -71,28 +65,13 @@ def point(rec):
     """A snapshot's FIELDS, in order, None where it did not report one."""
     up = rec.get("uptime") or {}
     resp = rec.get("responsiveness") or {}
-    mem = ((rec.get("memory") or {}).get("mem") or {})
-    cpu_all = next((c for c in (rec.get("cpu") or [])
-                    if isinstance(c, dict) and c.get("cpu") == "all"), {})
-    total, used = _num(mem.get("total_gb")), _num(mem.get("used_gb"))
     # nfsiostat lists only the mounts that did I/O in its interval: none listed
     # is no round trip measured, not a round trip of 0
-    nfs = [m for m in (rec.get("nfs_io") or []) if isinstance(m, dict)]
-
-    def worst(key):
-        vals = [v for v in (_num(m.get(key)) for m in nfs) if v is not None]
-        return max(vals) if vals else None
-
-    retr = [(_num(m.get("rd_retrans")) or 0) + (_num(m.get("wr_retrans")) or 0)
-            for m in nfs if _num(m.get("rd_retrans")) is not None
-            or _num(m.get("wr_retrans")) is not None]
-    dst = rec.get("d_state_procs")
+    rtts = [v for v in (_num(m.get("rd_rtt_ms")) for m in (rec.get("nfs_io") or [])
+                        if isinstance(m, dict)) if v is not None]
     return (
-        _num(resp.get("fork_exec_ms")), _num(resp.get("stat_local_ms")),
-        _num(resp.get("getent_ms")), _num(up.get("load_1")), _num(cpu_all.get("iowait")),
-        round(100.0 * used / total, 1) if total and used is not None else None,
-        len(dst) if isinstance(dst, list) else None,
-        worst("rd_rtt_ms"), worst("wr_rtt_ms"), sum(retr) if retr else None,
+        _num(resp.get("fork_exec_ms")), _num(resp.get("getent_ms")),
+        _num(up.get("load_1")), max(rtts) if rtts else None,
     )
 
 

@@ -8,8 +8,7 @@
  * - Count every classifier-tagged process as an agent. The collector tags any
  *   process whose argv mentions ~/.claude, ~/.codex or ~/.vscode-server, which
  *   makes thousands of "nested agents" a day out of tool-call shells, embedded
- *   ripgrep and version probes. Only role `agent` is an agent here; the rest
- *   of what was tagged is still in the payload's `role_census`.
+ *   ripgrep and version probes. Only role `agent` is an agent here.
  * - Call hosting nesting. A daemon or a remote server running eight sessions is
  *   fan-out from infrastructure, not an agent inside an agent; `nested` counts
  *   only agent-under-agent paths.
@@ -1288,7 +1287,7 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
         <div className="grid wide">
           <Panel
             title="Agents and their subagents"
-            ask={[{ panel: 'cascades', keys: ['summary', 'trees', 'role_census', 'workspace.summary'] }]}
+            ask={[{ panel: 'cascades', keys: ['summary', 'trees', 'workspace.summary'] }]}
             id="sec-agent-trees"
             p={c}
             span

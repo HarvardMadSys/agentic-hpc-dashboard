@@ -622,8 +622,10 @@ class Aggregator:
             status = view.status()
             out = {}
             for key, payload in (view.payload or {}).items():
-                if key in ("trajectories", "facets") or key.startswith("_"):
-                    continue                       # /api/trajectories; below; internal
+                # /api/trajectories; below; the workspace reducer's counters, which
+                # `cascades.workspace.buffer` serves; internal
+                if key in ("trajectories", "facets", "workspace") or key.startswith("_"):
+                    continue
                 body = dict(payload) if isinstance(payload, dict) else {"rows": payload}
                 # What this adds is the service's own, read as it serves -- the
                 # feed's status (`panel_meta`, whose `_notice` says how old the feed
@@ -663,19 +665,16 @@ class Aggregator:
             trend["_filter"] = None
             out["trend"] = trend
             res = {"panels": out,
-                   # The node tier is a snapshot of current state, not a window
-                   # aggregate, so it keeps its own build stamp.
+                   # The window's build stamp; before it has one, the node tier's,
+                   # which is a snapshot of current state, not a window aggregate.
                    "full_built_at": status["built_at"] or self.node_built_at,
-                   "node_built_at": self.node_built_at,
                    "window": win,
                    "window_status": status,
                    "filter": flt.block(),
                    # Who and what the window holds, for the filter's choices:
                    # the unfiltered view's counts, whichever view this is.
                    "facets": facets,
-                   "purposes": self.norm.purposes,
-                   "purpose_src": self.norm.purpose_src,
-                   "classes": self.classes}
+                   "purpose_src": self.norm.purpose_src}
         # The endpoints, named and ranked on the way out (endpoints.py), after
         # the lock: this reads only the response's own copy of the panel.
         out["io_process"] = endpoints.serve(out["io_process"], self.rdns, self.classes)
@@ -733,7 +732,7 @@ class Aggregator:
     # What a question about one panel may read besides the window's panels:
     # the live tier's small sections (never its per-minute series or its event
     # stream), and the ranked sessions, in these fields.
-    ASK_LIVE = ("now", "users", "hosts", "submits", "window")
+    ASK_LIVE = ("users", "hosts", "submits", "window")
     ASK_SESSION_KEYS = ("sid", "user", "actor3", "agent_type", "n_events", "cpu_s", "wall_s",
                         "distinct_tools", "chain_runs", "peak_rss_mb", "io_rd_mb", "io_wr_mb",
                         "net_tx_mb", "net_rx_mb", "sandbox", "approval", "host", "first",
@@ -909,7 +908,7 @@ class Aggregator:
                                              for k in keys)):
                 raise ValueError("context.parts[].keys: a list of field names")
             if key == "live":
-                want = keys or ["now", "users", "hosts"]
+                want = keys or ["users", "hosts"]
                 bad = [k for k in want if k not in self.ASK_LIVE]
                 if bad:
                     raise ValueError("the live tier has no %s to ask about" % ", ".join(bad))

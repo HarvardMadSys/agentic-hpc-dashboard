@@ -62,9 +62,11 @@ class CascadeTest(unittest.TestCase):
         p = reduce(recs)
         c = p["cascades"]
         self.assertEqual(c["summary"]["nested"], 1)
-        self.assertEqual(tree_of(p, 100)["agent_depth"], 2)
-        self.assertIn({"parent": "claude_code agent", "child": "codex agent", "n": 1},
-                      c["edges"])
+        t = tree_of(p, 100)
+        self.assertEqual(t["agent_depth"], 2)
+        sub, lead = node(t, 250), node(t, 100)
+        self.assertEqual((sub["agent_type"], sub["role"], sub["parent"]), ("codex", "agent", 100))
+        self.assertEqual((lead["agent_type"], lead["role"]), ("claude_code", "agent"))
 
     def test_remote_control_workers_are_hosted_not_nested(self):
         t0 = self.t0
@@ -454,11 +456,6 @@ class CascadeTest(unittest.TestCase):
         (tree,) = panel["trees"]
         self.assertEqual([(n["pid"], n["user"], n["implied"], n["tool_calls"])
                           for n in tree["nodes"]], [(100, "alice", True, 5)])
-
-    def test_the_role_census_counts_what_the_classifier_tagged(self):
-        census = reduce(claude_session(self.t0))["cascades"]["role_census"]
-        got = {(r["agent_type"], r["role"]): r["n"] for r in census}
-        self.assertEqual(got, {("claude_code", "tool-shell"): 2})
 
     def test_a_sandboxed_tool_call_is_not_an_agent_of_its_own(self):
         # Claude Code's sandbox runs a Bash call's shell inside bwrap, behind the sandbox

@@ -25,9 +25,7 @@ by `max_sessions`: past it, whole sessions go, the least recently active first
 
 "Top" is SEVEN rankings, not one: by processes, CPU, memory, disk I/O, network,
 distinct tools, and recency.  A single ranking is dominated by one poll loop
-and one mega-user -- CLAUDE.md records one user at ~81% of agent submissions --
-so each list ships with `dominant_user_share_pct`, letting the panel state its
-own concentration instead of implying a fleet-wide pattern.
+and one mega-user -- CLAUDE.md records one user at ~81% of agent submissions.
 
 Disk I/O is each process's OWN. The collector reads `task->signal->ioac`, which
 the kernel also credits with the I/O of every child the process reaped
@@ -2119,20 +2117,17 @@ class TrajectoryReducer:
         now = now or time.time()
         self._evict(now)
         cutoff = now - self.window_s
-        folded, vias = self.folded()
+        folded = self.folded()[0]
         meta = {s.sid: (via, k) for s, via, k in folded}
         live = [s for s, _, _ in folded
                 if (s.last or 0) >= cutoff and s.kt in self.rankable]
-        ranks, rows, dom = {}, {}, {}
+        ranks, rows = {}, {}
         keyf = {"events": lambda s: s.n, "cpu_s": lambda s: s.cpu,
                 "peak_rss_mb": lambda s: s.rss,
                 "io_mb": lambda s: s.rd + s.wr,
                 "net_mb": lambda s: s.tx + s.rx,
                 "distinct_tools": lambda s: len(s.tools),
                 "recent": lambda s: s.last or 0}
-        # what a user's share of a list is a share OF: the ranked quantity, or
-        # for recency (a time, not an amount) the sessions listed
-        weight = dict(keyf, recent=lambda s: 1)
         # Recency lists real sessions only (`rooted`): a status-bar probe runs
         # every minute, and a tool call still running is a key of its own
         # until its shell's exit says whose it is -- either would hold the top.
@@ -2144,14 +2139,6 @@ class TrajectoryReducer:
             ranks[r] = [s.sid for s in top]
             for s in top:
                 rows.setdefault(s.sid, self._row(s, *meta[s.sid]))
-            if top:
-                byu = collections.Counter()
-                for s in top:
-                    byu[s.user] += weight[r](s)
-                tot = sum(byu.values())
-                dom[r] = pct(byu.most_common(1)[0][1], tot) if tot else 0.0
-            else:
-                dom[r] = None
         by_cls = collections.Counter(s.cls for s, _, _ in folded)
         return {
             "window": {"minutes": self.window_s // 60,
@@ -2160,42 +2147,7 @@ class TrajectoryReducer:
             "rank_by": "recent", "rank_meaning": RANK_MEANING,
             "ranks": ranks, "rows": rows,
             "by_class_counts": dict(by_cls), "by_key_type": dict(self.by_kt),
-            "fold": {"raw_sessions": len(self.sessions), "sessions": len(folded),
-                     "by_via": dict(vias), "cwd_overflow": self.cwd_overflow,
-                     "index": self.procs.result() if self.procs is not None else None},
-            "dominant_user_share_pct": dom,
             "summary": self.summary(live),
-            "buffer": {"sessions": len(self.sessions), "evicted": self.evicted,
-                       "reaped": len(self.own.reaped), "reaped_evicted": self.own.evicted,
-                       # children a parent could not have reaped (own_io.py): dropped
-                       "reaped_rejected": self.own.rejected,
-                       # figures short of their children's, shown as 0
-                       "reaped_clamped": self.own.clamped,
-                       # groups dropped from a pid past own_io.PER_PID
-                       "reaped_crowded": self.own.crowded,
-                       # groups held for an exit that says it reaped none
-                       "reaped_unreaped": self.own.unreaped,
-                       # the phases' joins and bounds, every one counted
-                       "phase_pending": len(self.pend.entries),
-                       "phase_pending_evicted": self.pend.evicted,
-                       "phase_pending_refused": self.pend.refused,
-                       "phase_pending_refused_records": self.pend.refused_records,
-                       "phase_call_index": len(self.calls_at),
-                       "phase_call_index_evicted": self.calls_at_evicted,
-                       "phase_past_due_evicted": self.past_due_evicted,
-                       "phase_exited": len(self.exited),
-                       "phase_exited_evicted": self.exited_evicted,
-                       "phase_late_routed": self.late_routed,
-                       "phase_late_unplaced": self.late_unplaced,
-                       "phase_late_no_start": self.late_no_start,
-                       "phase_late_hops_out": self.late_hops_out,
-                       "phase_late_maybe_evicted": self.late_maybe_evicted,
-                       "phase_untimed": self.phase_untimed,
-                       "phase_reparented": self.phase_reparented,
-                       "phase_unread": self.phase_unread,
-                       "phase_ungrouped": self.phase_ungrouped,
-                       "preview_overflow": self.preview_overflow,
-                       "phase_tag_overflow": self.tag_overflow},
             "basis": {
                 "sessionize": "session_key='apid:<agent_pid>'; absent -> sess (cgroup "
                               "session-(\\d+)\\.scope) -> tty as user@tty -> usr "

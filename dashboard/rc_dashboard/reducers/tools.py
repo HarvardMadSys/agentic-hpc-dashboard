@@ -269,13 +269,6 @@ class ToolMixReducer(Reducer):
                      for b in BUCKETS],
         }
 
-    def _head(self, k):
-        calls = sum(self.t_calls[k].values())
-        cpu = sum(self.t_cpu[k].values())
-        return [{"tool": t, "calls": n, "calls_pct": pct(n, calls),
-                 "cpu_pct": pct(self.t_cpu[k].get(t, 0.0), cpu)}
-                for t, n in self.t_calls[k].most_common(self.head_n)]
-
     def _tools(self, k):
         """The top tools by every resource, as one list: the union of the head_n
         busiest by processes, CPU, disk, network, and memory, each row carrying
@@ -337,15 +330,13 @@ class ToolMixReducer(Reducer):
             "buckets": list(BUCKETS),
             "by_class": {k: self._rows(k) for k in classes},
             "tools": {k: self._tools(k) for k in classes},
-            # the same three for each agent type's processes alone
+            # the same for each agent type's processes alone
             "by_agent_type": {k[len(TYPE):]: {"by": self._rows(k), "tools": self._tools(k),
-                                             "head": self._head(k),
                                              "n_tools": len(self.t_calls[k])}
                               for k in types},
             # class -> agent type -> share of the class's calls and CPU; an
             # untagged process (a person's shell) is the type ""
             "by_type": self._by_type(),
-            "head": {k: self._head(k) for k in classes},
             # how the processes ended, per class and per agent type (`_exits`)
             "exits": {
                 "by_class": {k: self._exits(k) for k in classes},
@@ -358,7 +349,7 @@ class ToolMixReducer(Reducer):
                          "is a reader that went first (`| head`), not a failure."
                          % ", ".join(sorted(EXIT_ANSWERS)),
             },
-            # how many different tools each class ran: the head shows only the top
+            # how many different tools each class ran: `tools` lists only the busiest
             "n_tools": {k: len(self.t_calls[k]) for k in classes},
             "dedup": {"dropped": self.dropped,
                       "dropped_pct": pct(self.dropped, self.total),

@@ -178,7 +178,7 @@ class Served(unittest.TestCase):
         while time.time() < deadline:
             live = json.loads(cls.get("/api/live")[1])
             panels = json.loads(cls.get("/api/panels")[1])
-            if (live.get("users") or {}).get("total") and \
+            if (live.get("users") or {}).get("rows_total") and \
                     (panels.get("window_status") or {}).get("state") == "ready":
                 break
             time.sleep(0.3)
@@ -308,7 +308,7 @@ class LeakTest(Served):
         cases = [
             ("window", None, ""),
             ("risk", {"parts": [{"panel": "risk"}], "title": "Risk", "tab": "Risk"}, ""),
-            ("live users", {"parts": [{"panel": "live", "keys": ["users", "now"]}]}, ""),
+            ("live users", {"parts": [{"panel": "live", "keys": ["users"]}]}, ""),
             ("sessions", {"parts": [{"panel": "trajectories", "rank": "events"}]}, ""),
             ("filtered", {"parts": [{"panel": "io_process"}], "classes": ["agent"]},
              "?user=%s" % alice),

@@ -108,8 +108,8 @@ reduced once per held view. How views are built, saved and resumed:
 | `sandbox` | `reducers/sandbox.py:SandboxReducer` | `exit`; `truncated`, `residency`, `conn`, `netio` for the roots' launch |
 | `slurm` | `reducers/slurm.py:SlurmReducer`; absent with `slurm.enabled` off | `exit`, `submit` |
 | `trajectories` | `reducers/trajectories.py:TrajectoryReducer` | `exit`; `residency`, `conn`, `netio` for the roots' launch (`truncated` is subscribed to and not counted) |
-| `workspace` | `reducers/workspace.py:WorkspaceReducer` | `exit` |
-| `cascades` | `reducers/cascades.py:CascadeReducer` | `exit` (the role census); `exit`, `truncated`, `residency`, `conn`, `netio`, `submit` for its nodes |
+| `workspace`, served as `cascades.workspace.buffer` | `reducers/workspace.py:WorkspaceReducer` | `exit` |
+| `cascades` | `reducers/cascades.py:CascadeReducer` | `exit`, `truncated`, `residency`, `conn`, `netio`, `submit` for its nodes |
 | `facets` | `reducers/facets.py:FacetReducer` | `exit` |
 | `_procs` | `procindex.py:ProcIndex`, the process index the session reducers fold keys through | `exit`, `truncated`, `residency`, `conn`, `netio`, `submit` |
 
@@ -222,7 +222,7 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
 - **CONFIG**: `/api/config` serves the resolved configuration with each key's origin.
 - **ASK** (off unless `ask.enabled`; refused, reading nothing, while the service has no password,
   or while names are anonymized unless `ask.unmasked_answers` is set): `Aggregator.ask` builds a
-  snapshot of the window's `/api/panels` payload, the live payload's `now`, `users`, `hosts` and
+  snapshot of the window's `/api/panels` payload, the live payload's `users`, `hosts` and
   `window`, and the ranked sessions -- or one panel's keys, or one session's process tree read by
   INSPECT -- and compacts it to `ask.context_kb` (120 KB): `ask.py:snapshot` cuts the largest
   section's lists and strings a step at a time (`STEPS`) and drops bulky keys such as series and
@@ -461,11 +461,12 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
 
 - **Shows:** CPU seconds per minute by class, a process's whole-life CPU in its exit's bin.
 - **Records:** `exit`: `_a3`, `_ts_epoch`, `cpu_s`.
-- **Computation:** `ResourceReducer._series_add` counts the record in its bin by class and adds each
-  of its ten series fields (CPU, runqueue wait, D-state wait, major faults, four `io` byte counts,
-  network sent and received), counting the records that had each, so a bin where every record lacked
-  the field is null. `series` lays the bins on one axis, null where a class has no record; the page
-  divides by the bin's minutes. The width (`resources.py:bin_for`) is the first of 1, 2, 5, 10, 15,
+- **Computation:** `ResourceReducer._series_add` adds each of a record's ten series fields to its
+  bin by class (CPU, runqueue wait, D-state wait, major faults, four `io` byte counts, network sent and
+  received), counting the records that had each, so a bin where every record lacked the field is
+  null. `series` lays the bins on one axis, null where a class has no record, and serves nine of them
+  per class: D-state wait only says which bins measured D-state (LV-12). The page divides by the
+  bin's minutes. The width (`resources.py:bin_for`) is the first of 1, 2, 5, 10, 15,
   30 minutes, 1, 2, 3, 6, 12, 24 hours that keeps the window within 240 bins; a merged window folds
   the hours' 60 s bins into it (`ResourceReducer.merge`).
 - **Cost:** about ten dict updates per record; per read, one pass over at most 240 bins (960 held,
@@ -484,7 +485,7 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
 
 - **Shows:** per host, start and account-lookup times, the slowest NFS read, the load
   ([Over the window](../../dashboard/README.md#over-the-window)).
-- **Records:** the node tier's snapshots: ten numbers of each (`nodehist.py:FIELDS`).
+- **Records:** the node tier's snapshots: the four numbers drawn (`nodehist.py:FIELDS`).
 - **Computation:** `NodeHistory.series` bins them to the window: a bin is the window's own width or
   twice the snapshot interval, whichever is wider; a latency bin is the slowest probe in it, a load
   bin its mean; a missing snapshot is a hole. Past five hosts, the page names the five that stand out
@@ -597,9 +598,9 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
 #### LV-21 login nodes right now
 
 - **Shows:** per login node: sessions, processes, memory, D-state, users, external TCP.
-- **Records:** `residency_totals`: `host`, `trees`, `_by_class` (`n_procs`, `threads`, `rss_mb`,
-  `d_state`, `users`), `by_agent_type`, `_tcp_by_class` (`open`, `ext`, `estab`); a host with only
-  `residency` gets a row that says so.
+- **Records:** `residency_totals`: `host`, `trees`, `_by_class` (`n_procs`, `rss_mb`, `d_state`,
+  `users`), `by_agent_type`, `_tcp_by_class` (`ext`); a host with only `residency` gets a row with
+  its name alone.
 - **Computation:** `_totals` keeps each host's newest tick; `result` sums the per-class fields per
   host; `users` adds the collector's per-class counts, so one person in two classes counts twice.
 - **Cost:** per frame, one pass over the hosts.
@@ -737,7 +738,7 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
 | AG-6 | blast radius: directories | BUILD; a byte cell opens IOCMDS | `.dirs` | `WorkspaceReducer.view` · `tabs/AgentsTab.tsx:DirTable` |
 | AG-7 | how deep agents nest; fan-out (histograms) | BUILD | `cascades.depth_hist`, `cascades.fanout_hist` | `CascadeReducer.result` · `tabs/AgentsTab.tsx:AgentsTab`, `charts/primitives.tsx:GroupBars` |
 | AG-8 | tool mix | BUILD; a byte cell opens IOCMDS | `tool_mix.buckets`, `tool_mix.by_class[c].rows`, `by_agent_type` | `reducers/tools.py:ToolMixReducer._rows` · `tabs/ToolPanels.tsx:ToolMixPanel` |
-| AG-9 | top tools | BUILD; a disk or network bar opens IOCMDS | `tool_mix.tools`, `tool_mix.head` | `ToolMixReducer._tools`, `_head` · `tabs/ToolPanels.tsx:HeadPanel` |
+| AG-9 | top tools | BUILD; a disk or network bar opens IOCMDS | `tool_mix.tools` | `ToolMixReducer._tools` · `tabs/ToolPanels.tsx:HeadPanel` |
 | AG-10 | commands that failed | BUILD; a count opens IOCMDS | `tool_mix.exits` | `reducers/tools.py:ToolMixReducer._exits` · `tabs/ExitsPanel.tsx:ExitsPanel` |
 
 #### AG-1 agents by type
@@ -757,8 +758,8 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
 
 - **Shows:** every tree with more than one agent and every lone agent, with launch and reach marks.
 - **Records:** as AG-1, and the sandbox's tool-call verdicts.
-- **Computation:** `CascadeReducer.feed` keeps a node per (host, pid) and a census of exits by
-  (agent type, role). `result` takes the nodes last seen in the window; adds agents known only from
+- **Computation:** `CascadeReducer.feed` keeps a node per (host, pid). `result` takes the nodes last
+  seen in the window; adds agents known only from
   their tool calls; turns unclaimed `bg-spare` sessions into infrastructure (`_idle`, counted in
   `idle_spares`); finds each node's parent (`_parent`: the nearest node up the process index, at
   most 64 hops, never linking two users; for a `bg-pty-host`, its user's only daemon; else the
@@ -769,8 +770,7 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
   calls and recency, and cut to `top_trees`. The page folds three or more alike agents (same user,
   type and start folder) into one row, and marks B (bypass flag), A (auto mode), U (tool calls not
   sandboxed), F (sandbox failed to start) and O (wrote outside its start folder).
-- **Cost:** per record, a dict per node (at most `max_nodes`, 20,000, the rest counted) and a census
-  counter. Per read, each rebuild tick: a parent walk per node, the trajectories' fold, the
+- **Cost:** per record, a dict per node (at most `max_nodes`, 20,000, the rest counted). Per read, each rebuild tick: a parent walk per node, the trajectories' fold, the
   workspace's fold and a view per agent, and a walk of every sandbox tool call. Not measured.
 
 #### AG-3 an agent tree
@@ -841,8 +841,7 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
 
 - **Shows:** per class, the 12 tools with the most of one resource.
 - **Computation:** `_tools` serves the union of the 12 busiest tools by each of those measures,
-  every measure on each row; the page sorts the rows and cuts them to 12. For a payload without
-  `tools`, the page draws `head` (processes and CPU shares) instead.
+  every measure on each row; the page sorts the rows and cuts them to 12.
 - **Cost:** per read, `most_common` over every tool token of a class; the per-class tool maps are
   unbounded.
 
@@ -1437,20 +1436,8 @@ See [Is each collector OK?](../../dashboard/README.md#is-each-collector-ok). No 
 What the service computes and serves but no figure draws: each costs its reducer's work, and some
 reach Ask LLM's snapshot or a panel's basis note.
 
-- **`resources.series.by_class[c].n`**: each class's processes exited per bin; the count is LV-5's,
-  per minute, and each class's share of the window LV-6's.
-- **`load_1` and `cpu_pct` of the live frame's host rows**: always null, being the node tier's
-  (`LiveReducer`), so LV-21 has no column for them; a node's own load and CPU are RE-1's.
-- **`workspace`**: the workspace reducer's own payload is its buffer counters; the per-agent views
-  the page draws are in `cascades.workspace` (AG-4).
-- **`cascades.edges`, `edge_via`, `role_census`**: who starts whom, how each parent was found, and
-  every classifier-tagged process counted by agent type and role.
 - **`trajectories`' `drift`** (cwd drift and the purpose mix's Jensen-Shannon divergence, per row),
-  `dominant_user_share_pct`, `by_key_type`, `by_class_counts`, `fold` and `buffer`.
-- **The live frame's `now` block, and the roster's counts** (`users.total`, `users.by_class`,
-  `users.with_live_agent`): the last full minute's exits by class, the sessions and processes running
-  now, the live agent sessions by launch approval, and the accounts active in the window; in Ask
-  LLM's snapshot (`live_now`).
+  `by_key_type` and `by_class_counts`.
 
 ## What is slow
 

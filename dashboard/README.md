@@ -431,7 +431,7 @@ window on a busy node can take ~1 GB.
 | `GET /api/collectors` | per host, whether its collector is OK: verdict and reasons, heartbeat age, every run and how it ended, probes that could not load ([Is each collector OK?](#is-each-collector-ok)) |
 | `GET /api/windows` | offered windows, the retention ceiling, and every held window's build state |
 | `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |
-| `GET /api/live?window_min=` | rolling window: per-minute bins, plates, hosts, event tail, submits |
+| `GET /api/live?window_min=` | rolling window: per-minute bins, hosts, the user roster, event tail, submits |
 | `GET /api/live/users?window_min=&q=&limit=&running=` | the user roster past the busiest rows the live frame carries; `q` searches it (the aliases, when names are anonymized), `running=agent:<type>` keeps the accounts with such a session up |
 | `GET /api/live/user?name=&window_min=&n=` | one account: the sessions it has running and its last `n` (25) exited processes |
 | `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#sessions-tasks-phases-and-processes)) |
@@ -575,8 +575,8 @@ mistake once.
   parents at once; a busy login node may need more: raise it while `evicted` grows, at 19 to 80 KB
   for each one added.
 - **"Top" is seven rankings, not one**: `events`, `cpu_s`, `peak_rss_mb`, `io_mb`, `net_mb`,
-  `distinct_tools` and `recent`, each with `dominant_user_share_pct`, because a single ranking is
-  dominated by one poll loop and one mega-user. `recent` lists real sessions only, so a status-bar
+  `distinct_tools` and `recent`, because a single ranking is dominated by one poll loop and one
+  mega-user. `recent` lists real sessions only, so a status-bar
   probe, or a tool call whose shell has not exited yet, cannot hold the top spot. The list is
   re-ranked from the live feed when read (`reducers.trajectories.live_s`, 5 s).
 - **Scope is stated:** the eBPF tier runs on login nodes, so its resource figures describe

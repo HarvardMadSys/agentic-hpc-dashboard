@@ -118,8 +118,8 @@ DROP_KEYS = frozenset((
     "series", "stall_series", "rate", "bins", "t", "events", "instances",
     "top_procs", "nodes", "items", "chain", "purpose", "chain_t", "purpose_t",
     "tool_rle", "purpose_rle", "tool_t", "notes", "basis", "cpu_basis",
-    "impossible_basis", "by_class_detail", "nav", "_paths", "_notice", "_window",
-    "_feed", "_status", "_present", "_filter", "resident_hosts",
+    "impossible_basis", "nav", "_paths", "_notice", "_window",
+    "_feed", "_status", "_present", "_filter",
 ))
 ARGV_KEYS = frozenset(("args", "argv", "cmd", "command_line", "_argv"))
 
@@ -819,7 +819,7 @@ def snapshot(panels, live=None, budget_kb=120, with_argv=False, extra=None,
     drop = DROP_KEYS - frozenset(keep)
     sections = {"panels." + k: v for k, v in (panels or {}).items()}
     if live:
-        sections["live_now"] = {k: live.get(k) for k in ("now", "users", "hosts", "window")
+        sections["live_now"] = {k: live.get(k) for k in ("users", "hosts", "window")
                                 if live.get(k) is not None}
     lines = {}
     for k, v in (extra or {}).items():

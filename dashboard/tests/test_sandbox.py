@@ -408,6 +408,9 @@ class ShareContractTest(unittest.TestCase):
 
 
 class LiveBypassTest(unittest.TestCase):
+    """The live tier's agent roots, each with its own launch approval, which a
+    live account's sessions carry (`LiveReducer.user_detail`)."""
+
     def live(self, recs, now):
         n = Normalizer(TS.cfg())
         lr = LiveReducer(TS.cfg(), ["agent", "human", "ide"])
@@ -415,9 +418,10 @@ class LiveBypassTest(unittest.TestCase):
             r = n.normalize(r)
             if r is not None and r.get("event") in LiveReducer.EVENTS:
                 lr.feed(r)
-        return lr.result(now=now)["now"]
+        lr.result(now=now)
+        return sorted(v["approval"] for v in lr.roots.values())
 
-    def test_bypass_count_comes_from_live_roots(self):
+    def test_bypass_comes_from_the_root_s_own_record(self):
         now = time.time()
         recs = [rec("conn", now - 30, 100, 50, "claude",
                     VSCODE_CLAUDE + "--permission-mode bypassPermissions",
@@ -427,15 +431,13 @@ class LiveBypassTest(unittest.TestCase):
                 # a tool shell saying the flag is not a session saying it
                 rec("conn", now - 30, 102, 100, "zsh", SNAP + "--dangerously-skip-permissions",
                     agent_pid=102, tree_root=40, is_agent=True)]
-        out = self.live(recs, now)
-        self.assertEqual(out["autonomous_roots"], 1)
-        self.assertEqual(out["live_agent_sessions"], 2)
+        self.assertEqual(self.live(recs, now), ["bypassed", "supervised"])
 
-    def test_no_roots_is_null_not_zero(self):
+    def test_a_person_s_command_is_no_root(self):
         now = time.time()
         out = self.live([rec("exit", now - 5, 7, 1, "ls", "ls", agent_pid=None,
                              tree_root=None, actor3="human", tty="pts/1")], now)
-        self.assertIsNone(out["autonomous_roots"])
+        self.assertEqual(out, [])
 
     def test_an_exited_root_is_not_live(self):
         now = time.time()
@@ -444,7 +446,7 @@ class LiveBypassTest(unittest.TestCase):
                              tree_root=100, is_agent=True),
                          rec("exit", now - 10, 100, 50, "claude", args, agent_pid=100,
                              tree_root=100, is_agent=True)], now)
-        self.assertIsNone(out["autonomous_roots"])
+        self.assertEqual(out, [])
 
 
 if __name__ == "__main__":

@@ -103,8 +103,7 @@ Research-integrity constraints: breaking one is a reporting error, not a styling
    classes; outside them the `wait` phase wears it too (`src/lib/phases.ts`). Eight series slots
    and a grey tail (`--sg`): `src/lib/purposes.ts` draws the service's purposes as three kinds
    (slurm, build & compute, files & data) and folds the rest, a new purpose included, into the
-   grey `other` rather than invent a hue; the page does not read the `purposes` list
-   `/api/panels` returns. A series that is not a class (a tool, sent and received) takes its hue
+   grey `other` rather than invent a hue. A series that is not a class (a tool, sent and received) takes its hue
    from `TOOL_COL` (`src/charts/TimeChart.tsx`).
 4. **Zero is not missing**, and each kind of nothing looks like itself. `_present === false`
    renders `<EmptyState>`: the panel's frame, title and feed, and each `_paths` entry verbatim
