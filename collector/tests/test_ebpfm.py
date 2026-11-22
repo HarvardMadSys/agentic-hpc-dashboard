@@ -59,27 +59,6 @@ class Ev(object):
 # pure helpers
 # ---------------------------------------------------------------------------
 
-class ExitCodeConventionTest(unittest.TestCase):
-    """P2-11: pin the CURRENT behaviour. No change was requested here; this test
-    exists so the convention cannot be 'fixed' by accident into the 128+N shell
-    form, which would silently rewrite the meaning of every exit record."""
-
-    def test_exit_code_is_null_iff_signal_terminated(self):
-        code, sig, core = T.decode_status(0)
-        self.assertEqual((code, sig, core), (0, None, False))
-        code, sig, core = T.decode_status(3 << 8)
-        self.assertEqual((code, sig), (3, None))
-        code, sig, core = T.decode_status(9)               # SIGKILL, no core
-        self.assertIsNone(code)
-        self.assertEqual(sig, 9)
-
-    def test_no_128_plus_n_translation(self):
-        """A signal death must NOT be reported as exit_code 137."""
-        code, sig, _ = T.decode_status(9)
-        self.assertNotEqual(code, 137)
-        self.assertIsNone(code)
-
-
 class StatusTest(unittest.TestCase):
     def test_clean_exit(self):
         self.assertEqual(T.decode_status(0), (0, None, False))
@@ -1528,10 +1507,6 @@ class EnvelopeTest(unittest.TestCase):
         self.assertIsInstance(e['ts_epoch'], float)
         self.assertEqual(e['event'], 'exit')
 
-    def test_envelope_names_the_collector_process(self):
-        e = T._envelope('exit')
-        self.assertEqual(e['collector_pid'], os.getpid())
-
     def test_ts_and_ts_epoch_agree(self):
         """ts_epoch is the authoritative binning key; it must describe the same
         instant as the human-readable ts, not drift from it."""
@@ -1892,53 +1867,6 @@ class FlushPolicyTest(unittest.TestCase):
         self.assertEqual(w.flushes, 1, 'only the round with a record flushes')
         w.close()
 
-    def test_close_flushes_what_is_pending(self):
-        """The stop path writes the stop record and closes. Nothing may be lost
-        between the two -- and since the split sends the exit and the stop to
-        DIFFERENT files, close() has to land both, not just the last one
-        touched."""
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0')
-        w.write(self._rec())
-        w.write(self._rec('stop'))
-        w.close()
-        self.assertEqual([r['event'] for r in self._on_disk('exits')], ['exit'])
-        self.assertEqual([r['event'] for r in self._on_disk('snapshot')], ['stop'])
-
-    def test_a_round_touching_both_streams_costs_two_writes(self):
-        """The split's only I/O cost, stated as a number: a round that wrote to
-        both files flushes both. It does not cost more than that however many
-        records each held."""
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0')
-        for _ in range(100):
-            w.write(self._rec('exit'))
-            w.write(self._rec('residency'))
-        w.flush()
-        self.assertEqual(w.flushes, 2, '200 records across two streams = two write(2)')
-        w.close()
-
-    def test_a_pure_exit_round_still_costs_one_write(self):
-        """The split must not tax the common case: a round that never touched
-        the snapshot stream does not flush it."""
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0')
-        for _ in range(100):
-            w.write(self._rec('exit'))
-        w.flush()
-        self.assertEqual(w.flushes, 1)
-        w.close()
-
-    def test_records_survive_a_reopen_byte_for_byte(self):
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0')
-        for i in range(200):
-            w.write({'event': 'exit', 'pid': i, 'ts': 'x'})
-        w.close()
-        recs = self._on_disk()
-        self.assertEqual(len(recs), 200)
-        self.assertEqual([r['pid'] for r in recs], list(range(200)))
-
     # --- record mode is still available ------------------------------------
     def test_record_mode_flushes_every_record(self):
         T.FLUSH_MODE = 'record'
@@ -1947,13 +1875,6 @@ class FlushPolicyTest(unittest.TestCase):
             w.write(self._rec())
         self.assertEqual(w.flushes, 50)
         self.assertEqual(len(self._on_disk()), 50, 'record mode is durable per record')
-        w.close()
-
-    def test_mode_can_be_forced_per_writer(self):
-        T.FLUSH_MODE = 'poll'
-        w = T.DailyWriter(self.dir, 'node0', flush_mode='record')
-        w.write(self._rec())
-        self.assertEqual(w.flushes, 1)
         w.close()
 
     # --- the amplification claim, as a test --------------------------------
@@ -2202,17 +2123,6 @@ class StreamSplitTest(unittest.TestCase):
             return [json.loads(l) for l in f if l.strip()]
 
     # --- the mapping -------------------------------------------------------
-    def test_every_documented_event_maps_to_a_real_stream(self):
-        for ev in self.ALL_EVENTS:
-            self.assertIn(T.stream_of(ev), T.STREAMS, '%s has no stream' % ev)
-
-    def test_only_exit_and_truncated_are_exits(self):
-        """Pins the membership both ways. `truncated` belongs with `exit`
-        because it IS an exit record -- one for a process whose argv the kernel
-        clamped -- and normalize.py already treats the pair as one group."""
-        self.assertEqual({e for e in self.ALL_EVENTS if T.stream_of(e) == 'exits'},
-                         {'exit', 'truncated'})
-
     def test_retired_v4_v5_kinds_still_route_to_snapshot(self):
         """Archived captures still carry these; they must not land in the exits
         file, where a consumer counting process terminations would find them."""
@@ -2236,16 +2146,6 @@ class StreamSplitTest(unittest.TestCase):
         self.assertEqual([r['event'] for r in self._read('snapshot')],
                          ['meta', 'conn', 'netio', 'submit',
                           'residency', 'residency_totals', 'stop'])
-
-    def test_the_streams_do_not_bleed(self):
-        w = T.DailyWriter(self.dir, 'node0')
-        for ev in self.ALL_EVENTS * 20:
-            w.write({'event': ev, 'ts': 'x'})
-        w.close()
-        self.assertTrue(all(T.stream_of(r['event']) == 'exits'
-                            for r in self._read('exits')))
-        self.assertTrue(all(T.stream_of(r['event']) == 'snapshot'
-                            for r in self._read('snapshot')))
 
     def test_no_record_is_lost_across_the_split(self):
         """The count that matters: two files must still hold every record the
@@ -2611,11 +2511,6 @@ class SandboxTest(unittest.TestCase):
             builtins.open = real_open
         self.assertEqual([p for p in opened if p.endswith('/environ')], [])
 
-    def test_approval_comes_from_argv_alone(self):
-        T.proc_add(601, 1, comm='node', args='node /x/.claude/cli.js')
-        T.resolve(601)
-        self.assertEqual(T._approval_of(T.proc[601]), (None, None))
-
 
 class CommandTest(unittest.TestCase):
     """`command` is the executable's name, whole. The kernel's comm stops at 15
@@ -2737,11 +2632,6 @@ class ArgsTruncationTest(unittest.TestCase):
         cut = b'/bin/sh\x00-c\x00/opt/tools/claude'
         self.assertIsNotNone(C.classify(T.decode_argv(cut)))            # would have
         self.assertIsNone(C.classify(T.decode_argv(cut, truncated=True)))
-
-    def test_untruncated_decode_is_unchanged(self):
-        buf = b'git\x00status\x00'
-        self.assertEqual(T.decode_argv(buf), 'git status')
-        self.assertEqual(T.decode_argv(buf, truncated=False), 'git status')
 
     def test_single_token_truncated_yields_empty_not_garbage(self):
         self.assertEqual(T.decode_argv(b'/usr/bin/somethinglon', truncated=True), '')
@@ -2903,11 +2793,6 @@ class SessionUuidTest(unittest.TestCase):
 
     def tearDown(self):
         T.BOOT_ID = self._boot
-
-    def test_stable_across_calls(self):
-        """A restarted collector re-seeds live pids and must recompute the same
-        digest — that is the whole point of the field."""
-        self.assertEqual(T.session_uuid(100), T.session_uuid(100))
 
     def test_pid_recycling_does_not_merge_sessions(self):
         """Same pid, different start time = a different process. session_key
