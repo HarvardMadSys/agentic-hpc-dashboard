@@ -152,7 +152,7 @@ def defaults():
             # list rather than offered and then clamped.
             "window_presets_min": [60, 360, 720, 1440, 4320, 10080],
             "bin_s": 60,
-            "event_tail": 500,
+            "event_tail": 100,
             "submit_tail": 50,
             # Fill retention, not a day of it.  Read on EVERY start, newest
             # first, from the collector's files -- the bins are never restored

@@ -280,7 +280,7 @@ memory. A window change is served one of three ways:
 |---|---|---|
 | rolling aggregates | **sliced**: exact, instant, no re-read | per-minute buckets, one slot per minute of retention (7 d ≈ 10 080 slots × a few counters) |
 | historical reducers | **rebuilt** from the rows | quantiles, CCDFs, Gini, the dedup index and the trajectory chains carry no time index |
-| event stream | cut to the window | a tail of `live.event_tail` (500), **not** an aggregate: a wider window does not lengthen it |
+| event stream | cut to the window | a tail of `live.event_tail` (100), **not** an aggregate: a wider window does not lengthen it |
 
 Bins are fixed-width and aligned to the wall clock, so the 1 h view is exactly the last 60 rows of
 the 7 d view, and the headline under a chart is the sum of exactly the bins it drew. A window

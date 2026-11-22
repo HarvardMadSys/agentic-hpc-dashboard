@@ -67,7 +67,7 @@ One `LiveReducer`, sized at `live.retention_min` (7 d), holds
   beyond, each a flat list per account of (class and agent type, processes, CPU, bytes);
 - each host's newest `residency_totals`, each agent or editor tree's newest `residency` tick, and
   the agent session roots;
-- tails of 500 exits (`live.event_tail`), 50 submissions (`live.submit_tail`) and 100 exits per
+- tails of 100 exits (`live.event_tail`), 50 submissions (`live.submit_tail`) and 100 exits per
   account (`live.user_tail`), and every submission in retention (`submits_in_window`).
 
 The tail feeds it every second (`Aggregator.poll_once`); on every start the backfill reads
@@ -589,7 +589,7 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
 - **Records:** `exit`: time, host, user, class, agent type, command and argv, purpose, depth, pid,
   duration, CPU, peak memory, disk bytes (its own, as LV-18), network bytes, exit code, signal,
   sandbox, approval, session key.
-- **Computation:** `LiveReducer._exit` keeps a deque of `live.event_tail` (500) rows, newest first;
+- **Computation:** `LiveReducer._exit` keeps a deque of `live.event_tail` (100) rows, newest first;
   `result` cuts it to the window and masks each row's argv once (`_served`); the page filters and
   sorts.
 - **Cost:** one row dict per record, not made during the backfill once the tails are full. A tail,

@@ -140,7 +140,7 @@
     "//23": "the list rather than offered and then silently clamped.",
     "window_presets_min": [60, 360, 720, 1440, 4320, 10080],
     "bin_s": 60,
-    "event_tail": 500,
+    "event_tail": 100,
     "submit_tail": 50,
     "backfill_hours": 168,
     "//24": "backfill_hours: how far back the startup read reaches, capped at",

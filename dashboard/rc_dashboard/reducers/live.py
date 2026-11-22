@@ -221,7 +221,7 @@ class LiveReducer:
         self.bin_s = int(cfg.get("live.bin_s", 60))
         self.buckets = RollingBuckets(self.retention_s, self.bin_s,
                                       int(cfg.get("live.clock_skew_s", 120)))
-        self.event_tail = collections.deque(maxlen=int(cfg.get("live.event_tail", 500)))
+        self.event_tail = collections.deque(maxlen=int(cfg.get("live.event_tail", 100)))
         self.submit_tail = collections.deque(maxlen=int(cfg.get("live.submit_tail", 50)))
         self.hosts = {}          # host -> newest residency_totals-derived rollup
         # (host, tree_root_pid) -> newest residency tick, with the commands it lists
