@@ -58,13 +58,12 @@ class ExitSeriesTest(unittest.TestCase):
     def test_a_bin_with_no_record_is_a_gap_not_a_zero(self):
         s = reduce([exit_rec(T0), exit_rec(T0 + 120)])["series"]
         self.assertEqual(s["t"], [T0, T0 + 60, T0 + 120])
-        self.assertEqual(s["by_class"]["agent"]["n"], [1, None, 1])
         self.assertEqual(s["by_class"]["agent"]["cpu_s"], [1.0, None, 1.0])
 
     def test_a_bin_whose_records_all_lack_a_field_is_null_for_it(self):
         s = reduce([exit_rec(T0, wait=None), exit_rec(T0 + 60)])["series"]
         self.assertEqual(s["by_class"]["agent"]["sched_wait_s"], [None, 0.1])
-        self.assertEqual(s["by_class"]["agent"]["n"], [1, 1])
+        self.assertEqual(s["by_class"]["agent"]["cpu_s"], [1.0, 1.0])
 
     def test_the_bins_add_up_to_the_class_total(self):
         recs = [exit_rec(T0 + 37 * i, cpu=0.5 + i) for i in range(40)]
@@ -79,7 +78,7 @@ class ExitSeriesTest(unittest.TestCase):
 
     def test_a_record_with_no_time_is_counted_not_binned(self):
         s = reduce([exit_rec(T0), exit_rec(None)])["series"]
-        self.assertEqual(s["by_class"]["agent"]["n"], [1])
+        self.assertEqual(s["by_class"]["agent"]["cpu_s"], [1.0])
         self.assertEqual(s["skipped"]["no_ts"], 1)
 
 
@@ -93,7 +92,7 @@ class IoSeriesTest(unittest.TestCase):
         s = reduce([a, b])["series"]["by_class"]["agent"]
         self.assertEqual(s["rd_mb"], [1.0, None])
         self.assertEqual(s["rchar_mb"], [5.0, None])
-        self.assertEqual(s["n"], [1, 1])
+        self.assertEqual(s["cpu_s"], [1.0, 1.0])
 
     def test_network_sent_and_received_are_binned_in_mb(self):
         a = dict(exit_rec(T0), net_tx_bytes=3e6, net_rx_bytes=1e6)
@@ -130,8 +129,6 @@ class ResidentSeriesTest(unittest.TestCase):
                 tick(T0 + 10, "h2", agent={"rss_mb": 50, "n_procs": 1, "d_state": 0})]
         s = reduce(recs)["series"]
         self.assertEqual(s["resident"]["agent"]["rss_mb"], [250.0])
-        self.assertEqual(s["resident"]["agent"]["n_procs"], [6.0])
-        self.assertEqual(s["resident_hosts"], [2])
 
     def test_a_class_missing_from_a_tick_had_none_running(self):
         recs = [tick(T0, agent={"rss_mb": 10}, human={"rss_mb": 20}),
@@ -139,7 +136,6 @@ class ResidentSeriesTest(unittest.TestCase):
                 tick(T0 + 180, agent={"rss_mb": 10})]
         s = reduce(recs)["series"]
         self.assertEqual(s["resident"]["human"]["rss_mb"], [20.0, 0.0, None, 0.0])
-        self.assertEqual(s["resident_hosts"], [1, 1, None, 1])
 
     def test_a_tick_is_not_a_process_event(self):
         res = reduce([tick(T0, agent={"rss_mb": 10}), exit_rec(T0)])

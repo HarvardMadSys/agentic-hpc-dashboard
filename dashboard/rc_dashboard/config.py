@@ -100,8 +100,8 @@ def _ebpf_candidates():
 def _node_candidates():
     """The unprivileged node tier.  `log/login` is last but load-bearing:
     node_snapshot.py is a vendored copy of collect/common/snapshot.py, so the
-    existing login feed is schema-compatible and works before `ebpfm --node` is
-    deployed anywhere."""
+    login feed that poller writes is schema-compatible, and is read where the
+    collector's node tier is not deployed."""
     c = []
     for e in ("EBPFM_NODE_LOG_ROOT", "EBPFM_NODE_OUTPUT_DIR"):
         if os.environ.get(e):
@@ -117,7 +117,6 @@ def _node_candidates():
 
 
 def defaults():
-    base = _env("RC_MEASUREMENT_ROOT")
     return {
         "version": 1,
         "feeds": {
@@ -140,18 +139,6 @@ def defaults():
                 "max_age_s": 900,
                 "required": False,
             },
-            "sacct": {
-                "dir": REPO,
-                "pattern": "SlurmData_*.csv",
-                "max_days": 0,
-                "jobs_csv": None,
-                "required": False,
-            },
-            "sacctmgr": {"dir": REPO, "pattern": "sacctmgr_*.jsonl", "required": False},
-            "domains": {"path": os.path.join(REPO, "dataclean", "mapping", "map_user.csv"),
-                        "required": False},
-            "user_actor": {"path": os.path.join(REPO, "dataclean", "user.csv"),
-                           "required": False},
         },
         "live": {
             # RETENTION is what the process holds; WINDOW_MIN is only the view a
@@ -165,7 +152,7 @@ def defaults():
             # list rather than offered and then clamped.
             "window_presets_min": [60, 360, 720, 1440, 4320, 10080],
             "bin_s": 60,
-            "event_tail": 500,
+            "event_tail": 100,
             "submit_tail": 50,
             # Fill retention, not a day of it.  Read on EVERY start, newest
             # first, from the collector's files -- the bins are never restored
@@ -214,7 +201,7 @@ def defaults():
         # The login-node health panel's lines (reducers.resources.NodeReducer):
         # a local filesystem at or past either is flagged full.
         "node": {"disk_full_pct": 90, "inode_full_pct": 90},
-        # A cluster without Slurm turns this off and the Slurm tab goes away;
+        # A cluster without Slurm turns this off and the HPC tab goes away;
         # nothing else depends on it (the tool mix keeps its two scheduler
         # kinds, which simply stay empty there).
         "slurm": {"enabled": True},
@@ -240,7 +227,7 @@ def defaults():
             # a family's prefix -- three characters or more, then _* -- for a
             # provider reached through a cloud: ["AWS_*",
             # "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION"]. Never an
-            # RC_DASH_* one. Annotate's CLI providers get the same.
+            # RC_DASH_* one.
             "env_passthrough": [],
             "timeout_s": 240,
             "max_concurrent": 1,       # a second question waits, not a second agent
@@ -263,41 +250,6 @@ def defaults():
             # as its alias), and the agent can read what the service's account
             # can, the raw feeds included.
             "unmasked_answers": False,
-        },
-        # What each tool call in a session was for, in a model's words (annotate.py):
-        # the session inspector's "annotate purposes". Off by default: it sends
-        # the session's tool-call command lines -- masked, as the page shows
-        # them -- and the folders they ran in to the provider below. A CLI
-        # provider runs an agent on this host, as Ask does: only behind a
-        # password, with ask.env_passthrough's part of the environment.
-        "annotate": {
-            "enabled": False,
-            # anthropic | openai (any OpenAI-compatible endpoint) | codex | claude
-            # (the CLIs, with this user's own login) | ask (the chat's agent) | command
-            "provider": "anthropic",
-            "model": "",               # empty: the provider's default (anthropic: claude-opus-5-5)
-            "base_url": "",            # empty: the provider's own API; set for a proxy, vLLM, Ollama, ...
-            # The key: the variable named here (empty: ANTHROPIC_API_KEY or
-            # OPENAI_API_KEY), else a file, else `api_key` (never shown by /api/config).
-            "api_key_env": "",
-            "api_key_file": "",
-            "api_key": "",
-            "effort": "low",           # anthropic only: output_config.effort; empty leaves it out
-            "max_tokens": 8000,
-            # `command`: argv or one shell-style string; prompt on stdin, answer on
-            # stdout or in {answer_file}; {workdir} {answer_file} {model} filled in
-            "command": None,
-            "timeout_s": 120,
-            "batch_size": 40,          # calls per request
-            "max_calls": 400,          # distinct calls asked about per session, oldest first
-            "max_concurrent": 1,
-            # annotate a session as soon as it opens, rather than on the button
-            "auto": False,
-            "system_prompt": "",
-            "system_prompt_file": "",
-            # answers kept in <cache.dir>/annotate/purposes.jsonl, so a command is asked about once
-            "cache": True,
-            "cache_max": 200000,
         },
         # Which deployment this is, on every page: two dashboards side by side
         # -- a frozen capture from one cluster, the live feed of another -- must
@@ -381,13 +333,25 @@ def defaults():
         "reducers": {
             "tool_mix": {"head_n": 12, "dedup_sessions_max": 200000},
             "io": {"top_n": 20},
+            # Abnormal activity at the scheduler (reducers/slurm.py, ABNORMAL,
+            # which a test holds equal): a session breaks a rule when its own
+            # count reaches the threshold. Fast polling: its longest stretch of
+            # queue checks at most `poll_gap_s` apart lasts `poll_min_s` or more
+            # (polling every 2-3 min while a job runs is how an agent waits, and
+            # breaks nothing). Then the most queue checks, or jobs submitted, in
+            # any 60 s; submissions the scheduler refused; scancel calls; srun or
+            # salloc runs that failed. Each a count of 1 or more (seconds for the
+            # two polling bounds), or the service refuses to start.
+            "slurm": {"abnormal": {"poll_gap_s": 30, "poll_min_s": 1800, "query_burst": 30,
+                                   "submit_burst": 20, "refused": 3, "cancels": 10,
+                                   "failed_runs": 5}},
             # Each process's own disk bytes (reducers/own_io.py): the parents
             # one join holds for their own exit, the one given to least
             # recently dropped first (an agent runtime, or what started one,
             # passed over), counted (a panel's `own_io.evicted`) and said on
-            # stderr, at most hourly a panel. A service holds some 35 joins:
-            # at one entry a parent (~0.5 KB) 2000 is ~39 MB in all, at worst
-            # (eight, ~2.5 KB) 159 MB. The repo's streams hold under 500 at
+            # stderr, at most hourly a panel. A service holds some 36 joins:
+            # at one entry a parent (~0.5 KB) 2000 is ~40 MB in all, at worst
+            # (eight, ~2.5 KB) 164 MB. The repo's streams hold under 500 at
             # once; a busy login node may need more, at 19 to 80 KB for each
             # one added (README, "Disk I/O is each process's own"). A count of
             # one or more: 0 is refused at start, as is anything not a count.
@@ -446,7 +410,6 @@ def defaults():
                  "title": "Credentials on a command line"},
             ],
         },
-        "export": {"max_rows": 5000000},
         # Replace every username, lab or Slurm account name, email address and
         # numeric user ID in what the service sends out with a stable alias
         # (anonymize.py). Off by default: a deployment for the cluster's own
@@ -488,6 +451,8 @@ def defaults():
             "home_patterns": [],
             "lab_patterns": [],
         },
+        # reducer_version: read by no code, but in both fingerprints (hours.py,
+        # snapshots.py), so raising it discards every saved hour and build.
         "cache": {"dir": os.path.join(HERE, ".cache"),
                   "reducer_version": 3},
         "server": {"host": "127.0.0.1", "port": 8080,
@@ -539,13 +504,6 @@ ENV_MAP = {
     "feeds.ebpf.max_age_s": ("RC_DASH_EBPF_MAX_AGE_S", int),
     "feeds.ebpf_node.roots": ("RC_DASH_NODE_ROOTS", _pathsep),
     "feeds.ebpf_node.days": ("RC_DASH_NODE_DAYS", int),
-    "feeds.sacct.dir": ("RC_DASH_SACCT_DIR", str),
-    "feeds.sacct.pattern": ("RC_DASH_SACCT_PATTERN", str),
-    "feeds.sacct.max_days": ("RC_DASH_SACCT_MAX_DAYS", int),
-    "feeds.sacct.jobs_csv": ("RC_DASH_JOBS_CSV", str),
-    "feeds.sacctmgr.dir": ("RC_DASH_SACCTMGR_DIR", str),
-    "feeds.domains.path": ("RC_DASH_DOMAINS_CSV", str),
-    "feeds.user_actor.path": ("RC_DASH_USER_CSV", str),
     "live.retention_min": ("RC_DASH_RETENTION_MIN", int),
     "live.window_min": ("RC_DASH_LIVE_WINDOW_MIN", int),
     "live.window_presets_min": ("RC_DASH_WINDOW_PRESETS",
@@ -574,7 +532,6 @@ ENV_MAP = {
     "filters.drop_global": ("RC_DASH_DROP_USERS", _csv),
     "filters.drop_agent": ("RC_DASH_DROP_AGENT_USERS", _csv),
     "filters.drop_self_observation": ("RC_DASH_DROP_SELF_OBS", _flag),
-    "export.max_rows": ("RC_DASH_EXPORT_MAX_ROWS", int),
     "risk.profile": ("RC_DASH_RISK_PROFILE", str),
     "slurm.enabled": ("RC_DASH_SLURM", _flag),
     "ask.enabled": ("RC_DASH_ASK", _flag),
@@ -584,13 +541,6 @@ ENV_MAP = {
     "ask.command": ("RC_DASH_ASK_CMD", str),
     "ask.env_passthrough": ("RC_DASH_ASK_ENV_PASSTHROUGH", _csv),
     "ask.system_prompt_file": ("RC_DASH_ASK_PROMPT_FILE", str),
-    "annotate.enabled": ("RC_DASH_ANNOTATE", _flag),
-    "annotate.provider": ("RC_DASH_ANNOTATE_PROVIDER", str),
-    "annotate.model": ("RC_DASH_ANNOTATE_MODEL", str),
-    "annotate.base_url": ("RC_DASH_ANNOTATE_BASE_URL", str),
-    "annotate.api_key_env": ("RC_DASH_ANNOTATE_KEY_ENV", str),
-    "annotate.api_key_file": ("RC_DASH_ANNOTATE_KEY_FILE", str),
-    "annotate.command": ("RC_DASH_ANNOTATE_CMD", str),
     "site.name": ("RC_DASH_SITE_NAME", str),
     "ui.node_noun": ("RC_DASH_NODE_NOUN", str),
     "site.description": ("RC_DASH_SITE_DESC", str),
@@ -610,19 +560,40 @@ ENV_MAP = {
 # Secrets: /api/config and --print-config say whether each is set, never what it is.
 # An agent's command and its instructions can carry a provider's key
 # (`env ANTHROPIC_API_KEY=... claude -p`, the shape tests/test_ask.py pins).
-HIDDEN = ("anonymize.salt", "server.auth.password_hash", "ask.command", "ask.system_prompt",
-          "annotate.api_key", "annotate.command", "annotate.system_prompt")
+HIDDEN = ("anonymize.salt", "server.auth.password_hash", "ask.command", "ask.system_prompt")
 
-# retired names still honoured, with a one-line warning
-ALIASES = {"RC_JOBS_CSV": "RC_DASH_JOBS_CSV", "RC_USER_CSV": "RC_DASH_USER_CSV"}
+# The feeds removed once nothing read them -- the scheduler's accounting (sacct,
+# sacctmgr) and the domain and user CSVs -- and every way there was to set one.
+# Each is named in a warning and ignored, never refused, so a unit, a wrapper or
+# a config file written for them still starts (`load`).
+RETIRED_FEEDS = ("sacct", "sacctmgr", "domains", "user_actor")
+RETIRED_ENV = ("RC_DASH_SACCT_DIR", "RC_DASH_SACCT_PATTERN", "RC_DASH_SACCT_MAX_DAYS",
+               "RC_DASH_JOBS_CSV", "RC_DASH_SACCTMGR_DIR", "RC_DASH_DOMAINS_CSV",
+               "RC_DASH_USER_CSV", "RC_JOBS_CSV", "RC_USER_CSV")
+RETIRED_CLI = ("sacct_dir", "jobs_csv")
+RETIRED_WHY = "is retired, with the feed it set, which nothing read; it is ignored"
+# The sections of features since removed, each with why it is ignored, and every
+# variable there was to set one. Each is named in a warning and dropped, never
+# refused, as a retired feed is: a unit, a wrapper or a config file written for
+# one still starts, and nothing of it reaches /api/config -- where a key under
+# `annotate` was hidden -- or a saved build's fingerprint (`load`).
+RETIRED_SECTIONS = {
+    "annotate": "is retired, with the tool-call purposes a model wrote; it is ignored",
+    "export": "is retired, with the Search & export tab and its download; it is ignored",
+}
+RETIRED_SECTION_ENV = {
+    "RC_DASH_ANNOTATE": "annotate", "RC_DASH_ANNOTATE_PROVIDER": "annotate",
+    "RC_DASH_ANNOTATE_MODEL": "annotate", "RC_DASH_ANNOTATE_BASE_URL": "annotate",
+    "RC_DASH_ANNOTATE_KEY_ENV": "annotate", "RC_DASH_ANNOTATE_KEY_FILE": "annotate",
+    "RC_DASH_ANNOTATE_CMD": "annotate",
+    "RC_DASH_EXPORT_MAX_ROWS": "export",
+}
 
 # CLI dest -> leaf path
 CLI_MAP = {
     "ebpf_root": "feeds.ebpf.roots",
     "ebpf_days": "feeds.ebpf.days",
     "node_root": "feeds.ebpf_node.roots",
-    "sacct_dir": "feeds.sacct.dir",
-    "jobs_csv": "feeds.sacct.jobs_csv",
     "live_window_min": "live.window_min",
     "retention_min": "live.retention_min",
     "backfill_hours": "live.backfill_hours",
@@ -824,6 +795,19 @@ def load(args=None, config_path=None):
             raise SystemExit("config file %s: %s" % (path, e))
         if not isinstance(filetree, dict):
             raise SystemExit("config file %s: not a JSON object" % path)
+        # dropped, not merged: a retired feed's block, or a removed feature's
+        # section, would show in /api/config and in every saved build's
+        # fingerprint, while nothing reads it
+        file_feeds = filetree.get("feeds")
+        for name in RETIRED_FEEDS:
+            if isinstance(file_feeds, dict) and name in file_feeds:
+                del file_feeds[name]
+                sys.stderr.write("warning: config file %s: feeds.%s %s\n"
+                                 % (path, name, RETIRED_WHY))
+        for name, why in RETIRED_SECTIONS.items():
+            if name in filetree:
+                del filetree[name]
+                sys.stderr.write("warning: config file %s: %s %s\n" % (path, name, why))
         for w in check_file(filetree, path):
             sys.stderr.write("warning: config file %s: %s; it is ignored\n" % (path, w))
         # relative paths in the file resolve against the repo, absolute stand
@@ -841,10 +825,12 @@ def load(args=None, config_path=None):
             origins[p] = "file:%s" % path
         _deep_merge(tree, filetree)
 
-    for alias, real in ALIASES.items():
-        if os.environ.get(alias) and not os.environ.get(real):
-            sys.stderr.write("warning: %s is retired; use %s\n" % (alias, real))
-            os.environ[real] = os.environ[alias]
+    for var in RETIRED_ENV:
+        if os.environ.get(var):
+            sys.stderr.write("warning: %s %s\n" % (var, RETIRED_WHY))
+    for var, name in RETIRED_SECTION_ENV.items():
+        if os.environ.get(var):
+            sys.stderr.write("warning: %s %s\n" % (var, RETIRED_SECTIONS[name]))
 
     for dotted, (var, coerce) in ENV_MAP.items():
         raw = os.environ.get(var)
@@ -857,6 +843,9 @@ def load(args=None, config_path=None):
             origins[dotted] = "env:%s" % var
 
     if args is not None:
+        for dest in RETIRED_CLI:
+            if getattr(args, dest, None) is not None:
+                sys.stderr.write("warning: --%s %s\n" % (dest.replace("_", "-"), RETIRED_WHY))
         for dest, dotted in CLI_MAP.items():
             val = getattr(args, dest, None)
             if val is None or val == []:
@@ -927,6 +916,17 @@ def load(args=None, config_path=None):
     elif type(cap) is not int or cap < 1:
         raise SystemExit("%s: %r is not a count of parents, 1 or more (set by %s)" % (
             key, cap, origins.get(key, "default")))
+
+    # What makes a session's Slurm activity abnormal (reducers/slurm.py): each a
+    # count of 1 or more, or the service refuses to start -- 0 would flag every
+    # session, and a string would compare with nothing.
+    for name in ("poll_gap_s", "poll_min_s", "query_burst", "submit_burst", "refused",
+                 "cancels", "failed_runs"):
+        key = "reducers.slurm.abnormal." + name
+        val = _get(tree, key, None)
+        if type(val) is not int or val < 1:
+            raise SystemExit("%s: %r is not a count, 1 or more (set by %s)" % (
+                key, val, origins.get(key, "default")))
 
     # The history store (history.py): a switch, a directory, a worker count and
     # a day bound, or the service refuses to start rather than guess.

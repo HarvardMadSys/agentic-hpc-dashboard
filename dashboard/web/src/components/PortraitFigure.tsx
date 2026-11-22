@@ -315,7 +315,7 @@ export function PortraitFigure({
     m.id === 'mixed'
       ? `the laptop: sessions driven from several places, none of them half of ${known}`
       : m.id === 'unknown'
-        ? 'the laptop: where the sessions are driven from is not known: no agent’s own command line was read'
+        ? 'the laptop: where the sessions are driven from is not known'
         : `the laptop: most sessions driven from ${m.id === 'app' ? appWhere : MODE_TIP[m.id]} (${fint(m.n)} of ${known})`,
     surfacesWords(row.surfaces) || null,
     leaning ? 'leaning back: no one at a terminal while they run' : null,
@@ -334,7 +334,7 @@ export function PortraitFigure({
   const uses = row.calls == null ? [] : l.uses.slice(0, 3);
   const shelfTip =
     row.calls == null
-      ? 'the shelf: what their agents do is not read; the service reads the commands of Claude Code and Codex'
+      ? 'the shelf: what their agents do is not read'
       : !l.uses.length
         ? `the shelf: too few actions to say what they are for (${fint(l.actions)})`
         : `the shelf: what the agents’ actions are for, the top ${uses.length === 1 ? 'one' : uses.length === 2 ? 'two' : 'three'}, each icon’s area its share of ${plural(l.actions, 'action')}`;
@@ -344,7 +344,7 @@ export function PortraitFigure({
   const peakH = busiestHour(hours);
   const maxMin = Math.max(0, ...hours);
   const clockTip = peakH
-    ? `the clock: a day of 24 hours${tz ? ` (${tz})` : ''}, each spoke the minutes in which an agent began a tool call in that hour; the hand at the busiest, ${hourSpan(peakH[0])} (${plural(peakH[1], 'minute')}). ${plural(row.active_min, 'active minute')} in all`
+    ? `the clock: active minutes by hour${tz ? ` (${tz})` : ''}; the hand at the busiest, ${hourSpan(peakH[0])} (${plural(peakH[1], 'minute')}). ${plural(row.active_min, 'active minute')} in all`
     : 'the clock: no tool call began in the window, so no hour is drawn';
 
   // the window: day or night
@@ -507,7 +507,7 @@ export function PortraitFigure({
 
         {/* the person and the laptop, in their own frame */}
         <g transform={`translate(${CX - P_CX} ${DESK - P_DESK})`}>
-          <g data-tip={`${row.user}: the person is drawn the same for every user, leaning back only when most sessions run from scripts. What is round them is measured`}>
+          <g data-tip={`${row.user}: not a likeness; what is round them is measured`}>
             <rect x={101} y={84} width={58} height={48} rx={12} fill="var(--rule)" stroke="var(--edge)" strokeWidth={1.2} />
             <path d="M101 128 C101 112 104 101 117 98 L143 98 C156 101 159 112 159 128 Z" fill="var(--sg)" stroke="var(--ink-2)" strokeWidth={1.1} />
             {leaning && (
@@ -672,7 +672,7 @@ export function FigureKey() {
     <details className="ur-figkey">
       <summary>how to read the figure</summary>
       <p className="nm">
-        Not a likeness: the person is drawn the same for everyone. Each thing round them is measured, and says its numbers and its rule on hover.
+        Not a likeness: only what is round the person is measured. Hover a part for its numbers.
       </p>
       <dl>
         {FIGURE_KEY.map(([k, v]) => (

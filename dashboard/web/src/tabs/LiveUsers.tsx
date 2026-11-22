@@ -39,20 +39,20 @@ const typeLbl = (t: string) => AGENT_TYPE_LBL[t] ?? t;
 /* ------------------------------------------------------------- columns */
 
 /* The table's columns, each switchable (roadmap note 3). The defaults come
- * from the service's config (`live.user_columns`) when it names them, and a
+ * from the service's config (`ui.user_columns`) when it names them, and a
  * reader's own choice is kept in this browser. */
 type ColKey = 'agents' | 'ides' | 'running' | 'exited' | 'cpu' | 'read' | 'written' | 'sent' | 'received' | 'gpu' | 'last';
 const COLS: { k: ColKey; lbl: string; tip?: string; num?: boolean }[] = [
   { k: 'agents', lbl: 'agents running', tip: 'agent sessions running now, by agent' },
   { k: 'ides', lbl: 'IDEs running', tip: 'IDE sessions running now' },
   { k: 'running', lbl: 'running', tip: GLOSS.running, num: true },
-  { k: 'exited', lbl: 'exited', tip: GLOSS.exited + ' in the window, split by class', num: true },
+  { k: 'exited', lbl: 'exited', tip: GLOSS.exited + ', in the window', num: true },
   { k: 'cpu', lbl: 'CPU time', tip: 'CPU used by the processes that exited in the window', num: true },
   { k: 'read', lbl: 'disk read', tip: GLOSS.diskbytes + ', by the processes that exited in the window', num: true },
   { k: 'written', lbl: 'disk written', tip: GLOSS.diskbytes + ', by the processes that exited in the window', num: true },
   { k: 'sent', lbl: 'network sent', tip: 'bytes sent over the network by the processes that exited in the window', num: true },
   { k: 'received', lbl: 'network received', tip: 'bytes received over the network by the processes that exited in the window', num: true },
-  { k: 'gpu', lbl: 'GPU·h asked', tip: GLOSS.gpuh + '. Only what the sbatch / srun command line named; a #SBATCH request in the script is not seen', num: true },
+  { k: 'gpu', lbl: 'GPU·h asked', tip: GLOSS.gpuh + '; a #SBATCH request in a script is not seen', num: true },
   { k: 'last', lbl: 'last active', num: true },
 ];
 const DEFAULT_COLS: ColKey[] = ['agents', 'ides', 'running', 'exited', 'cpu', 'read', 'written', 'last'];
@@ -302,7 +302,7 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
                   {multiHost && <SortTh s={sessSort} k="host" first="asc">{nodes.one}</SortTh>}
                   <SortTh s={sessSort} k="age" num>running for</SortTh>
                   <SortTh s={sessSort} k="procs" num tip={GLOSS.running}>running</SortTh>
-                  <SortTh s={sessSort} k="mem" num tip="memory now, and the most and the average over every 60-second census of this session">memory now · peak · avg</SortTh>
+                  <SortTh s={sessSort} k="mem" num tip="memory now, and its peak and average over the session">memory now · peak · avg</SortTh>
                   <SortTh s={sessSort} k="cpu" num>CPU time</SortTh>
                   <th />
                 </tr>
@@ -323,7 +323,7 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
                         <SurfaceChip s={s.surface} detail={s.surface_detail} />
                         <Badges s={s} />
                         {s.no_census && (
-                          <span className="nm" data-tip="seen running in the last 10 min, but its process tree sent no 60-second census, so what it holds is not known">
+                          <span className="nm" data-tip="its processes were not sampled, so what it holds is not known">
                             no census
                           </span>
                         )}
@@ -340,7 +340,7 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
                     <td>
                       {s.sid && (
                         <button className="linkbtn" onClick={() => openTraj(s.sid!)}
-                          data-tip="open this session's process tree on the Sessions tab">
+                          data-tip="open this session's process tree on the Agents tab">
                           process tree →
                         </button>
                       )}
@@ -353,7 +353,7 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
                       <td colSpan={multiHost ? 7 : 6}>
                         <span className="u-sess">
                           <span
-                            data-tip={`an agent running inside this session's process tree, with its own launch flags · pid ${a.pid}`}
+                            data-tip={`an agent inside this session, with its own launch flags · pid ${a.pid}`}
                           >
                             {typeLbl(a.agent_type ?? '')}
                             {a.version && <span className="u-ver" data-tip={GLOSS.version}>v{a.version}</span>}
@@ -379,7 +379,7 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
 
       <section className="u-box window">
         <h4>
-          in the {windowLbl} <span className="nm">· processes that exited, by class and by agent</span>
+          in the {windowLbl} <span className="nm">· processes that exited</span>
         </h4>
         {row && cls.some((c) => row.by_class[c]) ? (
           <div className="scroller">
@@ -426,7 +426,7 @@ function Detail({ name, windowMin, windowLbl, cls, cascades, openTraj, watched }
                         // an agent another agent started, split out (roadmap note 4)
                         ...under.map(([p, k]) => (
                           <tr key={c + t + p} className="u-sub2">
-                            <td data-tip={`${typeLbl(t)} processes in sessions that ${typeLbl(p)} started, from the Agents tab's trees`}>
+                            <td data-tip={`${typeLbl(t)} processes in sessions that ${typeLbl(p)} started`}>
                               started by {typeLbl(p)}
                             </td>
                             <td className="num">{fint(k)}</td>
@@ -616,7 +616,7 @@ function Stream({ events, depth, watched, cls, q, who, keep }: {
         </span>
         <HostPicker hosts={hosts} host={host} setHost={setHost} />
         {depth != null && (
-          <span className="nm" data-tip={`the live frame holds the newest processes exited across every ${nodes.one} and user; a filter picks among them, so a quiet ${nodes.one} or user can show fewer than asked`}>
+          <span className="nm" data-tip={`a filter picks among the newest exits of every ${nodes.one} and user, so it can show fewer than asked`}>
             {narrowed ? `${fint(on.length)} of ` : ''}the newest {fint(events.length)} exited processes held
             {events.length < depth ? ` (at most ${fint(depth)})` : ''}
           </span>
@@ -656,11 +656,11 @@ interface UsersProps {
   windowMin: number | null;
   windowLbl: string;
   P: Panels;
-  /** the service's default columns (`live.user_columns`), when it names them */
+  /** the service's default columns (`ui.user_columns`), when it names them */
   defaultCols?: string[] | null;
   pageUsers?: string[];
   pageTypes?: string[];
-  /** open a session, or a user's sessions, on the Sessions tab */
+  /** open a session on the Agents tab, or a user's sessions in their portrait on Users */
   openTraj: (sid: string) => void;
   openUserTraj: (user: string) => void;
   /** the live frame's tail of exits, every user's, newest first */
@@ -795,8 +795,8 @@ export function UsersPanel({
           value={grouped ? 'user' : 'flat'}
           onChange={(v) => setGrouped(v === 'user')}
           options={[
-            { k: 'user', lbl: 'by user', tip: 'one row per user, opened into what they run and their last processes' },
-            { k: 'flat', lbl: 'every process', tip: 'the last processes exited, every user’s, newest first, with who ran each' },
+            { k: 'user', lbl: 'by user', tip: 'one row per user; click one to open it' },
+            { k: 'flat', lbl: 'every process', tip: 'the last processes exited, newest first' },
           ]}
         />
         <input
@@ -837,14 +837,14 @@ export function UsersPanel({
                     <td>
                       <span className="u-caret">{isOpen ? '▾' : '▸'}</span>
                       <span className="mono u-name">{r.user}</span>
-                      {/* to this user's sessions (roadmap note 7) */}
+                      {/* to this user's sessions (roadmap note 7), in their portrait */}
                       <button
                         className="linkbtn u-go"
                         onClick={(e) => {
                           e.stopPropagation();
                           openUserTraj(r.user);
                         }}
-                        data-tip="this user's sessions on the Sessions tab"
+                        data-tip="this user's portrait on the Users tab, at the list of their agent sessions, each of which opens its process tree there"
                       >
                         sessions →
                       </button>
@@ -885,7 +885,7 @@ export const ActiveUsers = memo(function ActiveUsers(props: UsersProps & { goto?
     <Panel
       id="live-users"
       title="Active users"
-      ask={[{ panel: 'live', keys: ['users', 'now'] }]}
+      ask={[{ panel: 'live', keys: ['users'] }]}
       span
       live
       feed="live"

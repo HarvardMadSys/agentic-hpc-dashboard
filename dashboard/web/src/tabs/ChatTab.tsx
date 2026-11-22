@@ -89,7 +89,7 @@ function SuggestionList({ job, openUserTraj, goto, followUp, isDone, onDone }: {
               <div className="sugg-f">
                 {x.users.map((u) => (
                   <button key={u} className="linkbtn mono" onClick={() => openUserTraj(u)}
-                    data-tip="open this account's sessions on the Sessions tab">
+                    data-tip="open this account's portrait on the Users tab, at the list of their agent sessions">
                     {u} →
                   </button>
                 ))}
@@ -105,7 +105,7 @@ function SuggestionList({ job, openUserTraj, goto, followUp, isDone, onDone }: {
                   ask about this ↓
                 </button>
                 <button className="btn sugg-done-btn" onClick={() => onDone(i)}
-                  data-tip="it leaves the list for everyone who opens this dashboard, and the next suggestions leave it out, until someone undoes it">
+                  data-tip="hides it for everyone, and from the next suggestions, until undone">
                   ✓ mark as done
                 </button>
               </div>
@@ -162,8 +162,7 @@ function Suggestions({ info, openUserTraj, goto, followUp }: {
         <div className="chat-who">
           asks <b>{info?.agent ?? '…'}</b> what this cluster’s operator should do, from the{' '}
           <b>{scope.windowLabel ?? 'current'}</b> window on screen
-          {narrowed.length ? <> · narrowed to <b>{narrowed.join(', ')}</b></> : null} · each suggestion names
-          the numbers behind it · it runs only when you press the button
+          {narrowed.length ? <> · narrowed to <b>{narrowed.join(', ')}</b></> : null}
           {done.length ? <> · <b>{done.length}</b> marked done {done.length === 1 ? 'is' : 'are'} left out</> : null}
         </div>
         {job == null ? null : job.state === 'done' ? (
@@ -224,7 +223,7 @@ const STARTERS = [
 export const ChatTab = memo(function ChatTab({ windowMin, windowLabel, openUserTraj = () => {}, goto = () => {} }: {
   windowMin: number | null;
   windowLabel: string | null;
-  /** open an account's sessions on the Sessions tab */
+  /** open an account's sessions, in their portrait on the Users tab */
   openUserTraj?: (u: string) => void;
   /** open a tab */
   goto?: (tab: string) => void;
@@ -275,7 +274,7 @@ export const ChatTab = memo(function ChatTab({ windowMin, windowLabel, openUserT
             <div className="chat-who">
               answering with <b>{info?.agent ?? '…'}</b>
               {info?.model ? <> · {info.model}</> : null} · about the <b>{windowLabel ?? 'current'}</b> window ·
-              for one panel or one session, use the <b>ask</b> button on it: it sends that panel’s data only
+              for one panel or session, use its <b>ask</b> button
             </div>
             {turns.length === 0 && (
               <div className="chat-starters">

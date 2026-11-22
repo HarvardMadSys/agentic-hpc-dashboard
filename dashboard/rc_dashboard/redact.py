@@ -12,10 +12,10 @@ in memory and in the saved window state. Instead every exit to the outside
 world goes through here:
 
 * every built window's payload, once, when it is materialised (`payload`);
-* the live frame's event tail (`reducers/live.py`);
-* raw records from `/api/events` and `/api/export` (`record`), and the `q`
-  search over them, which matches redacted text so it cannot be used to probe
-  for a secret one prefix at a time.
+* the live frame's event tail (`reducers/live.py`).
+
+The filters' `q` (`export.make_predicate`) matches the redacted text, so it
+cannot be used to probe for a secret one prefix at a time.
 
 Doing it at the exit also keeps it cheap: a few hundred strings per payload,
 rather than a regex pass over every one of millions of records during a
@@ -404,21 +404,6 @@ def _redact(text):
     if cut:
         return text + " " + CUT if text else CUT
     return text
-
-
-def record(rec):
-    """A shallow copy of a raw record with its text fields redacted.
-
-    A copy, because the record may still be in use by a reducer or a scan that
-    needs the raw argv."""
-    out = dict(rec)
-    for k in TEXT_KEYS:
-        v = out.get(k)
-        if isinstance(v, str):
-            out[k] = redact(v)
-        elif isinstance(v, list):
-            out[k] = [redact(x) if isinstance(x, str) else x for x in v]
-    return out
 
 
 def _text(v):

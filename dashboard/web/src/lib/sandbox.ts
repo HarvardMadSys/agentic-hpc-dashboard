@@ -1,7 +1,7 @@
 /* Sandbox and approval: one place for what each state key is CALLED, and for the
  * one rule every share obeys.
  *
- * The keys are the payload's and the filters' (`/api/events?sandbox=...`), so a
+ * The keys are the payload's and the filters' (`sandbox=...` in a query), so a
  * key keeps its meaning and only its label says what is measured. The labels
  * use the page's one word for each state (lib/glossary.ts), and the glossary's
  * `sandbox` line says how it is read:

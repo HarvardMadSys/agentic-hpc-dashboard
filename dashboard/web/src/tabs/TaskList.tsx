@@ -36,7 +36,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import type { Phase, PhaseBlock, Task, TrajRunning } from '../api/types';
 import { clock } from '../lib/format';
-import { commandLine, cutNote, phaseLbl, sequenceParts, zoomTip } from '../lib/phases';
+import { commandLine, cutNote, driverOf, phaseLbl, sequenceParts, zoomTip } from '../lib/phases';
 import {
   gapLine,
   loneLine,
@@ -164,7 +164,7 @@ export function TaskList({
         const what = lone ? `the lone stretch at ${clock(t.t0)}` : `task ${numbers[i]}`;
         return (
           <Fragment key={t.t0}>
-            {t.gap && <div className="tl-gap">{gapLine(t.gap)}</div>}
+            {t.gap && <div className="tl-gap">{gapLine(t.gap, driverOf(block))}</div>}
             <div className={`tl-row${lone ? ' lone' : ''}${open ? ' open' : ''}`} data-i={i}>
               <Tog open={open} what={what} onClick={() => setChose((m) => new Map(m).set(t.t0, !open))} />
               <button
@@ -177,7 +177,7 @@ export function TaskList({
                 data-tip={zoomTip(t.t0)}
               >
                 {lone ? (
-                  <span className="tl-line">{loneLine(t)}</span>
+                  <span className="tl-line">{loneLine(t, driverOf(block))}</span>
                 ) : (
                   <>
                     <span className="tl-num">{numbers[i]}</span>
@@ -205,7 +205,7 @@ export function TaskList({
                         ) : (
                           <span className="tl-tog none" aria-hidden="true" />
                         )}
-                        <PhaseRow p={p} onPick={onPhase} />
+                        <PhaseRow p={p} onPick={onPhase} driver={driverOf(block)} />
                       </div>
                       {opened && <PhaseCalls p={p} onPick={onPhase} />}
                     </Fragment>

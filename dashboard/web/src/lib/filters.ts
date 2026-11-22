@@ -1,42 +1,18 @@
 /* Filter state, and its one canonical serialisation.
  *
- * The filter bar, the `/api/events` request and the `/api/export` download all
- * read the SAME query string produced here, so the downloaded JSONL is exactly
- * the view on screen. `tab` and `rank` ride along in the URL too so a reload
- * restores what the user was looking at, but they are stripped before the
- * query reaches the API.
+ * The page-wide filters ride in the URL with the view -- the tab, the rank,
+ * the window, the open session -- so a reload restores what the user was
+ * looking at; the view's keys are stripped before a query reaches the API.
  *
  * The user and agent-type filter (`Who`) is page-wide like the class filter,
  * but it is not applied to numbers the page already has: the service builds a
  * filtered view the way it builds a window, so it travels with the panels and
- * trajectories requests as well as with the events query.
+ * trajectories requests.
  */
 import { CLS } from './classes';
-import { serverNow } from './clock';
 import type { Cls, TrajOrder, TrajRank } from '../api/types';
 import { TRAJ_RANKS } from '../api/types';
 import { table } from './lookup';
-
-/** Scalar filter params, in the order the backend documents them. */
-export const SCALAR_KEYS = [
-  'from',
-  'to',
-  'host',
-  'tool',
-  'purpose',
-  'bucket',
-  'session_key',
-  'sandbox',
-  'approval',
-  'depth_min',
-  'depth_max',
-  'cpu_min',
-  'duration_min',
-  'exit_code',
-  'signal',
-  'q',
-] as const;
-export type ScalarKey = (typeof SCALAR_KEYS)[number];
 
 /** UI-only keys: they live in the URL, never in an API query.
  *
@@ -60,7 +36,6 @@ export interface Who {
 export interface Filters extends Who {
   /** `class` is repeatable; at least one class is always selected. */
   cls: Cls[];
-  scalars: Partial<Record<ScalarKey, string>>;
 }
 
 export interface UrlState extends Filters {
@@ -72,14 +47,17 @@ export interface UrlState extends Filters {
    *  pinning the old one. */
   win: number | null;
   /** The trajectory open in the inspector (its sid), so an inspection is a
-   *  link like every other view. */
+   *  link like every other view: on the Agents tab, beside its list of every
+   *  session, or on the Users tab, under a portrait. It is the tab's it was
+   *  opened on, so going to another tab closes it (`patched`). */
   traj: string | null;
   /** Where the inspector's read starts, epoch seconds: set by "continue" after
    *  a read stopped at its budget, so the continued view is linkable too. */
   tfrom: number | null;
-  /** A user whose sessions the Sessions tab opens on, from Active users'
-   *  "trajectories →" (roadmap note 7): a view, not a filter, so nothing is
-   *  rebuilt for it. */
+  /** A user the Agents tab's list of sessions is narrowed to, from a
+   *  portrait's "every session" on the Users tab (or a link to the old
+   *  Sessions tab, from Active users' "sessions →", roadmap note 7): a view,
+   *  not a filter, so nothing is rebuilt for it. */
   tuser: string | null;
   /** Which end of a session the inspector lists first and draws in full. It
    *  stays as other sessions are opened: it is how this reader reads them. */
@@ -110,10 +88,15 @@ const TAB_ALIAS: Record<string, string> = table({
   cascades: 'agents',
   // the consolidation (roadmap notes 41-47): a saved link still lands on the panels
   sessions: 'agents',
+  // the Sessions tab: its list and its inspector are the Agents tab's last part, and App.tsx lands such a link on them
+  trajectories: 'agents',
   io: 'resources',
-  sandbox: 'internal',
+  // the sandbox panels were Internal's, and are Security's confinement half now
+  sandbox: 'security',
   // Overview's one table is a section of Live now; App.tsx lands such a link on it
   overview: 'live',
+  // HPC is the Slurm tab, out from under the login nodes: its key stays
+  hpc: 'slurm',
 });
 
 /** How a filter asks for the processes the collector gave no agent type. */
@@ -137,11 +120,6 @@ export function parseUrl(search: string): UrlState {
     // a link saved before the IDE class was named says human-vscode
     .map((c) => (c === 'human-vscode' ? 'ide' : c))
     .filter((c): c is Cls => (CLS as string[]).includes(c));
-  const scalars: Partial<Record<ScalarKey, string>> = {};
-  for (const k of SCALAR_KEYS) {
-    const v = p.get(k);
-    if (v != null && v !== '') scalars[k] = v;
-  }
   const rank = p.get('rank');
   const win = Number(p.get('win'));
   const tfrom = Number(p.get('tfrom'));
@@ -149,7 +127,6 @@ export function parseUrl(search: string): UrlState {
     // At least one class is always selected: an empty selection would silently
     // render an all-zero dashboard, which reads as "no activity".
     cls: raw.length ? raw : [...CLS],
-    scalars,
     // `user` and `agent_type` were the search bar's own fields before they
     // became page-wide, so a saved search link still narrows to the same people.
     users: many(p, 'user'),
@@ -169,7 +146,22 @@ export function parseUrl(search: string): UrlState {
   };
 }
 
-/** `user` and `agent_type` repeated, in `/api/events`' vocabulary, sorted so
+/** The state with `patch` applied. A session is open on the tab it was opened
+ *  on -- the Agents tab, or a portrait on Users -- so a patch that goes to
+ *  another tab closes it (`traj`, and where its read starts), unless the patch
+ *  opens one there itself: one left open would open again on a tab that did not
+ *  ask for it, and scroll that tab down to it. */
+export function patched(s: UrlState, patch: Partial<UrlState>): UrlState {
+  const next: UrlState = { ...s, ...patch };
+  if (patch.tab !== undefined && patch.tab !== s.tab && patch.traj === undefined) {
+    next.traj = null;
+    next.tfrom = null;
+  }
+  return next;
+}
+
+/** `user` and `agent_type` repeated, in the service's filter vocabulary
+ *  (`export.parse_filters`), sorted so
  *  one filter is one string whichever order its values were picked in. */
 export function whoQuery(w: Who): string {
   const p = new URLSearchParams();
@@ -177,8 +169,6 @@ export function whoQuery(w: Who): string {
   for (const t of [...w.atypes].sort()) p.append('agent_type', t);
   return p.toString();
 }
-
-export const whoActive = (w: Who): boolean => w.users.length + w.atypes.length > 0;
 
 /** The one client-side test, for the live tier the service does not rebuild
  *  per filter: the same rule the service applies to a filtered view's records. */
@@ -188,23 +178,19 @@ export function whoMatch(w: Who, user: string | null | undefined, atype: string 
   return true;
 }
 
-/** The API query: `class` repeated, scalars in order, the user and agent-type
- *  filter, no UI keys. */
+/** The API query: `class` repeated, and the user and agent-type filter; no UI
+ *  keys. */
 export function apiQuery(f: Filters): string {
   const p = new URLSearchParams();
   for (const c of f.cls) p.append('class', c);
-  for (const k of SCALAR_KEYS) {
-    const v = f.scalars[k];
-    if (v != null && v !== '') p.append(k, v);
-  }
   const w = whoQuery(f);
   return [p.toString(), w].filter(Boolean).join('&');
 }
 
 /** The browser query: the API query plus the UI keys.
  *
- * `apiQuery` iterates SCALAR_KEYS and UI_KEYS is disjoint from it, which is how
- * a UI key is kept out of the request the backend sees.
+ * `apiQuery` writes no UI key, which is how a UI key is kept out of the
+ * request the backend sees.
  */
 export function urlQuery(s: UrlState): string {
   // The agent types go in as `atype`: `agent_type` is read too, for old links.
@@ -215,27 +201,4 @@ export function urlQuery(s: UrlState): string {
     if (v != null && v !== '' && v !== UI_OMIT_AT[k]) p.append(k, String(v));
   }
   return p.toString();
-}
-
-/** `from`/`to` for the events + export query, pinned to the selected window.
- *
- * The download has to be exactly the view, and the view is now window-bounded,
- * so a window that the user narrowed must reach `/api/export` too. An explicit
- * `from`/`to` typed into the filter bar still wins: it is the more specific
- * statement of intent.
- */
-export function windowBounds(s: UrlState, minutes: number | null): Filters {
-  if (minutes == null || s.scalars.from || s.scalars.to) return s;
-  const to = new Date(serverNow());
-  const from = new Date(to.getTime() - minutes * 60_000);
-  const stamp = (d: Date) =>
-    new Date(d.getTime() - d.getTimezoneOffset() * 60_000)
-      .toISOString()
-      .slice(0, 19)
-      .replace('T', ' ');
-  return { ...s, scalars: { ...s.scalars, from: stamp(from), to: stamp(to) } };
-}
-
-export function countActiveScalars(f: Pick<Filters, 'cls' | 'scalars'>): number {
-  return SCALAR_KEYS.reduce((a, k) => a + (f.scalars[k] ? 1 : 0), 0);
 }

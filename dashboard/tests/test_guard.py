@@ -148,7 +148,7 @@ class Host(unittest.TestCase):
         self.assertEqual(call(OPEN, "http", None), "app")
 
     def test_with_a_password_the_name_is_free(self):
-        # a tunnel or a proxy may keep its public name in the Host (deploy/fleet)
+        # a tunnel or a proxy may keep its public name in the Host (hpc/deploy)
         self.assertEqual(call(SIGNED, "http", "dash.example.org"), "app")
         self.assertEqual(call(SIGNED, "websocket", "dash.example.org", "https://dash.example.org"),
                          "app")
@@ -305,7 +305,7 @@ class LiveOpen(Live):
             with self.subTest(body=str(body)[:40]):
                 self.assertEqual(self.req("POST", "/api/ask", body, JSON)[0], 400)
         for body in ("[]", "nope"):
-            for path in ("/api/suggestions/done", "/api/annotate"):
+            for path in ("/api/suggestions/done",):
                 with self.subTest(path=path, body=body):
                     self.assertEqual(self.req("POST", path, body, JSON)[0], 400)
         self.assertEqual(self.req("POST", "/api/ask", b"{" + b" " * (1 << 20) + b"}", JSON)[0], 413)

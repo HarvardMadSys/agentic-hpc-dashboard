@@ -301,10 +301,10 @@ function ProcDetails({ e, dir }: { e: ProcNode; dir: string | null }) {
           </Pair>
         )}
         <Pair k="took">{tookText(e)}</Pair>
-        <Pair k="own CPU" tip="the process's own cpu_s">
+        <Pair k="own CPU">
           {e.ev ? (e.cpu != null ? `${fmt(e.cpu)} s` : 'not measured') : DASH}
         </Pair>
-        <Pair k="Σ CPU" tip="its own cpu_s plus everything below it">
+        <Pair k="Σ CPU" tip="its own CPU plus everything below it">
           {e.sub_cpu != null ? `${fmt(e.sub_cpu)} s` : DASH}
         </Pair>
         <Pair k="processes" tip="in its subtree, itself included">{fint(e.n)}</Pair>
@@ -402,8 +402,8 @@ function CountDetails({ c }: { c: ProcCount }) {
     <>
       <p className="tp-why">
         {c.k === 'agg'
-          ? "Past the inspector's hold budget: counted with their CPU and time span under this parent, but not drawn one by one."
-          : 'Past the number of rows the inspector serves, which it allots breadth first: counted here, the deepest levels first to go.'}
+          ? 'Counted with their CPU and time span under this parent, not drawn one by one.'
+          : 'Past the rows the inspector serves: counted here, not drawn.'}
       </p>
       <dl>
         <Pair k="processes">{fint(c.n)}</Pair>
@@ -848,14 +848,14 @@ export default function TreePopout() {
         </div>
         <div className="tp-tools">
           <span className="tp-grp">
-            <label data-tip="take out runs of the same command, the site's routine commands (ui.routine_commands), and the shells that ran nothing else, so the unusual processes stand out">
+            <label data-tip="take out runs of the same command, the site's routine commands, and shells that ran nothing else">
               <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
               hide routine
             </label>
             {hide && hid && <span className="nm">{`${fint(hid.routine)} hidden`}</span>}
           </span>
           <span className="tp-grp">
-            <label data-tip="take out what a person mistyped at a terminal: a name the shell could not find, and a line that failed and was then typed again, corrected (the line that worked says so). An agent's failed calls stay">
+            <label data-tip="take out a person's typos at a terminal: a name the shell could not find, or a failed line typed again corrected; an agent's failed calls stay">
               <input type="checkbox" checked={typos} onChange={(e) => setTypos(e.target.checked)} />
               hide typos
             </label>

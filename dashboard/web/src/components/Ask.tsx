@@ -275,8 +275,8 @@ export function AskBox({ what, title, threadKey, onClose }: {
           {scope.info?.model ? <> · {scope.info.model}</> : null} about {session ? 'this session' : 'this panel'}
           {' · '}
           <span data-tip={session
-            ? 'the service sends the model a digest of this session: its totals, the commands it ran in order, its failures, and its process tree as an outline. Names are masked as on the page.'
-            : 'the service sends the model this panel’s data, over the window and filter on screen, and nothing else from the dashboard. Names are masked as on the page.'}>
+            ? 'a digest of this session, names masked as on the page'
+            : 'this panel’s data over the window and filter on screen, names masked as on the page'}>
             it sees {scopeLbl} only
           </span>
         </span>

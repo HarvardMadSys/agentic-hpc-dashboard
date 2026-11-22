@@ -220,7 +220,7 @@ class LiveReducer:
         self.bin_s = int(cfg.get("live.bin_s", 60))
         self.buckets = RollingBuckets(self.retention_s, self.bin_s,
                                       int(cfg.get("live.clock_skew_s", 120)))
-        self.event_tail = collections.deque(maxlen=int(cfg.get("live.event_tail", 500)))
+        self.event_tail = collections.deque(maxlen=int(cfg.get("live.event_tail", 100)))
         self.submit_tail = collections.deque(maxlen=int(cfg.get("live.submit_tail", 50)))
         self.hosts = {}          # host -> newest residency_totals-derived rollup
         # (host, tree_root_pid) -> newest residency tick, with the commands it lists
@@ -236,13 +236,6 @@ class LiveReducer:
         # Claude Code a VS Code server started, a Codex a Claude Code started
         # -- is a root of its own here and only a member of a tree there.
         self.roots = {}
-        # (host, key type, key) -> the newest exit in a person's own session,
-        # keyed as the Trajectories tab keys one (normalize.session_key_of):
-        # its login session's scope, else its terminal, else the account. The
-        # collector sends no residency tick for a shell, so a human session
-        # counts as live while a process in it ended in the last LIVE_S.
-        self.human_sessions = {}
-        self.newest_exit = None
         # Who ran what, per account (roster.py: tiered bins, compact slots, a
         # cached window -- it has to hold at thousands of users).
         self.roster = UserRoster(
@@ -347,15 +340,6 @@ class LiveReducer:
 
     def _exit(self, rec, older=False):
         self.buckets.add(rec, rec["_a3"], cpu_s=rec.get("cpu_s"))
-        e = rec.get("_ts_epoch")
-        if e is not None:
-            if self.newest_exit is None or e > self.newest_exit:
-                self.newest_exit = e
-            # the backfill reads newest first, so a week of old logins is never held
-            if rec["_a3"] == "human" and e >= self.newest_exit - self.LIVE_S:
-                k = (rec.get("host"), rec.get("_kt"), rec.get("_kv"))
-                if e > self.human_sessions.get(k, 0):
-                    self.human_sessions[k] = e
         rd, wr = self._own_io(rec, older)
         tx, rx = _mb(rec.get("net_tx_bytes")), _mb(rec.get("net_rx_bytes"))
         now = time.time()
@@ -580,16 +564,13 @@ class LiveReducer:
         if older and h in self.hosts:
             return                       # a newer tick already holds this host
         self.hosts[h] = {
-            "host": h, "ts": rec.get("ts"), "epoch": rec.get("_ts_epoch"),
+            "host": h, "epoch": rec.get("_ts_epoch"),
             # under this dashboard's classes, IDEs included (normalize.class_totals)
             "by_actor3": rec.get("_by_class") or rec.get("by_actor3") or {},
             "by_agent_type": rec.get("by_agent_type") or {},
-            "trees": rec.get("trees"), "tracked_live": rec.get("tracked_live"),
-            "conn_records": rec.get("conn_records"),
+            "trees": rec.get("trees"),
             "tcp_open_ext": (rec.get("_tcp_by_class") or rec.get("tcp_open_ext_by_actor3")
                              or {}),
-            "fork_rate": rec.get("fork_rate"),
-            "dropped": (rec.get("dropped") or {}).get("n"),
             "d_stack_top": rec.get("d_stack_top"),
             "conn_unmatched_births": rec.get("conn_unmatched_births"),
         }
@@ -707,23 +688,19 @@ class LiveReducer:
         return r
 
     def users(self, now=None, window_s=None, q=None, limit=None, running=None):
-        """The roster: distinct accounts, per-class counts, who runs what now,
-        and the busiest rows.
+        """The roster: who runs what now, and the busiest rows.
 
         `q` filters by a substring of the account name and `running`
         ("class:agent type") to the accounts with such a session up -- both over
         EVERY account, since the frame carries only the busiest `user_rows`.
 
         Built lean, because it runs on every live frame: one pass over the
-        accounts for the counts and the sort key, and full rows only for the
-        ones returned."""
+        accounts for the sort key, and full rows only for the ones returned."""
         now = now or time.time()
         window_s = min(int(window_s or self.retention_s), self.retention_s)
         tot = self.roster.totals(now, window_s)
         live, seen, procs = self._running(now)
         gpu = self._gpu_h(now - window_s) if self.submits_in_window else None
-        kinds = self.roster.kinds
-        by_class = dict.fromkeys(self.classes, 0)
         running_by = {}                  # class -> agent type -> users running it
         for u, m in live.items():
             for c, ty in m.items():
@@ -739,10 +716,6 @@ class LiveReducer:
         for u in set(tot) | set(live):
             e = tot.get(u) or ()
             m = live.get(u) or {}
-            cs = {kinds[e[j]][0] for j in range(0, len(e), ROSTER_W)} | set(m)
-            for c in cs:
-                if c in by_class:
-                    by_class[c] += 1
             if ql and ql not in u.lower():
                 continue
             if want and not (m.get(want[0]) or {}).get(want[1]):
@@ -754,9 +727,6 @@ class LiveReducer:
         keyed.sort()
         limit = self.user_rows if limit is None else max(0, int(limit))
         return {
-            "total": len(set(tot) | set(live)),
-            "by_class": by_class,
-            "with_live_agent": sum(1 for m in live.values() if m.get("agent")),
             "running_by_type": running_by,
             "rows": [self._row(u, tot.get(u), live, seen, procs, gpu) for _, _, u in keyed[:limit]],
             "rows_total": len(keyed),
@@ -829,11 +799,11 @@ class LiveReducer:
         """The live tier as seen through `window_s` (default: all of retention).
 
         Everything time-bounded here reads the SAME cutoff -- the rate series,
-        its headline totals, the submissions and the event tail -- so a reader
-        never sees a chart and a plate that disagree about what "in window"
-        means.  The host and residency plates are deliberately NOT cut: they are
-        a snapshot of what is running now, not an aggregate over the window, and
-        narrowing the window does not make a running process stop running.
+        the submissions and the event tail -- so a reader never sees two that
+        disagree about what "in window" means.  The host rows are deliberately
+        NOT cut: they are a snapshot of what is running now, not an aggregate
+        over the window, and narrowing the window does not make a running
+        process stop running.
         """
         now = now or time.time()
         self.buckets.evict(now)
@@ -851,44 +821,10 @@ class LiveReducer:
         cutoff, _end = self.buckets.covers(now, window_s)
 
         rate = self.buckets.series(self.classes, "n", now, window_s)
-        last = self.buckets.last_complete_bin(self.classes, now)
-        totals = self.buckets.totals(now=now, window_s=window_s)
-
-        # plates: all three classes, from residency_totals
-        agg = collections.defaultdict(lambda: collections.Counter())
-        for h in self.hosts.values():
-            for cls, d in (h["by_actor3"] or {}).items():
-                for k, v in (d or {}).items():
-                    if isinstance(v, (int, float)):
-                        agg[cls][k] += v
-        # `residency` is emitted once per live agent or editor tree; a person's
-        # own shell has none, so the human count is their sessions with a
-        # process that ended in the last LIVE_S. It is absent rather than 0
-        # when nothing at all ended then: a stalled feed is not an idle node.
-        live_trees = sum(1 for t in self.trees.values()
-                         if (t.get("epoch") or 0) >= now - 600)
-        roots_by_cls = {}
-        for t in self.trees.values():
-            if (t.get("epoch") or 0) >= now - 600:
-                c = t.get("actor3") or "agent"
-                roots_by_cls[c] = roots_by_cls.get(c, 0) + 1
-        for k in [k for k, e in self.human_sessions.items() if e < now - self.LIVE_S]:
-            del self.human_sessions[k]
-        if self.newest_exit is not None and self.newest_exit >= now - self.LIVE_S:
-            roots_by_cls["human"] = len(self.human_sessions)
-        # Live agent sessions by their launch approval. The collector's own
-        # residency_totals `autonomous` cannot be used: its is_autonomous misses
-        # `--permission-mode bypassPermissions`, so it read 0 on every day of
-        # rtx6000a's capture while 30k records carried approval_mode=bypassed.
+        # an agent root not seen in retention is forgotten
         for k in [k for k, v in self.roots.items()
                   if v["epoch"] is not None and v["epoch"] < now - self.retention_s]:
             del self.roots[k]
-        live_roots = [v["approval"] for v in self.roots.values()
-                      if v["epoch"] is not None and v["epoch"] >= now - 600]
-        live_ap = collections.Counter(live_roots)
-
-        subs = [s for s in self.submits_in_window if (s["epoch"] or 0) >= cutoff]
-        by_cls_subs = collections.Counter(s["actor3"] for s in subs)
 
         hosts = []
         for h, v in sorted(self.hosts.items()):
@@ -898,7 +834,7 @@ class LiveReducer:
             # columns are the host-level totals across classes -- the host table
             # shows one row per host with a class split, not one row per pair.
             row = {
-                "host": h, "ts": v["ts"],
+                "host": h,
                 "by_class": {c: ((by.get(c) or {}).get("n_procs") or 0)
                              for c in self.classes if by.get(c)},
                 # the same running processes by agent or editor type; a
@@ -907,36 +843,16 @@ class LiveReducer:
                             for t, d in (v.get("by_agent_type") or {}).items()
                             if (d or {}).get("n_procs")},
                 "procs": sum((by.get(c) or {}).get("n_procs") or 0 for c in by),
-                "threads": sum((by.get(c) or {}).get("threads") or 0 for c in by),
                 "rss_gb": round(sum((by.get(c) or {}).get("rss_mb") or 0
                                     for c in by) / 1024.0, 2) or None,
                 "d_state": sum((by.get(c) or {}).get("d_state") or 0 for c in by),
                 "users": sum((by.get(c) or {}).get("users") or 0 for c in by),
                 "tcp_open_ext": _sum_or_none(_conn_count(x) for x in ext.values()),
-                "tcp_open": _sum_or_none(_conn_count(x, "open") for x in ext.values()),
-                "tcp_estab": _sum_or_none(_conn_count(x, "estab") for x in ext.values()),
                 "roots": v.get("trees"),
-                "trees": v.get("trees"), "tracked_live": v.get("tracked_live"),
-                "conn_records": v.get("conn_records"), "fork_rate": v.get("fork_rate"),
-                "dropped": v.get("dropped"),
                 # the kernel frames this host's tracked D-state processes were
                 # blocked in at its newest tick, {frame: processes}; null when
                 # none was, or the stacks were not readable
                 "d_stack_top": v.get("d_stack_top"),
-                # load and cpu_pct belong to the NODE tier; absent here rather
-                # than zero, so the column reads as unreported not as idle
-                "load_1": None, "cpu_pct": None,
-                # by_actor3 carries procs/threads/rss/d_state/users/states; the
-                # standing-socket triple arrives in a sibling field, so merge it
-                # here rather than making the viewer join two maps.
-                "by_class_detail": {
-                    c: dict(
-                        (by.get(c) or {}),
-                        tcp_open_ext=_conn_count((ext or {}).get(c)),
-                        tcp_open=_conn_count((ext or {}).get(c), "open"),
-                        tcp_estab=_conn_count((ext or {}).get(c), "estab"),
-                    ) for c in by
-                },
             }
             hosts.append(row)
         # a host that reported residency ticks but no totals still gets a row
@@ -944,8 +860,7 @@ class LiveReducer:
         for (host, _r), t in self.trees.items():
             if host and host not in seen:
                 seen.add(host)
-                hosts.append({"host": host, "ts": t.get("epoch"), "by_class": {},
-                              "note": "residency only, no residency_totals tick"})
+                hosts.append({"host": host, "by_class": {}})
 
         retained = self.buckets.oldest_epoch()
         return {
@@ -964,34 +879,6 @@ class LiveReducer:
                                      if retained else None),
             },
             "rate": rate,
-            # Every per-class quantity is a plain {class: value} map under its own
-            # bare name; a headline number is the map's sum, never a separate
-            # figure that could drift from it.
-            "now": {
-                "exits_per_min": _sum_or_none(last.values()),
-                "exits_per_min_by_class": last,
-                "events": {c: totals.get(c, {}).get("n", 0) for c in self.classes},
-                "cpu_s": {c: round(totals.get(c, {}).get("cpu_s", 0.0), 1)
-                          for c in self.classes},
-                "procs": {c: agg[c].get("n_procs") for c in self.classes},
-                "threads": {c: agg[c].get("threads") for c in self.classes},
-                "rss_gb": {c: (round(agg[c]["rss_mb"] / 1024.0, 2)
-                               if agg[c].get("rss_mb") else None)
-                           for c in self.classes},
-                "users": {c: agg[c].get("users") for c in self.classes},
-                "d_state": {c: agg[c].get("d_state") for c in self.classes},
-                "roots": {c: roots_by_cls.get(c) for c in self.classes},
-                "live_agent_trees": live_trees,
-                # null when no agent root was seen, so "none seen" never reads as
-                # "none bypassed"; a real 0 once there are roots to count.
-                "autonomous_roots": live_ap.get("bypassed", 0) if live_roots else None,
-                "live_agent_sessions": len(live_roots) if live_roots else None,
-                "live_sessions_by_approval": dict(live_ap),
-                # replaces the census plate: real, in-scope, actor-attributed
-                "submissions": dict(by_cls_subs),
-                "submissions_window": len(subs),
-                "submission_users": len({s["user"] for s in subs}) if subs else 0,
-            },
             "hosts": hosts,
             "users": self.users(now=now, window_s=window_s),
             # A bounded tail, cut to the window. The tail is `event_tail` deep

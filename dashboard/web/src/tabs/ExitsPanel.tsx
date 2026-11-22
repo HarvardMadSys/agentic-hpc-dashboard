@@ -59,11 +59,8 @@ const rated = (t: ExitTally) => t.calls - t.none;
 const rate = (t: ExitTally) => (rated(t) > 0 ? (100 * failed(t)) / rated(t) : null);
 
 const WHAT_COUNTS =
-  'failed: exited non-zero, or was stopped by a signal. Not counted as failures: an exit 1 from ' +
-  'grep, rg, ag, diff or cmp, which is their answer (no line matched, the files differ), and SIGPIPE, ' +
-  'which `command | head` sends the command once head has its lines. The share is of the processes ' +
-  'whose record says how they ended; the same processes as the Tool mix, a shell that only ran one ' +
-  'command counted once.';
+  'failed: exited non-zero or stopped by a signal, except an exit 1 from grep, rg, ag, diff or cmp ' +
+  '(their answer) and SIGPIPE; a share of the processes whose ending is known';
 
 type By = 'tool' | 'kind';
 
@@ -121,7 +118,7 @@ export function ExitsPanel({ P, cls }: { P: Panels; cls: Cls[] }) {
           <Term tip={WHAT_COUNTS}><span className="nm">what counts</span></Term>
           <Segmented value={view} onChange={setView} options={[
             { k: 'tool', lbl: 'by tool', tip: 'the tools with the most failures' },
-            { k: 'kind', lbl: 'by kind of tool', tip: 'every kind of tool with a failure, as the Tool mix groups them' },
+            { k: 'kind', lbl: 'by kind of tool', tip: 'every kind of tool with a failure' },
           ]} />
         </span>
       }
@@ -131,11 +128,11 @@ export function ExitsPanel({ P, cls }: { P: Panels; cls: Cls[] }) {
           <thead>
             <tr>
               <th>who</th>
-              <th className="num" data-tip="processes counted, after the Tool mix's shell dedup">processes</th>
+              <th className="num">processes</th>
               <th data-tip="the share of processes with a known ending that failed">failed</th>
               <th className="num" data-tip="exited non-zero, past the answers">non-zero</th>
               <th className="num" data-tip="stopped by a signal other than SIGPIPE">signal</th>
-              <th data-tip="the exit codes of the non-zero exits, then the signals that stopped processes, the most first; hover one for what it usually means">most often</th>
+              <th data-tip="the commonest exit codes, then signals; hover one for what it means">most often</th>
             </tr>
           </thead>
           <tbody>

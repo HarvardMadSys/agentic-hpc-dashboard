@@ -1,4 +1,5 @@
-"""Phases in the trajectories reducer: every agent row carries its tool calls' phases.
+"""Phases in the trajectories reducer: every row carries its calls' phases, an agent's tool calls
+or, where no agent ran the session, the jobs its terminals' shells ran.
 
 Records are built as the collector writes them (`test_sessions.rec`), a child's exit before the
 process that waited on it, and reduced through the reducer set a window build uses. Schema 8
@@ -26,10 +27,9 @@ from rc_dashboard.normalize import Normalizer               # noqa: E402
 from rc_dashboard.reducers import phase_segment             # noqa: E402
 from rc_dashboard.reducers import trajectories as trajmod   # noqa: E402
 from rc_dashboard.windows import PanelView                  # noqa: E402
-from test_sessions import HOME, SNAP, cfg, claude_session, ranked, rec, reduce   # noqa: E402
+from test_sessions import HOME, SNAP, cfg, claude_session, ranked, rec, reduce, reduced   # noqa: E402
 
 SNAP8 = SNAP.replace("/bin/zsh -c", "/bin/bash -c")     # schema 8 records the shell as `bash`
-UNAVAILABLE = {"unavailable": "phases not available for this agent type"}
 CODEX = HOME + "/.codex/bin/codex"
 HELPER = CODEX + " --codex-run-as-fs-helper"
 
@@ -291,15 +291,14 @@ class TrajPhasesTest(unittest.TestCase):
         running = row_of(reduce(recs), 500)
         self.assertEqual(kinds(running), ["wait"])
         self.assertTrue(running["phases"]["list"][0]["open"])
-        payload = reduce(recs + [rec("exit", T0 + 181, 500, 1, "bash", shell, duration_s=600,
-                                     **kw)])
-        done = row_of(payload, 500)
+        view = reduced(recs + [rec("exit", T0 + 181, 500, 1, "bash", shell, duration_s=600,
+                                   **kw)])
+        done = row_of(view.payload, 500)
         self.assertEqual(kinds(done), ["wait"])
         self.assertFalse(done["phases"]["list"][0]["open"])
         self.assertEqual(done["n_calls"], 1)
         self.assertEqual(done["phases"]["housekeeping"]["n"], 0)
-        self.assertEqual(payload["trajectories"]["buffer"]["phase_reparented"], 0)
-        self.assertEqual(payload["trajectories"]["buffer"]["phase_pending"], 0)
+        self.assertEqual(buffer_of(view, "phase_reparented", "phase_pending"), (0, 0))
 
     def test_a_background_job_is_its_calls_ran_past(self):          # Review Focus 1
         row = row_of(reduce([
@@ -432,12 +431,11 @@ class TrajPhasesTest(unittest.TestCase):
                         bash8(T0 + 11.0, 201, "a | grep x | head -1", duration_s=10.5)]
                 recs += [s8(late_end + 0.1 * i, 211 + i, 210, "grep", "grep x", depth=3,
                             duration_s=late_end - (T0 + 9.5)) for i in range(2)]
-                payload = reduce(sorted(recs, key=lambda r: r["ts_epoch"]))
-                row = row_of(payload)
-                buf = payload["trajectories"]["buffer"]
+                view = reduced(sorted(recs, key=lambda r: r["ts_epoch"]))
+                row = row_of(view.payload)
                 self.assertEqual(row["n_calls"], 2)
                 self.assertFalse(any(p["open"] for p in row["phases"]["list"]))
-                self.assertEqual((buf["phase_late_routed"], buf["phase_pending"]), (2, 0))
+                self.assertEqual(buffer_of(view, "phase_late_routed", "phase_pending"), (2, 0))
                 if late_end > T0 + 11:
                     ran = [r for p in row["phases"]["list"] for r in (p["ran_past"] or [])]
                     self.assertEqual(ran, [["a | grep x | head -1", round(late_end + 0.1 - (T0 + 11.0), 1)]])
@@ -528,23 +526,48 @@ class TrajPhasesTest(unittest.TestCase):
         self.assertEqual(row["n_calls"], 4)
         self.assertEqual(row["fragments"], 3)
 
-    def test_an_unsupported_agent_says_so(self):
+    def test_an_agent_of_any_type_has_its_calls_read(self):
+        # a Cursor agent's CLI: the general rule reads its direct children as Codex's are read
         kw = dict(agent_pid=100, tree_root=100, agent_type="cursor")
         row = row_of(reduce([
             rec("residency", T0, 100, 50, "cursor-agent", "cursor-agent", is_agent=True,
                 age_s=60, **kw),
             rec("exit", T0 + 5, 201, 100, "bash", "/bin/bash -c ls", **kw),
         ]))
-        self.assertEqual(row["phases"], UNAVAILABLE)
-        self.assertIsNone(row["n_calls"])         # not recognized is not none: null, not zero
+        self.assertEqual(row["n_calls"], 1)
+        self.assertEqual(kinds(row), ["explore"])
+        self.assertEqual(row["phases"]["list"][0]["top"], [["ls", 1]])
 
-    def test_a_person_has_no_phases(self):
-        payload = reduce([rec("exit", T0 + 5, 901, 900, "ls", "ls -la", agent_pid=None,
-                              tree_root=None, actor="human", actor3="human", agent_type=None,
-                              tty="pts/3", user="bob")])
-        row, = [r for r in ranked(payload) if r["actor3"] == "human"]
-        self.assertEqual(row["phases"], UNAVAILABLE)
-        self.assertIsNone(row["n_calls"])
+    def test_a_copilot_session_is_read_by_the_general_rule(self):
+        kw = dict(root=900, agent_type="copilot")
+        row = row_of(reduce([
+            root8(T0, root=900, command="copilot", args="copilot", agent_type="copilot"),
+            s8(T0 + 10, 901, 900, "bash", "/bin/bash -c pytest -q tests", duration_s=20.0, **kw),
+            s8(T0 + 40, 902, 900, "copilot", "copilot --version", **kw),
+            s8(T0 + 60, 903, 900, "rg", "rg -n foo src", **kw),
+        ]), 900)
+        self.assertEqual(row["n_calls"], 2)
+        self.assertEqual(row["phases"]["driver"], "agent")
+        self.assertEqual(row["phases"]["housekeeping"]["shapes"], [["probe", 1]])
+        self.assertEqual(sorted(c for p in row["phases"]["list"] for c, _ in p["top"]),
+                         ["pytest -q tests", "rg -n foo src"])
+        self.assertIn("2 tool calls", row["phases"]["summary"])
+
+    def test_a_person_whose_groups_were_not_kept_has_a_block_with_no_calls(self):
+        # an older collector, or one without the feature, writes no `pgrp` and `sid`: nothing
+        # says which process was a job, so none is, and the row still says what it read
+        view = reduced([rec("exit", T0 + 5, 901, 900, "ls", "ls -la", agent_pid=None,
+                            tree_root=None, actor="human", actor3="human", agent_type=None,
+                            tty="pts/3", user="bob")])
+        row, = [r for r in ranked(view.payload) if r["actor3"] == "human"]
+        # not read, and not held for a later record either: counted
+        self.assertEqual(buffer_of(view, "phase_ungrouped", "phase_pending", "phase_exited"),
+                         (1, 0, 0))
+        self.assertEqual(row["n_calls"], 0)
+        self.assertEqual(row["phases"]["list"], [])
+        self.assertEqual(row["phases"]["driver"], "terminal")
+        self.assertEqual(row["phases"]["category"], "none")
+        self.assertEqual(row["phases"]["summary"], "No commands run from a terminal.")
 
     def test_a_call_still_running_at_the_edge_is_open(self):         # R37
         # Test runs one after another under a shell that has not exited: only its children are
@@ -589,11 +612,11 @@ class TrajPhasesTest(unittest.TestCase):
                 recs = [rec("residency", T0, 900, 50, command, args, age_s=60, **kw),
                         rec("exit", T0 + 30, 900, 50, command, args, duration_s=40, **kw)]
                 self.assertEqual(Normalizer(cfg()).normalize(dict(recs[1]))["_role"], role)
-                payload = reduce(recs)
-                row = row_of(payload, 900)
+                view = reduced(recs)
+                row = row_of(view.payload, 900)
                 self.assertEqual(row["n_calls"], 0)
                 self.assertEqual(row["phases"]["list"], [])
-                self.assertEqual(payload["trajectories"]["buffer"]["phase_pending"], 0)
+                self.assertEqual(buffer_of(view, "phase_pending"), (0,))
 
     def test_what_an_exiting_root_held_is_its_housekeeping(self):         # R36
         # Schema 7: the desktop app's server (infra) tops its tree. Only an agent's children
@@ -607,14 +630,13 @@ class TrajPhasesTest(unittest.TestCase):
                      **kw) for i in range(3)]
         recs.append(rec("exit", T0 + 1300, 800, 1, "server", srv, is_agent=True,
                         duration_s=1400, **kw))
-        payload = reduce(recs)
-        row = row_of(payload, 800)
+        view = reduced(recs)
+        row = row_of(view.payload, 800)
         self.assertEqual(row["n_calls"], 0)
         self.assertEqual(row["phases"]["list"], [])
         hk = row["phases"]["housekeeping"]
         self.assertEqual((hk["n"], hk["shapes"], hk["cut"]), (3, [["git", 3]], 3))
-        buf = payload["trajectories"]["buffer"]
-        self.assertEqual((buf["phase_pending"], buf["phase_reparented"], buf["phase_unread"]),
+        self.assertEqual(buffer_of(view, "phase_pending", "phase_reparented", "phase_unread"),
                          (0, 0, 3))
 
     def test_a_schema7_loop_that_tops_its_tree_ends_with_its_own_record(self):   # R36
@@ -656,7 +678,8 @@ class TrajPhasesTest(unittest.TestCase):
         traj = fed([root8(T0), s8(T0 + 5, 202, 1, "python", "python train.py", depth=2),
                     s8(T0 + 6, 203, 0, "sleep", "sleep 1", depth=2)])
         self.assertEqual(traj.pend.entries, {})
-        self.assertEqual(traj.result()["buffer"]["phase_reparented"], 2)
+        traj.result()
+        self.assertEqual(buffer_of(traj, "phase_reparented"), (2,))
 
     def test_housekeeping_shapes_are_bounded(self):                 # R20
         recs = [root8(T0)] + [s8(T0 + 1 + i, 1000 + i, 100, "tool%d" % i, "tool%d -x" % i)
@@ -667,13 +690,13 @@ class TrajPhasesTest(unittest.TestCase):
 
     def test_previews_past_the_cap_are_counted(self):
         with mock.patch.object(trajmod, "MAX_PREVIEWS", 3):          # 0 is none: two texts fit
-            payload = reduce([root8(T0)] + [bash8(T0 + 5 * i, 201 + i, "ls dir%d" % i)
-                                            for i in range(4)])
-        row = row_of(payload)
+            view = reduced([root8(T0)] + [bash8(T0 + 5 * i, 201 + i, "ls dir%d" % i)
+                                          for i in range(4)])
+        row = row_of(view.payload)
         self.assertEqual(row["n_calls"], 4)
         tops = [t for p in row["phases"]["list"] for t, _ in p["top"]]
         self.assertEqual(sorted(tops), ["ls dir0", "ls dir1"])
-        self.assertEqual(payload["trajectories"]["buffer"]["preview_overflow"], 2)
+        self.assertEqual(buffer_of(view, "preview_overflow"), (2,))
 
     def test_the_configured_thresholds_are_the_segmenters_defaults(self):     # R2
         self.assertEqual(configmod.defaults()["reducers"]["trajectories"]["phases"],
@@ -699,9 +722,34 @@ def ran(row):
     return [r for p in row["phases"]["list"] for r in (p["ran_past"] or [])]
 
 
-def buffer_of(payload, *keys):
-    buf = payload["trajectories"]["buffer"] if "trajectories" in payload else payload["buffer"]
-    return tuple(buf[k] for k in keys)
+# The trajectory reducer's counts of its joins and bounds, by the names they had in the
+# sessions payload's `buffer`. No figure drew them, so they are no longer served; the
+# reducer still keeps them, and these tests read them there.
+COUNTS = {
+    "phase_pending": lambda t: len(t.pend.entries),
+    "phase_pending_refused": lambda t: t.pend.refused,
+    "phase_pending_refused_records": lambda t: t.pend.refused_records,
+    "phase_exited": lambda t: len(t.exited),
+    "phase_exited_evicted": lambda t: t.exited_evicted,
+    "phase_past_due_evicted": lambda t: t.past_due_evicted,
+    "phase_late_routed": lambda t: t.late_routed,
+    "phase_late_unplaced": lambda t: t.late_unplaced,
+    "phase_late_no_start": lambda t: t.late_no_start,
+    "phase_late_hops_out": lambda t: t.late_hops_out,
+    "phase_late_maybe_evicted": lambda t: t.late_maybe_evicted,
+    "phase_untimed": lambda t: t.phase_untimed,
+    "phase_reparented": lambda t: t.phase_reparented,
+    "phase_unread": lambda t: t.phase_unread,
+    "phase_ungrouped": lambda t: t.phase_ungrouped,
+    "preview_overflow": lambda t: t.preview_overflow,
+}
+
+
+def buffer_of(held, *keys):
+    """What the trajectory reducer counted: `held` is a view whose panels were read, or the
+    reducer itself, after its `result()`."""
+    traj = held.reducers["trajectories"] if hasattr(held, "reducers") else held
+    return tuple(COUNTS[k](traj) for k in keys)
 
 
 def pipeline_a(late_child=True):
@@ -737,14 +785,14 @@ class LateChildTest(unittest.TestCase):
         # The review's case (r57_reuse.py): a child of B's call takes pid 210 at T0 + 2949 and
         # ends at T0 + 2950. A's 211 must not follow it into B's call, where it would stretch B's
         # open wait back to T0 + 5. It goes nowhere, counted, as its own parent's note is gone.
-        alone = reduce(by_time(pipeline_a() + poll_b()))
-        self.assertEqual(ran(row_of(alone)), [["a | grep x", 2989.0]])
-        self.assertEqual(opened(row_of(alone, 500)), [("wait", 2800, 3100)])
+        alone = reduced(by_time(pipeline_a() + poll_b()))
+        self.assertEqual(ran(row_of(alone.payload)), [["a | grep x", 2989.0]])
+        self.assertEqual(opened(row_of(alone.payload, 500)), [("wait", 2800, 3100)])
         self.assertEqual(buffer_of(alone, "phase_late_routed", "phase_late_unplaced"), (1, 0))
-        reused = reduce(by_time(pipeline_a() + poll_b() + [
+        reused = reduced(by_time(pipeline_a() + poll_b() + [
             s8(T0 + 2950, 210, 400, "cat", "cat out.txt", root=500, depth=2, duration_s=1.0)]))
-        self.assertEqual(ran(row_of(reused)), [])
-        self.assertEqual(opened(row_of(reused, 500)), [("wait", 2800, 3100)])
+        self.assertEqual(ran(row_of(reused.payload)), [])
+        self.assertEqual(opened(row_of(reused.payload, 500)), [("wait", 2800, 3100)])
         self.assertEqual(buffer_of(reused, "phase_late_routed", "phase_late_unplaced"), (0, 1))
 
     def test_a_child_of_a_later_process_with_the_pid_is_pushed_under_it(self):
@@ -753,20 +801,22 @@ class LateChildTest(unittest.TestCase):
         recs = pipeline_a(late_child=False) + [root8(T0 - 60, root=500)]
         recs += [s8(T0 + 520 + 20 * k, 700 + k, 210, "sleep", "sleep 20", root=500, depth=3,
                     duration_s=20.0) for k in range(10)]
-        payload = reduce(by_time(recs))
+        view = reduced(by_time(recs))
+        payload = view.payload
         self.assertEqual(ran(row_of(payload)), [])
         self.assertEqual(opened(row_of(payload, 500)), [("wait", 500, 700)])
-        self.assertEqual(buffer_of(payload, "phase_late_routed", "phase_late_unplaced",
+        self.assertEqual(buffer_of(view, "phase_late_routed", "phase_late_unplaced",
                                    "phase_pending"), (0, 0, 1))
 
     def test_a_parent_whose_pid_a_later_process_took_is_no_way_up(self):
         # 210 went into call 201's entry, and 201 ended; then a child of B's call took pid 201 and
         # ended. Climbing from 210 to that note would take 211 into B's call.
-        payload = reduce(by_time(pipeline_a() + poll_b() + [
+        view = reduced(by_time(pipeline_a() + poll_b() + [
             s8(T0 + 2950, 201, 400, "cat", "cat out.txt", root=500, depth=2, duration_s=1.0)]))
+        payload = view.payload
         self.assertEqual(opened(row_of(payload, 500)), [("wait", 2800, 3100)])
         self.assertEqual(ran(row_of(payload)), [])
-        self.assertEqual(buffer_of(payload, "phase_late_routed", "phase_late_unplaced"), (0, 1))
+        self.assertEqual(buffer_of(view, "phase_late_routed", "phase_late_unplaced"), (0, 1))
 
     def test_a_parent_note_of_an_earlier_process_with_its_pid_stops_the_walk(self):
         # A's call 300 ended at T0 + 20. B's call 400 then runs a process with pid 300 again, from
@@ -776,64 +826,76 @@ class LateChildTest(unittest.TestCase):
                 s8(T0 + 120, 310, 300, "bash", "bash -c 'a | grep x'", root=500, depth=3,
                    duration_s=10.0),
                 s8(T0 + 200, 311, 310, "grep", "grep x", root=500, depth=4, duration_s=85.0)]
-        payload = reduce(by_time(recs))
+        view = reduced(by_time(recs))
+        payload = view.payload
         self.assertEqual(ran(row_of(payload)), [])
         self.assertEqual(row_of(payload, 500)["phases"]["housekeeping"]["never_exited"], 2)
-        self.assertEqual(buffer_of(payload, "phase_late_routed", "phase_late_unplaced",
+        self.assertEqual(buffer_of(view, "phase_late_routed", "phase_late_unplaced",
                                    "phase_pending"), (1, 0, 1))
 
     def test_a_late_child_of_a_chore_is_that_chore(self):
         hook = "python3 " + HOME + "/.claude/hooks/policy.py"
-        payload = reduce([root8(T0), s8(T0 + 10, 401, 100, "python3", hook, duration_s=5.0),
-                          s8(T0 + 60, 402, 401, "git", "git status", depth=2, duration_s=52.0)])
-        self.assertEqual(row_of(payload)["phases"]["housekeeping"]["shapes"], [["python3", 2]])
-        self.assertEqual(buffer_of(payload, "phase_late_routed", "phase_pending"), (1, 0))
+        view = reduced([root8(T0), s8(T0 + 10, 401, 100, "python3", hook, duration_s=5.0),
+                        s8(T0 + 60, 402, 401, "git", "git status", depth=2, duration_s=52.0)])
+        self.assertEqual(row_of(view.payload)["phases"]["housekeeping"]["shapes"],
+                         [["python3", 2]])
+        self.assertEqual(buffer_of(view, "phase_late_routed", "phase_pending"), (1, 0))
 
     def test_a_late_child_of_a_root_is_what_the_root_held(self):
         srv = (HOME + "/.claude/remote/srv/89cb/server --serve --socket " + HOME
                + "/.claude/remote/run/c0e8/rpc.sock")
         kw = dict(agent_pid=800, tree_root=800)
-        payload = reduce([
+        view = reduced([
             rec("residency", T0, 800, 1, "server", srv, is_agent=True, age_s=60, **kw),
             rec("exit", T0 + 10, 810, 800, "git", "git status --porcelain", **kw),
             rec("exit", T0 + 1300, 800, 1, "server", srv, is_agent=True, duration_s=1400, **kw),
             rec("exit", T0 + 1320, 811, 800, "git", "git fetch", duration_s=30.0, **kw)])
-        self.assertEqual(row_of(payload, 800)["phases"]["housekeeping"]["shapes"], [["git", 2]])
-        self.assertEqual(buffer_of(payload, "phase_unread", "phase_late_routed", "phase_pending"),
+        self.assertEqual(row_of(view.payload, 800)["phases"]["housekeeping"]["shapes"],
+                         [["git", 2]])
+        self.assertEqual(buffer_of(view, "phase_unread", "phase_late_routed", "phase_pending"),
                          (1, 1, 0))
 
     def test_a_late_child_of_a_reparented_process_is_counted_once(self):
         traj = fed([root8(T0), s8(T0 + 10, 501, 1, "python", "python job.py", depth=2,
                                   duration_s=8.0),
                     s8(T0 + 40, 502, 501, "sleep", "sleep 35", depth=3, duration_s=35.0)])
-        self.assertEqual(buffer_of(traj.result(), "phase_reparented", "phase_late_routed",
+        traj.result()
+        self.assertEqual(buffer_of(traj, "phase_reparented", "phase_late_routed",
                                    "phase_pending"), (2, 0, 0))
 
-    def test_a_late_child_of_an_agent_whose_calls_are_not_read_is_counted(self):
+    def test_a_late_child_of_any_agents_call_is_that_calls(self):
+        # Copilot's calls are read by the general rule, so a stage that outlived its shell is
+        # placed in the call, as a Claude call's is
         kw = dict(root=900, agent_type="copilot")
         traj = fed([root8(T0, root=900, command="copilot", args="copilot", agent_type="copilot"),
                     s8(T0 + 10, 901, 900, "bash", "bash -c 'a | grep x'", duration_s=9.0, **kw),
                     s8(T0 + 60, 902, 901, "grep", "grep x", depth=2, duration_s=55.0, **kw)])
-        self.assertEqual(buffer_of(traj.result(), "phase_late_unplaced", "phase_late_routed",
-                                   "phase_pending"), (1, 0, 0))
+        payload = traj.result()
+        self.assertEqual(buffer_of(traj, "phase_late_unplaced", "phase_late_routed",
+                                   "phase_pending"), (0, 0, 0))
+        row = row_of(payload, 900)
+        self.assertEqual(row["n_calls"], 1)
+        past = [r for p in row["phases"]["list"] for r in (p["ran_past"] or ())]
+        self.assertEqual(len(past), 1)          # the grep ran past its shell, and is its call's
 
     def test_an_entry_an_earlier_process_left_under_a_reused_pid_is_refused_and_counted(self):
         # Final Important 5. Two children of a process 300 whose own record never came wait under
         # its pid; eight minutes later a Bash call that got pid 300 exits. Their entry began before
         # it could have: it is refused, as before, and now counted, with the records it held.
-        payload = reduce([root8(T0 - 60),
-                          s8(T0 + 10, 301, 300, "ls", "ls", depth=2),
-                          s8(T0 + 11, 302, 300, "cat", "cat f", depth=2),
-                          bash8(T0 + 500, 300, "pwd", duration_s=1.0)])
-        self.assertEqual(row_of(payload)["n_calls"], 1)
-        self.assertEqual(buffer_of(payload, "phase_pending_refused", "phase_pending_refused_records",
+        view = reduced([root8(T0 - 60),
+                        s8(T0 + 10, 301, 300, "ls", "ls", depth=2),
+                        s8(T0 + 11, 302, 300, "cat", "cat f", depth=2),
+                        bash8(T0 + 500, 300, "pwd", duration_s=1.0)])
+        self.assertEqual(row_of(view.payload)["n_calls"], 1)
+        self.assertEqual(buffer_of(view, "phase_pending_refused", "phase_pending_refused_records",
                                    "phase_pending"), (1, 2, 0))
 
     def test_a_late_child_with_no_start_is_pushed_and_counted(self):
         late = s8(T0 + 60, 211, 210, "grep", "grep x", depth=3)
         late.pop("duration_s")
         traj = fed(pipeline_a(late_child=False) + [late])
-        self.assertEqual(buffer_of(traj.result(), "phase_late_no_start", "phase_late_routed",
+        traj.result()
+        self.assertEqual(buffer_of(traj, "phase_late_no_start", "phase_late_routed",
                                    "phase_pending"), (1, 0, 1))
 
     def test_what_ran_under_a_record_with_no_time_is_counted(self):
@@ -847,7 +909,8 @@ class LateChildTest(unittest.TestCase):
                                duration_s=9.0)),
                     bash8(T0 + 11, 201, "ls; grep x f", duration_s=10.0),
                     s8(T0 + 60, 211, 210, "grep", "grep x f", depth=3, duration_s=55.0)])
-        self.assertEqual(buffer_of(traj.result(), "phase_untimed", "phase_late_routed",
+        traj.result()
+        self.assertEqual(buffer_of(traj, "phase_untimed", "phase_late_routed",
                                    "phase_pending"), (2, 0, 0))
 
     def test_a_child_whose_parents_note_was_dropped_is_pushed_and_counted(self):
@@ -863,7 +926,8 @@ class LateChildTest(unittest.TestCase):
                  s8(T0 + 310, 702, 700, "python", "python job.py", depth=3, duration_s=260.0)]
         with mock.patch.object(trajmod, "EXITED_MAX", 3):
             traj = fed(by_time(recs))
-        self.assertEqual(buffer_of(traj.result(), "phase_exited", "phase_exited_evicted",
+        traj.result()
+        self.assertEqual(buffer_of(traj, "phase_exited", "phase_exited_evicted",
                                    "phase_late_maybe_evicted", "phase_late_routed",
                                    "phase_pending"), (3, 7, 1, 0, 2))
         self.assertEqual(traj.exited_horizon, T0 + 100)
@@ -878,13 +942,13 @@ class LateChildTest(unittest.TestCase):
                 bash8(T0 + 8, 201, "x", duration_s=7.5),
                 s8(T0 + 100, 231, 230, "grep", "grep x", depth=5, duration_s=97.0)]
         with mock.patch.object(trajmod, "LATE_HOPS", 1):
-            payload = reduce(recs)
-        self.assertEqual(buffer_of(payload, "phase_late_hops_out", "phase_late_routed",
+            view = reduced(recs)
+        self.assertEqual(buffer_of(view, "phase_late_hops_out", "phase_late_routed",
                                    "phase_pending"), (1, 0, 1))
-        payload = reduce(recs)                              # at LATE_HOPS, up to the call
-        self.assertEqual(buffer_of(payload, "phase_late_hops_out", "phase_late_routed",
+        view = reduced(recs)                                # at LATE_HOPS, up to the call
+        self.assertEqual(buffer_of(view, "phase_late_hops_out", "phase_late_routed",
                                    "phase_pending"), (0, 1, 0))
-        self.assertEqual(ran(row_of(payload)), [["x", 92.0]])
+        self.assertEqual(ran(row_of(view.payload)), [["x", 92.0]])
 
 
 def session(rec_):
@@ -1243,12 +1307,14 @@ class MergeHoursTest(unittest.TestCase):
                    "python job%d.py" % i, duration_s=2400.4, depth=2) for i in range(5)]
         with mock.patch.object(trajmod, "PAST_DUE_MAX", 3):
             saved, carry, fresh = TM.hour_states(TM.normalized(raw))
-            got = TM.materialize(TM.merged(saved, fresh, carry))
-        self.assertEqual(got["trajectories"]["buffer"]["phase_past_due_evicted"], 2)
+            view = TM.merged(saved, fresh, carry)
+            got = TM.materialize(view)
+        self.assertEqual(buffer_of(view, "phase_past_due_evicted"), (2,))
         past = [t for p in row_of(got)["phases"]["list"] for t, _ in (p["ran_past"] or ())]
         self.assertEqual(sorted(past), ["nohup python job%d.py &" % i for i in (2, 3, 4)])
-        one = TM.materialize(TM.one_pass(TM.normalized(raw)))
-        self.assertEqual(one["trajectories"]["buffer"]["phase_past_due_evicted"], 0)
+        view = TM.one_pass(TM.normalized(raw))
+        one = TM.materialize(view)
+        self.assertEqual(buffer_of(view, "phase_past_due_evicted"), (0,))
         self.assertEqual(len([t for p in row_of(one)["phases"]["list"]
                               for t, _ in (p["ran_past"] or ())]), 5)
 
@@ -1296,6 +1362,126 @@ def by_time(recs):
 
 def app_reads(row):
     return dict(row["phases"]["housekeeping"]["shapes"]).get("app assets", 0)
+
+
+def h8(t, pid, ppid, command, args, pgrp, sid, user="bob", tty="pts/3", **kw):
+    """A person's process, schema 8: no agent above it, a terminal, and the groups it ran in."""
+    return rec("exit", t, pid, ppid, command, args, agent_pid=None, tree_root=None,
+               actor="human", actor3="human", agent_type=None, tty=tty, user=user,
+               pgrp=pgrp, sid=sid, schema_version=8, **kw)
+
+
+def person_of(payload, user="bob"):
+    rows = [r for r in ranked(payload) if r["actor3"] == "human" and r["user"] == user]
+    if len(rows) != 1:
+        raise AssertionError("%d rows for %s" % (len(rows), user))
+    return rows[0]
+
+
+SH = 500        # a login shell: it leads the terminal's session, and a process group of its own
+
+
+def login(t):
+    """What a person did in one login: the shell's startup helper and its prompt's git, in its own
+    group; then jobs, each in a group of its own: vim, a build with its compilers under it, a
+    pipeline, a test run, six polls of the queue, and `( cd x && make )` in a forked subshell."""
+    out = [h8(t + 1, 501, SH, "id", "/usr/bin/id -un", SH, SH),
+           h8(t + 2, 502, SH, "git", "git rev-parse --git-dir --is-inside-work-tree", SH, SH),
+           h8(t + 400, 510, SH, "vim", "vim train.py", 510, SH, duration_s=380)]
+    out += [h8(t + 420 + i, 521 + i, 520, "cc", "cc -c f%d.c" % i, 520, SH) for i in range(4)]
+    out += [h8(t + 430, 520, SH, "make", "make -j8", 520, SH, duration_s=15),
+            h8(t + 500, 530, SH, "ls", "ls -la", 530, SH),
+            h8(t + 500.2, 531, SH, "grep", "grep py", 530, SH),
+            h8(t + 600, 540, SH, "python", "python -m pytest -q", 540, SH, duration_s=40)]
+    out += [h8(t + 900 + 120 * i, 550 + i, SH, "squeue", "squeue -u bob", 550 + i, SH)
+            for i in range(6)]
+    out += [h8(t + 2000, 571, 570, "make", "make", 570, SH, duration_s=5),
+            h8(t + 2006, 570, SH, "bash", "-bash", 570, SH, argv_source="inherit", duration_s=6.5)]
+    return out
+
+
+class TerminalSessionTest(unittest.TestCase):
+    """A session no agent runs, a person's login or an editor's terminal, is read from the jobs its
+    terminals' shells ran, known by the process groups the collector records."""
+
+    def test_a_persons_jobs_are_calls_and_the_shells_own_are_not(self):
+        row = person_of(reduce(login(T0)))
+        ph = row["phases"]
+        self.assertEqual(row["n_calls"], 12)
+        self.assertEqual(ph["n_calls"], 12)
+        self.assertEqual(ph["driver"], "terminal")
+        self.assertEqual(ph["basis"], trajmod.TERMINAL_BASIS)
+        tops = {c for p in ph["list"] for c, _ in p["top"]}
+        self.assertTrue({"vim train.py", "make -j8", "ls -la", "grep py", "squeue -u bob"} <= tops)
+        # the compilers are the build's, never calls of their own
+        self.assertFalse(any(c.startswith("cc ") for c in tops))
+        shapes = dict(ph["housekeeping"]["shapes"])
+        self.assertEqual((shapes.get("login shell startup"), shapes.get("prompt")), (1, 1))
+        self.assertIn("12 commands", ph["summary"])
+        self.assertNotIn("tool call", ph["summary"])
+        # the subshell is named by what ran under it
+        self.assertIn("make", tops)
+
+    def test_a_job_still_running_is_a_call_and_what_waits_under_the_shell_is_not(self):
+        # `./run.sh` has not exited: its steps, in its group, are a call still running at the
+        # edge. The tmux server, forked off with no exec, leads a session of its own: no call.
+        last = T0 + 3000
+        scope = "/user.slice/user-1000.slice/session-7.scope"     # one login: one session key
+        recs = [h8(T0 + 10, 510, SH, "ls", "ls", 510, SH)]
+        # steps at a person's own uneven pace: a job's work, not a loop polling something
+        starts = [last - 600 + sum((31, 44, 18, 52, 27, 39, 61, 22, 35, 48)[:i]) for i in range(11)]
+        recs += [h8(t + 15, 581 + i, 580, "python", "python step%d.py" % i, 580, SH,
+                    duration_s=15) for i, t in enumerate(starts)]
+        recs += [h8(T0 + 20, 900, 1, "tmux", "tmux new -s w", 900, 900, tty=None,
+                    argv_source="inherit", duration_s=15)]
+        for r in recs:
+            r["cgroup"] = scope
+        ph = person_of(reduce(recs))["phases"]
+        opened = [p for p in ph["list"] if p.get("open")]
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0]["kind"], "run")
+        self.assertIn(["terminal multiplexer", 1], ph["housekeeping"]["shapes"])
+
+    def test_an_editors_terminal_is_read_and_what_the_editor_runs_is_its_own(self):
+        V = dict(agent_pid=800, tree_root=800, agent_type="vscode", actor="agent",
+                 actor3="human-vscode", user="carol", schema_version=8)
+        recs = [rec("residency", T0, 800, 1, "node", HOME + "/.vscode-server/cli/servers/x/server/"
+                    "node server-main.js --connection-token=x", is_agent=True, age_s=60, depth=0, **V)]
+        # the extension host's source control polls git on its own, steadily: never a call, not
+        # even one still running
+        recs += [rec("exit", T0 + 60 * i, 811 + i, 801, "git", "git status -z -uall", pgrp=800,
+                     sid=800, depth=2, **V) for i in range(30)]
+        # the terminal: its shell leads its session, and each command is a job
+        recs += [rec("exit", T0 + 70, 821, 820, "python3", "python3 train.py", pgrp=821, sid=820,
+                     tty="pts/7", depth=3, duration_s=30, **V),
+                 rec("exit", T0 + 200, 822, 820, "git", "git diff", pgrp=822, sid=820,
+                     tty="pts/7", depth=3, **V)]
+        row = row_of(reduce(recs), 800)
+        self.assertEqual(row["actor3"], "ide")
+        self.assertEqual(row["n_calls"], 2)
+        self.assertEqual(row["phases"]["driver"], "terminal")
+        self.assertFalse(any(p.get("open") for p in row["phases"]["list"]))
+        self.assertEqual(sorted(c for p in row["phases"]["list"] for c, _ in p["top"]),
+                         ["git diff", "python3 train.py"])
+        self.assertIn(["under a process that never exited", 30],
+                      row["phases"]["housekeeping"]["shapes"])
+
+    def test_a_persons_session_survives_merging_hours(self):
+        b = seam(5400)
+        raw = sorted(login(b - 1200) + [
+            # a job across the seam: its steps under it in both hours, and its own record after
+            *[h8(b - 300 + 60 * i, 601 + i, 600, "python", "python step%d.py" % i, 600, SH,
+                 duration_s=50) for i in range(10)],
+            h8(b + 400, 600, SH, "bash", "bash run.sh", 600, SH, duration_s=720)],
+            key=lambda r: r["ts_epoch"])
+        one = TM.materialize(TM.one_pass(TM.normalized(raw)))
+        saved, carry, fresh = TM.hour_states(TM.normalized(raw))
+        self.assertGreaterEqual(len(saved), 2)
+        got = TM.materialize(TM.merged(saved, fresh, carry))
+        a, g = person_of(one), person_of(got)
+        self.assertEqual(a["phases"], g["phases"])
+        self.assertEqual(a["n_calls"], 13)
+        self.assertIn("bash run.sh", {c for p in a["phases"]["list"] for c, _ in p["top"]})
 
 
 class CodexAppReadsTest(unittest.TestCase):

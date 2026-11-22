@@ -1,7 +1,7 @@
 """Stable aliases for the names in everything this service sends out.
 
-With `anonymize.enabled` set, no response, websocket frame, export line or
-Ask-LLM snapshot carries a real username, a lab or Slurm account name, an email
+With `anonymize.enabled` set, no response, websocket frame or Ask-LLM
+snapshot carries a real username, a lab or Slurm account name, an email
 address or a numeric user ID. Each name becomes an alias cut from an HMAC under
 a secret salt -- `user-` or `lab-` and 8 hex characters -- so a reader can still
 follow one person across tabs, windows and restarts, and nobody without the
@@ -12,7 +12,7 @@ reducers. Reducers and their saved state keep raw names -- the detectors, the
 user filter and the dedup need them -- so switching this on or off is a
 restart, never a rebuild. `app.py` sends every JSON response through
 `AnonJSONResponse` and calls `payload` itself for the exits that bypass it: the
-websocket frames, the export stream and the gzipped trajectory body.
+websocket frames and the gzipped trajectory body.
 
 What counts as a name:
 
@@ -571,10 +571,6 @@ class Anonymizer:
         if label:
             self.last_ms[label] = round(1000 * (time.perf_counter() - t0), 1)
         return out
-
-    def record(self, rec):
-        """One raw record, for /api/events and /api/export."""
-        return self.payload(rec)
 
     # ----------------------------------------------------------- requests
     def dealias_user(self, v):

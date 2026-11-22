@@ -12,8 +12,8 @@
  *                           not a 0: it says so, with what the reducer said.
  *
  * Rule: data only. A panel carries a title, the feed that fills it, and the
- * chart or table. `notes` / `basis` / `cpu_basis` go in <Basis>, a collapsed
- * affordance -- never body prose.
+ * chart or table: no method notes. The service's `notes`, `basis` and
+ * `*_basis` texts are not served to the page; Ask LLM reads them.
  */
 import { useState } from 'react';
 import type { ReactNode } from 'react';
@@ -29,7 +29,8 @@ export function StatusPill({
   tip,
   focusable = false,
 }: {
-  status: FeedStatus | 'live';
+  /** a feed's status, `live`, or `degraded`: a collector's verdict (FeedsTab) */
+  status: FeedStatus | 'degraded' | 'live';
   text?: string;
   beat?: boolean;
   tip?: string;
@@ -155,8 +156,8 @@ export function Building({ w }: { w: WindowStatus }) {
           : merging
             ? `combining the saved hours of the ${w.label} window`
             : resuming
-            ? `resuming the saved ${w.label} reduction, reading only what the collector wrote since it was built — ${p.records.toLocaleString()} records across ${p.files} file(s)`
-            : `these panels carry no time index, so the ${w.label} window is being reduced from the rows — ${p.records.toLocaleString()} records across ${p.files} file(s)`}
+            ? `reading what was written since the saved ${w.label} build — ${p.records.toLocaleString()} records across ${p.files} file(s)`
+            : `reading the ${w.label} window — ${p.records.toLocaleString()} records across ${p.files} file(s)`}
       </p>
     </div>
   );
@@ -176,7 +177,6 @@ export interface PanelProps {
   empty?: boolean;
   emptyWhat?: string;
   header?: ReactNode;
-  basis?: ReactNode;
   /** What an "ask" about this panel reads (components/Ask.tsx): the service's
    *  panel data it is drawn from, or one session. No button without it. */
   ask?: AskRef | null;
@@ -197,7 +197,6 @@ export function Panel({
   empty,
   emptyWhat,
   header,
-  basis,
   ask,
   children,
 }: PanelProps) {
@@ -290,36 +289,7 @@ export function Panel({
           {children}
         </Boundary>
       )}
-      {/* A basis handed over as bare text is a paragraph of method notes; the
-          reader asked for none of those under a panel. Only <Basis>, which is
-          switched off, may render here. */}
-      {!missing && !blank && typeof basis !== 'string' && basis}
     </section>
-  );
-}
-
-/** The collapsed basis affordance: notes, cpu_basis, scope, dedup rules. */
-/* Basis disclosures are switched off: the reader found them noise, not help.
- * Anything a reader needs to read a number right belongs in its tooltip or its
- * pill, beside the number, not in a collapsed list under the panel. The prop and
- * the call sites stay for now so this is one switch, not a dozen file edits. */
-const SHOW_BASIS = false;
-
-export function Basis({ items }: { items: [string, unknown][] }) {
-  if (!SHOW_BASIS) return null;
-  const rows = items.filter(([, v]) => v != null && v !== '' && !(Array.isArray(v) && !v.length));
-  if (!rows.length) return null;
-  return (
-    <details className="basis">
-      <summary>basis</summary>
-      <div className="body">
-        {rows.map(([k, v]) => (
-          <div key={k}>
-            <b>{k}</b> {typeof v === 'object' ? JSON.stringify(v) : String(v)}
-          </div>
-        ))}
-      </div>
-    </details>
   );
 }
 
@@ -334,12 +304,17 @@ export function More({ label, children }: { label: string; children: React.React
   );
 }
 
-export function Legend({ items }: { items: { k: string; c: string; dashed?: boolean; solid?: boolean }[] }) {
+export function Legend({
+  items,
+}: {
+  /** `tip`: what an entry stands for, where its words alone do not say */
+  items: { k: string; c: string; dashed?: boolean; solid?: boolean; tip?: string }[];
+}) {
   if (!items.length) return null;
   return (
     <div className="legend">
       {items.map((i) => (
-        <span key={i.k + i.c}>
+        <span key={i.k + i.c} data-tip={i.tip}>
           {i.dashed
             ? <i className="dash" style={{ borderTopColor: i.c }} />
             : <i className={i.solid ? 'solid' : undefined} style={{ background: i.c }} />}

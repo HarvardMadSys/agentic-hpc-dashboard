@@ -449,8 +449,7 @@ class Caps:
     """Lower the caps a day never reaches, so merging past them is tested."""
 
     def __enter__(self):
-        self._p = [mock.patch.object(trajmod, "MAX_SEQ_RUNS", 25),
-                   mock.patch.object(trajmod, "DRIFT_CAP", 60)]
+        self._p = [mock.patch.object(trajmod, "MAX_SEQ_RUNS", 25)]
         for p in self._p:
             p.start()
         return self

@@ -1,0 +1,46 @@
+# Rendered by deploy/common/install-dashboard.sh into /etc/systemd/system/rc-dashboard.service.
+# Edit the template and run the installer again, so the two never diverge.
+#
+# The dashboard (rc_dashboard serve), as its own account, from the checkout at @REPO@. Its
+# settings are dashboard.env (yours) and paths.env (the installer's, which wins: where it
+# reads and keeps things). Each start refills its history from the feeds it reads.
+
+[Unit]
+Description=rc dashboard: what coding agents do on the watched servers
+Documentation=file://@REPO@/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+# A dashboard that cannot start (no password hash, a feed path it may not read) stops
+# trying after 5 starts in 10 minutes; `systemctl reset-failed rc-dashboard` lets it again.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+# The group the collector writes for, on a host whose own collector it reads (single).
+SupplementaryGroups=@GROUP@
+WorkingDirectory=@REPO@/dashboard
+EnvironmentFile=@ETC@/dashboard.env
+EnvironmentFile=@ETC@/paths.env
+ExecStart=@VENV@/bin/python -m rc_dashboard serve
+Restart=on-failure
+RestartSec=30
+# On stop the service finishes the requests it is answering, and the backfill notices.
+TimeoutStopSec=60
+StateDirectory=rc-dashboard
+StateDirectoryMode=0700
+UMask=0077
+LimitCORE=0
+# A hard cap: past it the kernel stops the process, and systemd starts it again. There is
+# no soft cap: with no swap, MemoryHigh stalls a process instead, and a stalled dashboard
+# answers nothing. Raise it for many busy nodes (hpc/deploy/README.md, "Memory and disk").
+MemoryMax=@MEMORY_MAX@
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

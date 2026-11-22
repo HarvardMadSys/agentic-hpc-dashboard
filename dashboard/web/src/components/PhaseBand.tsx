@@ -15,7 +15,8 @@
  * - the live edge, after the last phase, when `now` says what the per-minute
  *   census shows: filled in the colour of what is running, an empty dashed outline
  *   where it shows nothing beyond what was already up (idle, which is a proxy),
- *   and an empty DOTTED one where it cannot say.
+ *   and an empty DOTTED one where it cannot say. A session with no phase yet, whose
+ *   first call has not ended, is its live edge alone, from the axis's start.
  * - a TICK, a hairline across the band, where a task or a lone stretch after the first
  *   begins (`tasks`; the line under the band names the tasks). It stands at the later
  *   one's first call, so across a cutting gap it is at the end of the gap's idle band, and
@@ -30,7 +31,7 @@
  */
 import { useId } from 'react';
 import type { ReactNode } from 'react';
-import type { Phase, Task, TrajRunning } from '../api/types';
+import type { Phase, PhaseDriver, Task, TrajRunning } from '../api/types';
 import { GAP, edgeTip, phaseCol, phaseTip, placeBand, sequenceLine, sliceTip } from '../lib/phases';
 import { useClockPinned } from '../lib/useNow';
 
@@ -63,9 +64,11 @@ export interface PhaseBandProps {
   now?: TrajRunning['now'] | null;
   /** where that segment ends, epoch seconds; the axis's end when left out */
   nowAt?: number;
+  /** whose calls the phases were read from, which their tooltips' words follow */
+  driver?: PhaseDriver;
 }
 
-export function PhaseBand({ list, tasks, t0, t1, W, H, now, nowAt }: PhaseBandProps) {
+export function PhaseBand({ list, tasks, t0, t1, W, H, now, nowAt, driver }: PhaseBandProps) {
   // an open phase's and an unknown edge's words read the clock's pin (lib/useNow.ts)
   useClockPinned();
   const hatch = 'ph' + useId().replace(/[^\w-]/g, '');
@@ -86,7 +89,7 @@ export function PhaseBand({ list, tasks, t0, t1, W, H, now, nowAt }: PhaseBandPr
       fill: col,
       x,
       w,
-      tip: phaseTip(p),
+      tip: phaseTip(p, driver),
       at: i,
       // R22: any phase can hold guessed slices, and each is hatched where it lies
       over: (p.slices ?? [])

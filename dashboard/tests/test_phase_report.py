@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rc_dashboard import phase_report as pr                     # noqa: E402
 from rc_dashboard.reducers import trajectories as trajmod       # noqa: E402
 from rc_dashboard.reducers.phase_log import FLAGS, OPEN         # noqa: E402
-from test_sessions import HOME, rec                             # noqa: E402
 from test_traj_phases import HELPER, bash8, fed, root8, s8      # noqa: E402
 from test_traj_tasks import configured                          # noqa: E402
 

@@ -424,9 +424,6 @@ details.ins-limits > summary .eyebrow {
   text-overflow: ellipsis;
   min-width: 0;
 }
-.pt-arg.boiler {
-  color: var(--muted);
-}
 .pt-count {
   font-family: 'IBM Plex Mono', monospace;
   font-weight: 600;
@@ -1502,37 +1499,4 @@ svg:has(> g.pickable:focus-visible) {
   .pt-tog {
     width: 24px;
   }
-}
-
-/* A model's purpose for a tool call (components/Annotate.tsx): one colour of its
- * own and a dashed edge, the page's mark for what is read rather than measured. */
-.pt-llm {
-  flex: none;
-  max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 12px;
-  font-style: italic;
-  color: var(--s4);
-  border: 1px dashed var(--s4);
-  border-radius: 3px;
-  padding: 0 5px;
-}
-.pt-llm i {
-  font-style: normal;
-  margin-right: 4px;
-}
-.pd-llm {
-  flex: none;
-  color: var(--s4);
-  font-size: 11.5px;
-}
-.pd-annotate {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  min-width: 0;
-}
-.pd-annotate .nm.bad {
-  color: var(--crit);
 }

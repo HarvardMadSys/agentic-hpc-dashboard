@@ -5,11 +5,14 @@ name: ci
 #   collector-el8   the collector's tests on EL8's own Python 3.6, the one the login
 #                   nodes run, in the Rocky 8.10 image rpm-release.yml builds in. gcc
 #                   lets the tests that compile and run the generated probes run. The
-#                   fleet sender runs on the same nodes, so it must compile there too.
-#   python          the collector, fleet and deploy-kit tests on the runner's Python 3
+#                   HPC fleet sender runs on the same nodes, and deploy/fleet's pull.py on
+#                   whatever python3 a host has, so both must compile there too.
+#   python          the collector's, the two deploy modes' (deploy/), and hpc/'s tests on
+#                   the runner's Python 3, with rsync for real
 #   dashboard       the service's tests with the dependencies uv.lock pins, on 3.11
 #                   (pyproject's minimum) and 3.13 (what the demo image runs)
-#   web             the page: its types, its check:* scripts, and its build
+#   web             the page: its types, `npm run check` (no Math.random, and every
+#                   mock/check_*.mjs), and its build
 #
 # demo-deploy.yml runs this workflow first (workflow_call) and deploys only if it
 # passes. Nothing here reads a secret or writes anything.
@@ -43,8 +46,9 @@ jobs:
     steps:
       # procps-ng for ps: the image has none, and node_snapshot.py reads its
       # process tables from ps, as on the login nodes.
-      - name: Install Python 3.6, gcc, git and ps
-        run: dnf -y install python3 gcc git-core procps-ng
+      # tar, gzip and hostname for ebpfm.sh, which tests/test_units.py runs (bundle, units).
+      - name: Install Python 3.6, gcc, git, ps, tar, gzip and hostname
+        run: dnf -y install python3 gcc git-core procps-ng tar gzip hostname
 
       # The same commits demo-deploy.yml pins.
       - name: Checkout
@@ -57,11 +61,11 @@ jobs:
           python3 --version
           python3 -m unittest discover -s collector/tests -q
 
-      - name: The fleet sender compiles on Python 3.6
-        run: python3 -m py_compile fleet/fleet_stream.py fleet/seed_mirror.py
+      - name: The fleet sender and the fleet puller compile on Python 3.6
+        run: python3 -m py_compile hpc/fleet/fleet_stream.py hpc/fleet/seed_mirror.py deploy/fleet/pull.py
 
   python:
-    name: Collector, fleet and deploy kit
+    name: Collector, deploy modes and HPC kit
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -77,11 +81,25 @@ jobs:
           python3 --version
           python3 -m unittest discover -s collector/tests -q
 
-      - name: Fleet tests
-        run: python3 -m unittest discover -s fleet/tests -q
+      # pull.py's tests copy with rsync for real (and skip without it): say so, rather
+      # than pass by skipping. rrsync, when the runner's rsync has it, runs too.
+      - name: rsync is here
+        run: |
+          command -v rsync
+          rsync --version | head -n 1
+          command -v rrsync || echo "no rrsync here, so its one test skips"
 
-      - name: Deploy kit tests
+      - name: Fleet puller tests
         run: python3 -m unittest discover -s deploy/fleet/tests -q
+
+      - name: Installer tests (single and fleet)
+        run: python3 -m unittest discover -s deploy/common/tests -q
+
+      - name: HPC fleet stream tests
+        run: python3 -m unittest discover -s hpc/fleet/tests -q
+
+      - name: HPC deploy kit tests
+        run: python3 -m unittest discover -s hpc/deploy/tests -q
 
   dashboard:
     name: Dashboard (Python ${{ matrix.python }})
@@ -116,8 +134,10 @@ jobs:
           PYTHON_VERSION: ${{ matrix.python }}
         run: uv sync --frozen --python "$PYTHON_VERSION"
 
+      # tests/test_fleet_copy.py runs deploy/fleet/pull.py, which copies with rsync.
       - name: Dashboard tests
         run: |
+          command -v rsync
           uv run --no-sync python --version
           uv run --no-sync python -m unittest discover -s tests -q
 
@@ -149,20 +169,12 @@ jobs:
       - name: Type-check
         run: npm run typecheck
 
-      - name: "check: no Math.random"
-        run: npm run check:no-random
-
-      - name: "check: phases"
-        run: npm run check:phases
-
-      - name: "check: charts"
-        run: npm run check:charts
-
-      - name: "check: figures"
-        run: npm run check:figures
-
-      - name: "check: css"
-        run: npm run check:css
+      # `npm run check` is check:no-random, then every mock/check_*.mjs under one
+      # `node --test`, by glob: a check added to mock/ runs here without being
+      # named, so CI and a local run cannot drift apart. node --test names the
+      # file and the test that failed.
+      - name: "Checks: no Math.random, every mock/check_*.mjs"
+        run: npm run check
 
       - name: Build
         run: npm run build

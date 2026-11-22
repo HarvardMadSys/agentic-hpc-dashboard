@@ -1,0 +1,32 @@
+# Rendered by deploy/common/install-dashboard.sh (fleet) into
+# /etc/systemd/system/rc-pull.service. Edit the template and run the installer again.
+#
+# pull.py's loop: every node in fleet.env copied into the mirror the dashboard reads, each
+# node every FLEET_INTERVAL_S on its own, with rsync over ssh. It runs as the dashboard's
+# account, so the copy stays private to it.
+
+[Unit]
+Description=rc dashboard: copy each fleet node's collector files (deploy/fleet/pull.py)
+Documentation=file://@REPO@/deploy/fleet/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+ExecStart=@VENV@/bin/python @REPO@/deploy/fleet/pull.py --config @ETC@/fleet.env loop
+Restart=always
+RestartSec=10
+# 2: fleet.env is wrong; 3: another pull.py holds the copy. Starting again changes neither.
+RestartPreventExitStatus=2 3
+StateDirectory=rc-dashboard
+StateDirectoryMode=0700
+UMask=0077
+MemoryMax=512M
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

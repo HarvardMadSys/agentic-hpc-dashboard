@@ -25,9 +25,7 @@ by `max_sessions`: past it, whole sessions go, the least recently active first
 
 "Top" is SEVEN rankings, not one: by processes, CPU, memory, disk I/O, network,
 distinct tools, and recency.  A single ranking is dominated by one poll loop
-and one mega-user -- CLAUDE.md records one user at ~81% of agent submissions --
-so each list ships with `dominant_user_share_pct`, letting the panel state its
-own concentration instead of implying a fleet-wide pattern.
+and one mega-user -- CLAUDE.md records one user at ~81% of agent submissions.
 
 Disk I/O is each process's OWN. The collector reads `task->signal->ioac`, which
 the kernel also credits with the I/O of every child the process reaped
@@ -40,31 +38,23 @@ every panel that sums disk bytes shares: own_io.py), so a sum over any set of
 processes counts each byte once. Network bytes and peak memory are per process
 already.
 
-Each row also carries `drift`: two process-level proxies for an agent leaving the
-task it started on. Neither sees the model's context; both are labelled proxies.
-
-* cwd drift -- the share of the session's processes whose cwd lies outside the
-  agent's launch directory (the agent process's own cwd, else the first call's).
-  The collector reads cwd at exec for tagged processes (each tool-call shell) and
-  inherits it otherwise, so a `cd` inside one shell command is not seen.
-* tool-mix drift -- Jensen-Shannon divergence (base 2, 0..1) between the purpose
-  mix of the first and the last third of the session's processes. Null below
-  MIN_DRIFT_N processes: a third of a handful is noise, not a finding.
-
-Each agent row also carries `phases`: what the agent was doing, as a handful of
-labelled stretches read from the commands it ran, and `n_calls`, its tool calls.
-Which processes are calls and what each one is is `phase_rules`; the bounded
-call log a session holds and the join below are `phase_log`; the cutting into
+Each row also carries `phases`: what its session was doing, as a handful of
+labelled stretches read from the commands it ran, and `n_calls`, its calls.
+Every row is read, of every class and every agent type. Which processes are
+calls and what each one is is `phase_rules`: an agent's are its runtime's
+direct children, by the agent's own rules or the general rule any agent is
+read by, and any other session's (a person's, an editor's) are the jobs its
+terminals' shells ran, known by the process groups the collector records. The
+block says which it read (`driver`: `agent` or `terminal`). The bounded call
+log a session holds and the join below are `phase_log`; the cutting into
 phases is `phase_segment`, when a row is built. Above the phases are `tasks`:
 the session cut by what it worked on (`phase_tasks`), each named from the
-agent's own words or from the names in its commands, and a `headline` for the
-session. A row is cut into tasks, then into phases at their boundaries, then
-named, in one pass (`phase_block`). The block then says what kind of session
-it was, a `category` and the `uses` of its work it rests on, and the session in
-a few sentences, a `summary` (`phase_summary`), read from the same phases and
-calls. A row whose calls are not
-recognized (an agent type outside PHASE_AGENTS, a person, an IDE) says so, and
-its `n_calls` is null: not recognized is not none.
+words written in its commands or from the names in them, and a `headline` for
+the session. A row is cut into tasks, then into phases at their boundaries,
+then named, in one pass (`phase_block`). The block then says what kind of
+session it was, a `category` and the `uses` of its work it rests on, and the
+session in a few sentences, a `summary` (`phase_summary`), read from the same
+phases and calls.
 
 A row is one local day, since its session id carries the day, and an agent that
 works past midnight has a row for each. Those rows serve one block, cut from the
@@ -140,7 +130,6 @@ import math
 import os
 import re
 import time
-from array import array
 from operator import itemgetter
 
 from ..anonymize import HOME_PATTERNS
@@ -148,14 +137,16 @@ from ..procindex import VIA
 from ..redact import redact
 
 from . import pct
-from .phase_log import (NO_ARGV, OPEN, P_CATS, P_CMDS, P_FIRST, P_HELP, P_LAST, P_N, P_SID,
-                        P_SINCE, P_SINCE_N, P_TEXT, P_WROTE, PAST_SLACK_S, PREV, START_SLACK_S,
-                        TAGS, WROTE, PendingJoin, PhaseLog, fold_entry)
+from .phase_log import (NO_ARGV, OPEN, P_CATS, P_CMDS, P_FIRST, P_HELP, P_JOB, P_LAST, P_N,
+                        P_SID, P_SINCE, P_SINCE_N, P_TEXT, P_WROTE, PAST_SLACK_S, PREV,
+                        START_SLACK_S, TAGS, WROTE, PendingJoin, PhaseLog, fold_entry)
 from .phase_names import tagset
-from .phase_rules import (_TOOL_CALL_ROLES, APP_READ, CATS, PHASE_AGENTS, _argv, _is_sandbox,
+from .phase_rules import (_FS_HELPER, _TOOL_CALL_ROLES, APP_READ, CATS, RULED_AGENTS, _argv,
+                          _is_sandbox,
                           call_text, cat_without_argv, category_of, category_of_argv,
-                          classify_direct, codex_chore_of, is_fs_helper, is_sandbox_probe,
-                          login_helper, norm_hash, parent_is_agent, program_name, shell_text)
+                          classify_direct, classify_terminal, codex_chore_of, groups_of, in_job,
+                          is_fs_helper, is_sandbox_probe, login_helper, norm_hash,
+                          parent_is_agent, program_name, shell_text)
 from .phase_segment import (DEFAULTS as PHASE_DEFAULTS, NEVER_EXITED, SEEN_SHOWN, prepared,
                             segment)
 from .phase_summary import DEFAULTS as SUMMARY_DEFAULTS, summarize
@@ -176,9 +167,6 @@ MAX_SEQ_RUNS = 400          # matches extract_trajectories.MAX_SEQ_RUNS
 # Tool calls that only wait on something else: polling the process table
 # (ps, pgrep, sleep loops) and polling the scheduler (squeue, sacct).
 WAIT_PURPOSES = frozenset({"poll", "slurm_mon"})
-MIN_DRIFT_N = 30            # processes; below this the thirds are noise
-DRIFT_CAP = 100000          # per-session processes kept for drift; past it, flagged
-MAX_CWDS = 200000           # distinct cwds interned per window; past it, unmeasured
 _NO_PARENT = (None, 0, 1)   # a ppid that names no process that started it
 MAX_PREVIEWS = 200000       # masked command previews interned per reducer; past it, none
 MAX_TAGSETS = 200000        # tag sets (names, words) interned per reducer; past it, none
@@ -195,7 +183,9 @@ OTHER = "other"
 PREVIEW = 220               # as proctree.PREVIEW: characters of a command shown, masked first
 RAW_KEEP = 1024             # as proctree.RAW_KEEP: characters held raw until masked
 PHASE_CACHE_MAX = 4096      # phase blocks kept between reads
-UNAVAILABLE = "phases not available for this agent type"
+# What a block says it was read from, where no agent ran the session: its terminals' jobs (`basis`;
+# an agent's block says `phase_segment.BASIS`).
+TERMINAL_BASIS = "read from the commands run in its terminals and the words typed in them"
 # A home directory: `/home/<x>`, or `/n/home<NN>/<x>` on FAS RC. It names a user, and no project
 # (`project_of`).
 _HOME_DIR = re.compile(r"/(?:home|n/home\d+)/[^/]+")
@@ -211,7 +201,7 @@ class Session:
                  "tools", "chain", "purpose", "first", "last", "rss", "rd", "wr", "tx", "rx",
                  "sandbox", "approval", "ancestry", "autonomous", "truncated", "no_ts",
                  "users", "pids", "tree_root", "chain_t", "purpose_t",
-                 "ev_t", "ev_p", "ev_c", "drift_cut", "wait", "over", "pover",
+                 "first_cwd", "first_cwd_t", "cwd_seen", "wait", "over", "pover",
                  "phase", "past_due")
 
     def __init__(self, rec):
@@ -247,12 +237,12 @@ class Session:
         self.no_ts = False
         self.users = {}
         self.pids = []
-        # One entry per process, in arrival order, for drift: its time, its
-        # purpose id and its cwd id (0 = not measured), interned by the reducer.
-        self.ev_t = array("d")
-        self.ev_p = array("H")
-        self.ev_c = array("I")
-        self.drift_cut = False
+        # The first cwd of its processes that is not `/`, and its time: the folder
+        # its project is named for when the agent's own is not known
+        # (`cwd_anchor`); and whether any process's cwd was recorded at all.
+        self.first_cwd = None
+        self.first_cwd_t = None
+        self.cwd_seen = False
         self.wait = 0            # tool calls spent waiting (WAIT_PURPOSES), exact
         # Calls a full chain dropped, by tool (and by purpose): never shown, but
         # what lets two halves of a session merge into the chain one pass
@@ -596,13 +586,9 @@ def merge_session(a, b, params=None):
         a.tree_root = b.tree_root
     for u, c in b.users.items():
         a.users[u] = a.users.get(u, 0) + c
-    room = DRIFT_CAP - len(a.ev_p)
-    if len(b.ev_p) > room or b.drift_cut:
-        a.drift_cut = True
-    if room > 0:
-        a.ev_t.extend(b.ev_t[:room])
-        a.ev_p.extend(b.ev_p[:room])
-        a.ev_c.extend(b.ev_c[:room])
+    if a.first_cwd is None:
+        a.first_cwd, a.first_cwd_t = b.first_cwd, b.first_cwd_t
+    a.cwd_seen = a.cwd_seen or b.cwd_seen
     return due_dropped
 
 
@@ -685,32 +671,12 @@ def fold(parts, sid, kv, params=None):
         for u, c in p.users.items():
             m.users[u] = m.users.get(u, 0) + c
     m.pids = [pid for p in parts for pid in p.pids][:8]
-    ev = sorted(itertools.chain.from_iterable(zip(p.ev_t, p.ev_p, p.ev_c) for p in parts),
-                key=lambda x: x[0])
-    m.ev_t = array("d", (x[0] for x in ev))
-    m.ev_p = array("H", (x[1] for x in ev))
-    m.ev_c = array("I", (x[2] for x in ev))
-    m.drift_cut = any(p.drift_cut for p in parts)
+    # the earliest first cwd of the parts, the first part's on a tie
+    firsts = [(p.first_cwd_t, i, p.first_cwd) for i, p in enumerate(parts)
+              if p.first_cwd is not None]
+    m.first_cwd_t, _, m.first_cwd = min(firsts) if firsts else (None, None, None)
+    m.cwd_seen = any(p.cwd_seen for p in parts)
     return m
-
-
-def jsd(a, b):
-    """Jensen-Shannon divergence, base 2, between two count maps: 0 same, 1 disjoint."""
-    na, nb = sum(a.values()), sum(b.values())
-    out = 0.0
-    for k in set(a) | set(b):
-        p, q = a.get(k, 0) / na, b.get(k, 0) / nb
-        m = (p + q) / 2
-        if p:
-            out += 0.5 * p * math.log2(p / m)
-        if q:
-            out += 0.5 * q * math.log2(q / m)
-    return out
-
-
-def under(path, anchor):
-    """`path` is `anchor` or below it -- `/a/proj-old` is NOT under `/a/proj`."""
-    return path == anchor or path.startswith(anchor.rstrip("/") + "/")
 
 
 def _agent_key(s):
@@ -779,10 +745,6 @@ class TrajectoryReducer:
         # live view re-folds every few seconds, and between two reads only
         # the sessions at work have changed
         self._group_cache = {}
-        # Interned per window, so a session's drift arrays hold small ints.
-        self._purpose_id, self._purposes = {}, []
-        self._cwd_id, self._cwds = {None: 0}, [None]
-        self.cwd_overflow = 0
         # (host, pid) -> [MB read, MB written] its exited children carried, for
         # its own exit to give back (`own_io`): the join every panel that sums
         # disk bytes holds one of (own_io.py), here over disk bytes alone.
@@ -830,6 +792,9 @@ class TrajectoryReducer:
         self.tag_overflow = 0
         self.phase_reparented = 0   # records under no parent (ppid 0 or 1): not placed
         self.phase_unread = 0       # records a root held to its own exit: its housekeeping
+        # records of a session no agent runs whose process groups were not kept: nothing says
+        # which was a job, so none is read, nor held for a later record (`classify_terminal`)
+        self.phase_ungrouped = 0
         # The earliest day row's sid -> (key, phase block, each day row's own calls), for the day
         # rows of an agent the block joins (`phase_block`); the pending join by session: (the
         # entries it indexes, (records fed, entries), the index); and the folded rows by agent:
@@ -871,16 +836,18 @@ class TrajectoryReducer:
         s.add(rec, now, io)
         self.fed += 1
         self._track(s, rec)
-        if s.cls == "agent":
-            self._phase(s, rec)
+        self._phase(s, rec)
 
     # ---------------------------------------------------------------- phases
     def _phase(self, s, rec):
-        """One exit of an agent session, read bottom up (the module docstring).
+        """One exit of a session, read bottom up (the module docstring).
 
-        A direct child of the agent is a call or the agent's own chore, and
-        takes what ran under it. Anything else joins its parent's pending
-        entry, unless it outlived a call it belongs to. Every path notes where
+        A direct child of an agent is a call or the agent's own chore, and
+        takes what ran under it. In a session no agent runs, and in an editor's
+        terminal, a job a terminal's shell started is a call, and the shell's
+        own commands are its chores (`classify_terminal`). Anything else joins
+        its parent's pending entry, unless it outlived a call it belongs to.
+        Every path notes where
         the process went (`_went`), for a child recorded after it. Times are
         never None in the log or the join: a record with none is left out
         here, and `Session.add` has counted it (`no_ts`); what ran under it,
@@ -920,11 +887,11 @@ class TrajectoryReducer:
             return
         kids = self.pend.pop(host, pid, start) if pid is not None else None
         # Schema 7 tags a sandbox wrapper `bwrap`: the session's own type is
-        # asked when the record's is not one whose calls are recognized.
+        # asked when the record's is not one with rules of its own.
         at = rec.get("agent_type")
-        at = at if at in PHASE_AGENTS else s.agent_type
+        at = at if at in RULED_AGENTS else s.agent_type
         if orphan or parent_is_agent(rec, self.procs):
-            kind, what = classify_direct(rec, at)
+            kind, what = classify_direct(rec, at, self._parent_role(rec))
             if kind == "call" and what == "wrapper" and kids and is_sandbox_probe(kids[P_TEXT]):
                 self._housekeeping(s, "sandbox probe", t0, 1 + kids[P_N])
                 self._went(host, pid, start, end, "hk", "sandbox probe")
@@ -941,9 +908,35 @@ class TrajectoryReducer:
                 if what == APP_READ:
                     self._app_read(s, t0)
                 self._went(host, pid, start, end, "hk", what)
-            else:                           # an agent whose calls are not read
+            else:                           # placed nowhere: no rule says so today
                 self._went(host, pid, start, end, "none", None)
             return
+        groups = None
+        if s.cls != "agent":
+            # No agent runs it, or it is an editor's: its terminals' jobs are its
+            # calls, and what a shell runs for itself is housekeeping. With its
+            # groups not kept nothing says which was a job: none is read, and
+            # nothing is held for a record after it, so a collector without the
+            # feature costs the join nothing.
+            groups = groups_of(rec)
+            if groups is None:
+                self.phase_ungrouped += 1 + (kids[P_N] if kids else 0)
+                return
+            got = classify_terminal(rec, groups)
+            if got is not None:
+                kind, what = got
+                if kind == "call" and what == "subshell" and not kids:
+                    kind, what = "housekeeping", "subshell"     # it ran no program
+                if kind == "call":
+                    self._call(s, rec, what, t0, end, kids)
+                    self._went(host, pid, start, end, "call", pid)
+                else:
+                    # a shell that ran the whole time: what it held, in no minute
+                    self._housekeeping(s, what, t0, 1)
+                    if kids is not None:
+                        self._by_program(s, kids)
+                    self._went(host, pid, start, end, "hk", what)
+                return
         ppid = rec.get("ppid")
         if ppid in _NO_PARENT:
             self.phase_reparented += 1 + (kids[P_N] if kids else 0)
@@ -952,13 +945,24 @@ class TrajectoryReducer:
         if self._ran_past(s, ppid, end, start):
             self._went(host, pid, start, end, "call", ppid)
             return
-        item = self._leaf(rec, t0, end, s.sid)
+        # what runs inside a command of a terminal says so, for the calls still running a row
+        # no agent ran reads (P_JOB); an agent's row reads its own way, and is not asked
+        item = self._leaf(rec, t0, end, s.sid, groups is not None and in_job(rec, groups))
         if kids is not None:
             fold_entry(item, kids)          # its own argv first: a wrapper has none
         if self._late(s, host, pid, ppid, start, end, t0, item):
             return
         self.pend.push(host, ppid, item)
         self._went(host, pid, start, end, "pend", ppid)
+
+    def _parent_role(self, rec):
+        """The role the process index gives a direct child's parent, its agent's own process
+        (`roles.role_of`), or None where the index has none: what tells a Cursor agent's runtime
+        from Cursor's editor server, whose trees carry one type (`classify_direct`)."""
+        if self.procs is None:
+            return None
+        held = self.procs.get(rec.get("host"), rec.get("ppid"))
+        return held[1] if held else None
 
     def _went(self, host, pid, start, end, where, what):
         """Note where a process that ran from `start` to `end` went when its own
@@ -1072,18 +1076,23 @@ class TrajectoryReducer:
         return True
 
     def _call(self, s, rec, kind, t0, end, kids):
-        """Hold a direct child's tool call. A shell's command is shell text; an
-        argv (Claude's Grep, a bare Codex command) is one command; a wrapper's
-        call is the command it ran, from what ran under it. Its text is masked
-        once, and that is what its preview is cut from and what its names and
-        the agent's own words are read from (`tagset`)."""
+        """Hold a call: a direct child of an agent, or a terminal's job. A
+        shell's command is shell text; an argv (Claude's Grep, a bare Codex
+        command, a job typed at a prompt) is one command; a wrapper's call, and
+        a forked subshell's, is the command it ran, from what ran under it. Its
+        text is masked once, and that is what its preview is cut from and what
+        its names and the words written in it are read from (`tagset`)."""
         flags = 0
-        if kind == "wrapper":
+        if kind in ("wrapper", "subshell"):
             text, cat, flags = _payload(kids[P_TEXT] if kids else None,
                                         bool(kids and kids[P_WROTE]))
         elif kind in ("bash", "shell"):
             text = call_text(rec, kind)
             cat = category_of(text)
+        elif kind == "job":
+            text = call_text(rec, kind)
+            command, args, _ = _argv(rec)
+            cat = category_of_argv(command, args)
         else:
             text = call_text(rec, kind)
             if is_fs_helper(rec):
@@ -1167,23 +1176,26 @@ class TrajectoryReducer:
         return True
 
     @staticmethod
-    def _leaf(rec, t0, end, sid):
+    def _leaf(rec, t0, end, sid, job=False):
         """The pending entry for one process: its argv, cut to RAW_KEEP, and
         what it is as a command; a sandbox wrapper has none of its own. Its
         program goes in the entry's program list by its basename, as loop
         detection reads it, a login shell's startup helper too, which is
-        counted apart (`login_helper`, P_HELP) for `seen` to leave out (R72)."""
+        counted apart (`login_helper`, P_HELP) for `seen` to leave out (R72).
+        `job` says whether it ran inside a command still running in a
+        terminal's session (`in_job`, P_JOB), which a session no agent runs
+        reads its calls still running from."""
         command, args, argv0 = _argv(rec)
         wrote = False
         if _is_sandbox(command, argv0):
             text, cat = None, "unknown"
-        elif is_fs_helper(rec):
+        elif _FS_HELPER in args:            # `is_fs_helper`: no sandbox, which the line above takes
             wrote = _wrote(rec)
             text, cat = args[:RAW_KEEP].strip() or None, ("edit" if wrote else "unknown")
         else:
             text, cat = args[:RAW_KEEP].strip() or None, category_of_argv(command, args)
         return PendingJoin.leaf(t0, end, cat, os.path.basename(command) or None, text, wrote, sid,
-                                helper=login_helper(command, args))
+                                helper=login_helper(command, args), job=job)
 
     def _intern_preview(self, masked, count=True):
         """The id of the preview of `masked`, a command's text already masked
@@ -1243,8 +1255,10 @@ class TrajectoryReducer:
         """The row's phases (`phase_segment.segment`) and the tasks above them
         (`phase_tasks`) from the calls its log holds and the calls still
         running under its collector keys, `members`, and those of the same
-        agent's rows on other days (below); `{unavailable}` for a row whose
-        calls are not recognized.
+        agent's rows on other days (below). Every row has one, of every class
+        and agent type: `driver` says whether an agent's calls were read
+        (`agent`) or, where no agent ran the session, its terminals' jobs
+        (`terminal`), and `basis` says it in words.
 
         The calls are cut into tasks first, the phases are cut at the tasks'
         boundaries, and the tasks are then named and each phase marked with
@@ -1309,11 +1323,8 @@ class TrajectoryReducer:
 
     def _phases(self, s, members, fresh=True):
         """`(block, n_calls)`: `phase_block`, and the calls of row `s` alone,
-        which `_row` serves as the row's own. `n_calls` is None for a row whose
-        calls are not recognized, and the block's own for a row of one day. The
-        counts of the rows of a block add up to the block's."""
-        if s.cls != "agent" or s.agent_type not in PHASE_AGENTS:
-            return {"unavailable": UNAVAILABLE}, None
+        which `_row` serves as the row's own: the block's own for a row of one
+        day. The counts of the rows of a block add up to the block's."""
         parts = [(r, m, self._pending_of(m)) for r, m in self._day_rows(s, members, fresh)]
         key = (tuple((r.sid, r.n, len(r.phase.calls), len(m), len(e), sum(x[P_N] for x in e),
                       max((x[P_LAST] for x in e), default=None))
@@ -1331,19 +1342,19 @@ class TrajectoryReducer:
         """`[(row, members)]`, the day rows whose calls make one block with row
         `s` (`phase_block`), in time order, `s` among them with its `members`.
         The others are the current fold's rows of the same agent
-        (`_agent_key`) that have a time and whose calls are read. The fold is
-        made if it is stale (`folded`), as `result` makes it before it reads a
-        row -- unless `fresh` is False, when the last fold is taken as it is
+        (`_agent_key`) that have a time and are of its class: an editor's
+        server keyed on its pid joins its own days as an agent does. The fold
+        is made if it is stale (`folded`), as `result` makes it before it reads
+        a row -- unless `fresh` is False, when the last fold is taken as it is
         (`_agent_days`). `s` alone when it is not keyed on an agent or has no
-        time."""
+        time: a person's login is a row to a day."""
         rows = [(s, members)]
         key = _agent_key(s)
         if key is not None and s.first is not None:
             others = self._agent_days(fresh).get(key, ())
             held = self._fold_cache[2]      # after the line above, which makes the fold if need be
             rows += [(r, held.get(r.sid) or [r.sid]) for r, _via, _k in others
-                     if r.sid != s.sid and r.first is not None and r.cls == "agent"
-                     and r.agent_type in PHASE_AGENTS]
+                     if r.sid != s.sid and r.first is not None and r.cls == s.cls]
             rows.sort(key=lambda row: (row[0].first, row[0].sid))
         return rows
 
@@ -1353,8 +1364,15 @@ class TrajectoryReducer:
         calls are its own. The calls are those of the rows' logs, the log of a
         row of one day itself and of more a fold of them, and the open ones
         among the pending entries, each read as of the session's last record.
-        Nothing is changed but what the block holds."""
+        Nothing is changed but what the block holds.
+
+        A session no agent runs (`terminal`) reads as a call still running only
+        what waits under a command its terminal ran (P_JOB), and says so: its
+        `driver` is `terminal` and its `basis` TERMINAL_BASIS. Editing is
+        guessed as in an agent's: a person who edits in an editor's window and
+        tests in its terminal leaves no command for the edit either."""
         first = parts[0][0]
+        terminal = first.cls != "agent"
         p = self.phase_params
         if len(parts) == 1:
             log, last = first.phase, first.last
@@ -1365,7 +1383,7 @@ class TrajectoryReducer:
             last = max(r.last for r, _m, _e in parts)
         calls, extra, own = list(log.calls), 0, {}
         for r, _m, entries in parts:
-            opened, hidden = self._open_calls(first.agent_type, last, entries)
+            opened, hidden = self._open_calls(first.agent_type, last, entries, terminal)
             calls += opened
             extra += hidden
             # less what the fold gave the app: a read of another day's came close to it
@@ -1377,6 +1395,9 @@ class TrajectoryReducer:
         block = segment(calls, log, self._previews, p, guess=True,
                         extra_hk={NEVER_EXITED: extra} if extra else None, prepared=prep,
                         cuts=[x.t0 for x in spans[1:]])
+        block["driver"] = "terminal" if terminal else "agent"
+        if terminal:
+            block["basis"] = TERMINAL_BASIS
         block["tasks"], block["headline"] = name_tasks(
             spans, block, prep, self._tagsets, self._previews, self.task_params,
             self.project_of(first, prep[0]), log.cut_at, step_s,
@@ -1445,20 +1466,26 @@ class TrajectoryReducer:
         2026-10-28 the hourly update check (`sh -s`) ran under a process that
         never exited in three sessions and a probe, and was read as a call
         running for up to 23 hours (1447670) when nothing the model asked for
-        ran at all."""
+        ran at all.
+
+        In a row no agent ran, only an entry under a command its terminal ran
+        (P_JOB) can be a call still running: what waits under the shell itself
+        is its own, and what waits under an editor's server the editor's."""
         opened, extra = self._open_calls(
-            s.agent_type, s.last, self._pending_of(members) if pending is None else pending)
+            s.agent_type, s.last, self._pending_of(members) if pending is None else pending,
+            s.cls != "agent")
         return list(s.phase.calls) + opened, extra
 
-    def _open_calls(self, agent_type, last, pending):
+    def _open_calls(self, agent_type, last, pending, terminal=False):
         """`(opened, extra)`, as `phase_calls` reads the pending entries `pending`
         of a session of `agent_type` whose last record is at `last`: the calls
-        still running, and how many commands are no call."""
+        still running, and how many commands are no call. `terminal` for a
+        session no agent runs, which reads only entries under a command (P_JOB)."""
         p = self.phase_params
         opened, extra = [], 0
         codex = agent_type == "codex"
         for e in pending:
-            if codex and codex_chore_of(e[P_TEXT]):
+            if (codex and codex_chore_of(e[P_TEXT])) or (terminal and not e[P_JOB]):
                 extra += e[P_N]
                 continue
             # One stretch: its children have been busy since its first, or for `idle_s` at least.
@@ -1492,27 +1519,14 @@ class TrajectoryReducer:
         return own[0] or 0.0, own[1] or 0.0
 
     def _track(self, s, rec):
-        if len(s.ev_p) >= DRIFT_CAP:
-            s.drift_cut = True
-            return
-        e = rec.get("_ts_epoch")
-        s.ev_t.append(e if e is not None else (s.ev_t[-1] if s.ev_t else 0.0))
-        p = rec.get("_purpose") or "other"
-        pid = self._purpose_id.get(p)
-        if pid is None:
-            pid = self._purpose_id[p] = len(self._purposes)
-            self._purposes.append(p)
-        s.ev_p.append(pid)
+        """The session's first cwd that is not `/` (`cwd_anchor`), in arrival order."""
         c = rec.get("cwd") or None
-        cid = self._cwd_id.get(c)
-        if cid is None:
-            if len(self._cwds) >= MAX_CWDS:
-                self.cwd_overflow += 1          # reported in `fold`, read as unmeasured
-                cid = 0
-            else:
-                cid = self._cwd_id[c] = len(self._cwds)
-                self._cwds.append(c)
-        s.ev_c.append(cid)
+        if c is None:
+            return
+        s.cwd_seen = True
+        if s.first_cwd is None and c != "/":
+            e = rec.get("_ts_epoch")
+            s.first_cwd, s.first_cwd_t = c, e if e is not None else (s.last or 0.0)
 
     # ----------------------------------------------------------------- merge
     # A window is merged from saved hour states (`hours`). What crosses an
@@ -1589,16 +1603,12 @@ class TrajectoryReducer:
         Sessions merge key by key (`merge_session`): a session spanning two
         hours is one session, its counts added and its chains joined as one
         pass would have built them. The joins across hours (`reaped`, the
-        pending entries, `calls_at`) are carried instead (above). The purpose,
-        cwd, preview, and tag set ids are each state's own, and are renumbered
-        into this one's.
+        pending entries, `calls_at`) are carried instead (above). The preview
+        and tag set ids are each state's own, and are renumbered into this
+        one's.
         """
-        pmap = array("H", (self._intern_purpose(p) for p in o._purposes))
-        cmap = array("I", (self._intern_cwd(c) for c in o._cwds))
-        # a cwd the window could no longer intern is counted per process, as
-        # `_track` counts it
-        lost = {i for i, c in enumerate(cmap) if i and not c}
-        # a preview likewise, per call, as `_intern_preview` counts it
+        # a preview the window could no longer intern is counted per call, as
+        # `_intern_preview` counts it
         vmap = [0] + [self._intern_shown(t, False) for t in o._previews[1:]]
         vsame = all(i == v for i, v in enumerate(vmap))
         vlost = {i for i, v in enumerate(vmap) if i and not v}
@@ -1607,10 +1617,6 @@ class TrajectoryReducer:
         tsame = all(i == v for i, v in enumerate(tmap))
         tlost = {i for i, v in enumerate(tmap) if i and not v}
         for sid, s in o.sessions.items():
-            s.ev_p = array("H", (pmap[i] for i in s.ev_p))
-            if lost:
-                self.cwd_overflow += sum(1 for i in s.ev_c if i in lost)
-            s.ev_c = array("I", (cmap[i] for i in s.ev_c))
             if not (vsame and tsame):
                 if vlost:
                     self.preview_overflow += sum(1 for c in s.phase.calls if c[PREV] in vlost)
@@ -1637,7 +1643,6 @@ class TrajectoryReducer:
             self._shed()
         self.evicted += o.evicted
         self.fed += o.fed
-        self.cwd_overflow += o.cwd_overflow
         self.own.merge(o.own)
         self.pend.evicted += o.pend.evicted
         self.pend.refused += o.pend.refused
@@ -1655,73 +1660,22 @@ class TrajectoryReducer:
         self.tag_overflow += o.tag_overflow
         self.phase_reparented += o.phase_reparented
         self.phase_unread += o.phase_unread
-
-    def _intern_purpose(self, p):
-        pid = self._purpose_id.get(p)
-        if pid is None:
-            pid = self._purpose_id[p] = len(self._purposes)
-            self._purposes.append(p)
-        return pid
-
-    def _intern_cwd(self, c):
-        cid = self._cwd_id.get(c)
-        if cid is None:
-            if len(self._cwds) >= MAX_CWDS:
-                return 0
-            cid = self._cwd_id[c] = len(self._cwds)
-            self._cwds.append(c)
-        return cid
-
-    def drift(self, s, anchor=None):
-        """The two drift proxies for one session (see the module docstring).
-
-        `anchor` is the agent's launch directory when the caller knows it and it
-        is not `/`; the first measured call's cwd otherwise, and
-        `cwd_anchor_src` says which.
-        """
-        n = len(s.ev_p)
-        d = {"n": n, "capped": s.drift_cut, "min_n": MIN_DRIFT_N,
-             "mix_jsd": None, "mix_first": None, "mix_last": None}
-        if n >= MIN_DRIFT_N:
-            k = n // 3
-            a = collections.Counter(s.ev_p[:k])
-            b = collections.Counter(s.ev_p[n - k:])
-            d["mix_jsd"] = round(jsd(a, b), 3)
-            d["mix_first"] = [[self._purposes[i], pct(c, k)] for i, c in a.most_common(3)]
-            d["mix_last"] = [[self._purposes[i], pct(c, k)] for i, c in b.most_common(3)]
-        cw = [c for c in s.ev_c if c]
-        d["cwd_coverage_pct"] = pct(len(cw), n) if n else None
-        if not cw:
-            d.update(cwd_anchor=None, cwd_anchor_src=None, cwd_outside_pct=None,
-                     cwd_distinct=0, cwd_top=[], cwd_first=None, cwd_last=None)
-            return d
-        names = self._cwds
-        anchor, src = self.cwd_anchor(s, anchor)
-        cnt = collections.Counter(cw)
-        outside = sum(k for c, k in cnt.items() if not under(names[c], anchor))
-        d.update(cwd_anchor=anchor, cwd_anchor_src=src,
-                 cwd_outside_pct=pct(outside, len(cw)), cwd_distinct=len(cnt),
-                 cwd_top=[[names[c], k] for c, k in cnt.most_common(5)],
-                 cwd_first=names[cw[0]], cwd_last=names[cw[-1]])
-        return d
+        self.phase_ungrouped += o.phase_ungrouped
 
     def cwd_anchor(self, s, anchor=None):
-        """`(anchor, src)`, the directory a session's cwd drift is measured from
-        and where it came from, as `drift` reports them: `anchor`, the agent's
-        launch directory, when the caller knows it and it is not `/` (src
-        `agent`); else the first measured call's cwd that is not `/`, or `/`
-        when every one was (`first_call`). `(None, None)` when no call's cwd
-        was recorded."""
-        if not any(s.ev_c):
+        """`(anchor, src)`, the directory a session's project is named for
+        (`project_of`) and where it came from: `anchor`, the agent's launch
+        directory, when the caller knows it and it is not `/` (src `agent`);
+        else the first call's cwd that is not `/`, or `/` when every one was
+        (`first_call`). `(None, None)` when no call's cwd was recorded."""
+        if not s.cwd_seen:
             return None, None
         if anchor == "/":
-            # IDE-hosted agents run at `/`, under which every path is inside:
-            # 0% by construction is not a measurement, so anchor on the work.
+            # IDE-hosted agents run at `/`, which names no project: anchor on the work.
             anchor = None
         if anchor:
             return anchor, "agent"
-        names = self._cwds
-        return next((names[c] for c in s.ev_c if c and names[c] != "/"), "/"), "first_call"
+        return s.first_cwd or "/", "first_call"
 
     def rooted(self, s):
         """Whether an agent process was seen at the session's root.
@@ -2009,7 +1963,6 @@ class TrajectoryReducer:
             # how many collector session keys this row folds together, and how
             # the least certain of them was attributed (procindex.VIA)
             "fragments": n_keys, "owner_via": via,
-            "drift": self.drift(s, self.anchor_of(s)),
             "actor3": s.cls, "agent_type": s.agent_type,
             "n_events": s.n, "cpu_s": round(s.cpu, 3),
             # a session can span users (a root helper inside a user's tree), so
@@ -2046,20 +1999,17 @@ class TrajectoryReducer:
         now = now or time.time()
         self._evict(now)
         cutoff = now - self.window_s
-        folded, vias = self.folded()
+        folded = self.folded()[0]
         meta = {s.sid: (via, k) for s, via, k in folded}
         live = [s for s, _, _ in folded
                 if (s.last or 0) >= cutoff and s.kt in self.rankable]
-        ranks, rows, dom = {}, {}, {}
+        ranks, rows = {}, {}
         keyf = {"events": lambda s: s.n, "cpu_s": lambda s: s.cpu,
                 "peak_rss_mb": lambda s: s.rss,
                 "io_mb": lambda s: s.rd + s.wr,
                 "net_mb": lambda s: s.tx + s.rx,
                 "distinct_tools": lambda s: len(s.tools),
                 "recent": lambda s: s.last or 0}
-        # what a user's share of a list is a share OF: the ranked quantity, or
-        # for recency (a time, not an amount) the sessions listed
-        weight = dict(keyf, recent=lambda s: 1)
         # Recency lists real sessions only (`rooted`): a status-bar probe runs
         # every minute, and a tool call still running is a key of its own
         # until its shell's exit says whose it is -- either would hold the top.
@@ -2071,14 +2021,6 @@ class TrajectoryReducer:
             ranks[r] = [s.sid for s in top]
             for s in top:
                 rows.setdefault(s.sid, self._row(s, *meta[s.sid]))
-            if top:
-                byu = collections.Counter()
-                for s in top:
-                    byu[s.user] += weight[r](s)
-                tot = sum(byu.values())
-                dom[r] = pct(byu.most_common(1)[0][1], tot) if tot else 0.0
-            else:
-                dom[r] = None
         by_cls = collections.Counter(s.cls for s, _, _ in folded)
         return {
             "window": {"minutes": self.window_s // 60,
@@ -2087,41 +2029,7 @@ class TrajectoryReducer:
             "rank_by": "recent", "rank_meaning": RANK_MEANING,
             "ranks": ranks, "rows": rows,
             "by_class_counts": dict(by_cls), "by_key_type": dict(self.by_kt),
-            "fold": {"raw_sessions": len(self.sessions), "sessions": len(folded),
-                     "by_via": dict(vias), "cwd_overflow": self.cwd_overflow,
-                     "index": self.procs.result() if self.procs is not None else None},
-            "dominant_user_share_pct": dom,
             "summary": self.summary(live),
-            "buffer": {"sessions": len(self.sessions), "evicted": self.evicted,
-                       "reaped": len(self.own.reaped), "reaped_evicted": self.own.evicted,
-                       # children a parent could not have reaped (own_io.py): dropped
-                       "reaped_rejected": self.own.rejected,
-                       # figures short of their children's, shown as 0
-                       "reaped_clamped": self.own.clamped,
-                       # groups dropped from a pid past own_io.PER_PID
-                       "reaped_crowded": self.own.crowded,
-                       # groups held for an exit that says it reaped none
-                       "reaped_unreaped": self.own.unreaped,
-                       # the phases' joins and bounds, every one counted
-                       "phase_pending": len(self.pend.entries),
-                       "phase_pending_evicted": self.pend.evicted,
-                       "phase_pending_refused": self.pend.refused,
-                       "phase_pending_refused_records": self.pend.refused_records,
-                       "phase_call_index": len(self.calls_at),
-                       "phase_call_index_evicted": self.calls_at_evicted,
-                       "phase_past_due_evicted": self.past_due_evicted,
-                       "phase_exited": len(self.exited),
-                       "phase_exited_evicted": self.exited_evicted,
-                       "phase_late_routed": self.late_routed,
-                       "phase_late_unplaced": self.late_unplaced,
-                       "phase_late_no_start": self.late_no_start,
-                       "phase_late_hops_out": self.late_hops_out,
-                       "phase_late_maybe_evicted": self.late_maybe_evicted,
-                       "phase_untimed": self.phase_untimed,
-                       "phase_reparented": self.phase_reparented,
-                       "phase_unread": self.phase_unread,
-                       "preview_overflow": self.preview_overflow,
-                       "phase_tag_overflow": self.tag_overflow},
             "basis": {
                 "sessionize": "session_key='apid:<agent_pid>'; absent -> sess (cgroup "
                               "session-(\\d+)\\.scope) -> tty as user@tty -> usr "
@@ -2136,8 +2044,10 @@ class TrajectoryReducer:
                        "chain_runs; the displayed chain is capped at max_runs_shown.",
                 "io": "io_rd_mb / io_wr_mb sum each process's OWN disk bytes: the "
                       "collector's figure includes every child the process reaped, "
-                      "which is taken back off at the parent's exit. A child whose "
-                      "exit the window did not see is not taken off. "
+                      "which is taken back off at the parent's exit. An exit of a "
+                      "closed hour takes the figure the hours worked out over every "
+                      "record, whatever the view's filter leaves out; in the hour still "
+                      "open, a child whose exit the view did not read is not taken off. "
                       "net_tx_mb / net_rx_mb are per process already; peak_rss_mb "
                       "is the largest of any one exited process.",
                 "summary": "over every session in the window. An agent-class session "
@@ -2145,13 +2055,19 @@ class TrajectoryReducer:
                            "the rest (scripts probing `codex --version`) are `probes`. "
                            "wait_pct is the share of tool calls whose purpose is poll "
                            "or slurm_mon (ps, pgrep, sleep loops; squeue, sacct).",
-                "phases": "per agent row, read from the commands the agent ran: its tool calls "
-                          "named by phase_rules and cut into phases by phase_segment, none "
-                          "across the boundary of a task (below), with the calls still "
-                          "running under a process that has not exited. "
-                          "Unavailable, with n_calls null, where an agent type's calls are "
-                          "not recognized; housekeeping is the agent's own commands, counted "
-                          "apart. An agent that worked on more than one day has a row for "
+                "phases": "per row, of every class and agent type, read from the commands "
+                          "its session ran: an agent's tool calls (its runtime's direct "
+                          "children, by the agent's own rules or the general rule any other "
+                          "agent is read by), or, where no agent ran it, the jobs its "
+                          "terminals' shells ran, known by the process groups the collector "
+                          "records (driver says which). Calls are named by phase_rules and "
+                          "cut into phases by phase_segment, none across the boundary of a "
+                          "task (below), with the calls still running under a process that "
+                          "has not exited. Housekeeping is what the agent, the shell, or the "
+                          "editor ran for itself, counted apart. A record whose process "
+                          "groups were not kept is part of whatever ran it, so a session no "
+                          "agent ran then has no calls. An agent that worked on more than one "
+                          "day has a row for "
                           "each, and each shows one block, cut as a single session from the "
                           "calls of all those rows in the window: the block's n_calls counts "
                           "the session's calls, a row's own n_calls its day's, days lists the "

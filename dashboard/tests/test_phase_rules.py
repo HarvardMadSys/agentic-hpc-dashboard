@@ -9,7 +9,10 @@ argv, and that an unreadable command is `unknown` and never raises.
 
 Then which of an agent's processes are tool calls and which are its own housekeeping: whether a
 process is the agent's direct child (`parent_is_agent`, through the schema-7 and schema-8 shapes of
-a record), what a direct child is (`classify_direct`), and the command a call ran (`call_text`).
+a record), what a direct child is (`classify_direct`), for Claude Code and Codex by their own rules
+and for any other agent or an editor's server by the general ones, and the command a call ran
+(`call_text`). And, for a session no agent runs, which processes a terminal's shell ran as jobs,
+from the process groups the collector records (`classify_terminal`, `interactive_shell`, `in_job`).
 
     cd dashboard && uv run python -m unittest discover -s tests -p 'test_phase_rules.py' -v
 """
@@ -23,12 +26,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rc_dashboard.normalize import Normalizer  # noqa: E402
 from rc_dashboard.procindex import ProcIndex  # noqa: E402
-from rc_dashboard.reducers.phase_rules import (CATS, PHASE_AGENTS, call_text,  # noqa: E402
+from rc_dashboard.normalize import IDE_AGENT_TYPES  # noqa: E402
+from rc_dashboard.reducers.phase_rules import (CATS, RULED_AGENTS, call_text,  # noqa: E402
                                                cat_without_argv, category_of, category_of_argv,
-                                               classify_direct, codex_chore_of, is_fs_helper,
-                                               is_sandbox_probe, login_helper, norm_hash,
-                                               parent_is_agent, program_name, shell_text,
-                                               split_simple, waits_on)
+                                               classify_direct, classify_terminal,
+                                               codex_chore_of, in_job, interactive_shell,
+                                               is_fs_helper, is_sandbox_probe, login_helper,
+                                               norm_hash, parent_is_agent, program_name,
+                                               shell_text, split_simple, waits_on)
 from rc_dashboard.roles import ROLES  # noqa: E402
 from test_sessions import cfg, claude_session, rec  # noqa: E402
 
@@ -1304,7 +1309,8 @@ DIRECT = [  # (agent_type, command, args) -> classify_direct result
     ("codex", "sh", "/bin/sh -c printf \"%s\" \"$HOME\"", ("housekeeping", "printf $HOME")),
     ("codex", "codex", "/h/.codex/packages/app-server-daemon/releases/0.165.0/bin/codex --version", ("housekeeping", "probe")),
     ("codex", "codex-linux-sandbox", "codex-linux-sandbox --sandbox-policy-cwd /h --command-cwd /", ("call", "wrapper")),
-    ("cursor", "bash", "bash -lc ls", ("none", "")),
+    ("cursor", "bash", "bash -lc ls", ("housekeeping", "bash")),       # Cursor's editor server's own
+    ("copilot", "bash", "bash -lc ls", ("call", "shell")),            # any other agent: the general rule
 ]
 
 # The shapes the captures have, each beside its nearest miss, so a rule that is widened or narrowed
@@ -1448,12 +1454,14 @@ DIRECT_SHAPES = [
     ("codex", "rm", "rm -f -- /home/a/proj/out.sock", ("call", "bare")),
     ("codex", "sh", "/bin/sh -c printf \"%s\\n\" \"$HOME\"", ("call", "shell")),   # not the exact chore
     ("codex", "sh", "/bin/sh -c ls \"$HOME\"", ("call", "shell")),
-    # an agent type with no recognized calls gets none, whatever the process is
-    ("cursor", "zsh", SNAP + "'git status'", ("none", "")),
-    ("copilot", "git", "git status", ("none", "")),
-    ("vscode", "bash", "bash -lc ls", ("none", "")),
-    (None, "bash", "bash -lc ls", ("none", "")),
-    ("", "bash", "bash -lc ls", ("none", "")),
+    # an editor's server's direct children are its own, whatever they are; any other agent, a type
+    # not named included, is read by the general rule
+    ("cursor", "zsh", SNAP + "'git status'", ("housekeeping", "zsh")),
+    ("vscode", "bash", "bash -lc ls", ("housekeeping", "bash")),
+    ("copilot", "git", "git status", ("call", "bare")),
+    ("copilot", "git", "git --version", ("housekeeping", "version check")),
+    (None, "bash", "bash -lc ls", ("call", "shell")),
+    ("", "bash", "bash -lc ls", ("call", "shell")),
 ]
 
 
@@ -1507,8 +1515,8 @@ class DirectTest(unittest.TestCase):
         self.assertEqual(classify_direct({"args": "git status"}, "claude_code"), ("housekeeping", "git"))
         self.assertEqual(classify_direct({"args": "/usr/bin/bash -lc ls"}, "codex"), ("call", "shell"))
 
-    def test_only_two_agent_types_have_calls(self):
-        self.assertEqual(PHASE_AGENTS, frozenset({"claude_code", "codex"}))
+    def test_two_agent_types_have_rules_of_their_own(self):
+        self.assertEqual(RULED_AGENTS, frozenset({"claude_code", "codex"}))
 
     def test_the_fs_helper_as_the_captures_have_it(self):
         helper = {"_command": "codex", "args": "/n/home01/u/.codex/packages/app-server-daemon/releases/"
@@ -1588,10 +1596,8 @@ class DirectTest(unittest.TestCase):
             for at in ("claude_code", "codex", "cursor", None):
                 with self.subTest(record=str(r)[:40], agent=at):
                     kind, shape = classify_direct(r, at)
-                    if kind == "none":
-                        self.assertEqual(shape, "")
-                        self.assertNotIn(at, PHASE_AGENTS)
-                    elif kind == "call":
+                    self.assertIn(kind, ("call", "housekeeping"))      # every agent is read
+                    if kind == "call":
                         self.assertIn(shape, ("bash", "search", "wrapper", "shell", "bare"))
                     else:
                         self.assertEqual(kind, "housekeeping")
@@ -1600,6 +1606,189 @@ class DirectTest(unittest.TestCase):
                     for k in ("bash", "shell", "search", "bare", "wrapper"):
                         text = call_text(r, k)
                         self.assertTrue(text is None or (isinstance(text, str) and text.strip()))
+
+
+class GeneralAgentTest(unittest.TestCase):
+    """Any agent with no rules of its own (Copilot, a Cursor agent, a sandbox keyed on its own, a
+    type the collector learns later) is read as Codex is, with only the chores any agent runs."""
+
+    def test_any_other_agent_is_read_as_codex_is(self):
+        for at in ("copilot", "bwrap", "gemini", None):
+            with self.subTest(agent=at):
+                self.assertEqual(classify_direct({"_command": "bash", "args": "/bin/bash -c ls -la"}, at),
+                                 ("call", "shell"))
+                self.assertEqual(classify_direct({"_command": "python3", "args": "python3 train.py"}, at),
+                                 ("call", "bare"))
+                self.assertEqual(classify_direct({"_command": "bwrap", "args": "bwrap --ro-bind / / ls"}, at),
+                                 ("call", "wrapper"))
+                # a script named after an agent is no agent's executable: the model's call
+                self.assertEqual(classify_direct({"_command": "bash", "args": "bash /h/bin/copilot"}, at),
+                                 ("call", "bare"))
+
+    def test_its_own_executable_is_housekeeping_by_its_role(self):
+        self.assertEqual(classify_direct({"_command": "copilot", "args": "copilot --version"}, "copilot"),
+                         ("housekeeping", "probe"))
+        self.assertEqual(classify_direct({"_command": "cursor-agent", "args": "cursor-agent status"},
+                                         "cursor", "agent"), ("housekeeping", "agent"))
+
+    def test_a_login_shells_helpers_and_a_version_check_are_housekeeping(self):
+        self.assertEqual(classify_direct({"_command": "id", "args": "/usr/bin/id -un"}, "copilot"),
+                         ("housekeeping", "login shell startup"))
+        self.assertEqual(classify_direct({"_command": "git", "args": "git --version"}, "copilot"),
+                         ("housekeeping", "version check"))
+        # a model's own `git status` is a call
+        self.assertEqual(classify_direct({"_command": "git", "args": "git status"}, "copilot"),
+                         ("call", "bare"))
+
+
+class EditorServerTest(unittest.TestCase):
+    """An editor's server runs nothing for anyone directly: what it runs is its own."""
+
+    def test_the_types_are_the_ones_the_dashboard_calls_an_editor(self):
+        self.assertEqual(IDE_AGENT_TYPES, frozenset({"vscode", "cursor", "windsurf"}))
+
+    def test_an_editors_direct_children_are_its_own(self):
+        for at in sorted(IDE_AGENT_TYPES):
+            for role in (None, "ide", "helper"):
+                with self.subTest(editor=at, root=role):
+                    self.assertEqual(classify_direct({"_command": "git", "args": "git status -z -uall"},
+                                                     at, role), ("housekeeping", "git"))
+                    self.assertEqual(classify_direct(
+                        {"_command": "node", "args": "/h/.vscode-server/bin/x/node out/bootstrap-fork "
+                         "--type=extensionHost"}, at, role), ("housekeeping", "node"))
+
+    def test_an_agent_whose_tree_carries_an_editors_type_is_read_as_an_agent(self):
+        # a Cursor agent's CLI is tagged `cursor`, as Cursor's server is: the index's role tells them
+        self.assertEqual(classify_direct({"_command": "bash", "args": "/bin/bash -c ls"}, "cursor", "agent"),
+                         ("call", "shell"))
+
+
+def term(pid, ppid, pgrp, sid, command, args, tty="pts/3", **kw):
+    """A process of a session no agent runs, with the groups the collector records."""
+    return dict(pid=pid, ppid=ppid, pgrp=pgrp, sid=sid, _command=command, args=args, tty=tty, **kw)
+
+
+class TerminalTest(unittest.TestCase):
+    """A terminal's shell runs each command line as a job: a process group of its own in the
+    session the shell leads. The groups say which processes are jobs, a record at a time."""
+
+    SH = 500                # the login shell: it leads the session and its own group
+
+    def classify(self, pid, ppid, pgrp, command, args, **kw):
+        return classify_terminal(term(pid, ppid, pgrp, self.SH, command, args, **kw))
+
+    def test_a_job_is_a_call(self):
+        self.assertEqual(self.classify(510, self.SH, 510, "make", "make -j8"), ("call", "job"))
+        self.assertEqual(self.classify(511, self.SH, 511, "vim", "vim train.py"), ("call", "job"))
+        self.assertEqual(self.classify(512, self.SH, 512, "bash", "bash -c make && ./bench"),
+                         ("call", "shell"))
+        self.assertEqual(call_text(term(510, self.SH, 510, self.SH, "make", "make -j8"), "job"),
+                         "make -j8")
+
+    def test_a_later_stage_of_a_pipeline_is_a_call_of_its_own(self):
+        # `ls | grep py`: grep is the shell's child in the job ls leads
+        self.assertEqual(self.classify(531, self.SH, 530, "grep", "grep py"), ("call", "job"))
+
+    def test_what_runs_below_a_jobs_first_process_is_part_of_it(self):
+        cc = term(521, 520, 520, self.SH, "cc", "cc -c a.c")
+        self.assertIsNone(classify_terminal(cc))
+        self.assertTrue(in_job(cc))
+
+    def test_what_the_shell_runs_in_its_own_group_is_its_housekeeping(self):
+        for command, args, shape in (
+                ("git", "git rev-parse --git-dir --is-inside-git-dir --is-bare-repository "
+                 "--is-inside-work-tree --short HEAD", "prompt"),
+                ("git", "git status --porcelain", "prompt"),
+                ("git", "git --no-optional-locks symbolic-ref --short HEAD", "prompt"),
+                ("starship", "starship prompt --status=0", "prompt"),
+                ("direnv", "direnv export bash", "prompt"),
+                ("id", "/usr/bin/id -un", "login shell startup"),
+                ("dircolors", "dircolors -b", "login shell startup"),
+                ("lmod", "/usr/share/lmod/lmod/libexec/lmod bash load gcc", "lmod")):
+            with self.subTest(args=args):
+                rec = term(540, self.SH, self.SH, self.SH, command, args)
+                self.assertEqual(classify_terminal(rec), ("housekeeping", shape))
+                self.assertFalse(in_job(rec))
+
+    def test_with_no_terminal_the_leaders_group_is_the_command_it_leads(self):
+        # `ssh host 'python train.py'`: the command leads its session, and its workers its group
+        worker = term(601, 600, 600, 600, "python", "python -c pass", tty=None)
+        self.assertIsNone(classify_terminal(worker))
+        self.assertTrue(in_job(worker))
+        self.assertEqual(classify_terminal(term(600, 400, 600, 600, "python", "python train.py", tty=None)),
+                         ("call", "job"))
+        self.assertEqual(classify_terminal(term(602, 1, 602, 602, "sh", "/bin/sh -c ./nightly.sh", tty=None)),
+                         ("call", "shell"))
+        # under an agent's or an editor's tree it is that tree's, never a command's
+        self.assertFalse(in_job(dict(worker, agent_pid=300)))
+
+    def test_a_shell_a_person_types_into_is_never_a_call(self):
+        for args in ("-bash", "-zsh", "bash", "/bin/bash -l", "zsh -i", "fish",
+                     "/bin/bash --init-file /h/.vscode-server/cli/servers/x/server/out/vs/workbench/"
+                     "contrib/terminal/common/scripts/shellIntegration-bash.sh"):
+            command = args.split()[0].lstrip("-").rsplit("/", 1)[-1]
+            with self.subTest(args=args):
+                # as the session's leader (a login, a pane, an editor's terminal), and as a job
+                self.assertEqual(classify_terminal(term(700, 1, 700, 700, command, args)),
+                                 ("housekeeping", "interactive shell"))
+                self.assertEqual(self.classify(701, self.SH, 701, command, args),
+                                 ("housekeeping", "interactive shell"))
+
+    def test_a_forked_subshell_job_is_named_by_what_ran_under_it(self):
+        # `( cd x && make )`: the subshell carries its parent's argv, and leads the job
+        for extra in ({"argv_source": "inherit"}, {"fork_only": True}):
+            with self.subTest(**extra):
+                self.assertEqual(self.classify(570, self.SH, 570, "bash", "-bash", **extra),
+                                 ("call", "subshell"))
+        self.assertIsNone(call_text(term(570, self.SH, 570, self.SH, "bash", "-bash"), "subshell"))
+
+    def test_a_job_that_only_starts_a_shell_is_no_call(self):
+        for args in ("su", "su -", "su - root", "sudo -i", "sudo -s", "sudo -iu bob", "sudo su -",
+                     "apptainer shell --nv img.sif", "singularity shell img.sif", "newgrp lab"):
+            with self.subTest(args=args):
+                self.assertEqual(self.classify(800, self.SH, 800, args.split()[0], args),
+                                 ("housekeeping", "nested shell"))
+        for args in ("su -c make", "sudo make install", "apptainer exec img.sif python x.py"):
+            with self.subTest(args=args):
+                self.assertEqual(self.classify(801, self.SH, 801, args.split()[0], args)[0], "call")
+
+    def test_multiplexers_and_daemons_are_not_calls(self):
+        # tmux's server forks off its client and leads a session of its own; the client is a job
+        self.assertEqual(classify_terminal(term(900, 1, 900, 900, "tmux", "tmux new -s w",
+                                                argv_source="inherit", tty=None)),
+                         ("housekeeping", "terminal multiplexer"))
+        self.assertEqual(self.classify(901, self.SH, 901, "tmux", "tmux attach -t w"),
+                         ("housekeeping", "terminal multiplexer"))
+        self.assertEqual(classify_terminal(term(902, 1, 902, 902, "sshd", "sshd: bob@pts/3", tty=None)),
+                         ("housekeeping", "daemon"))
+        self.assertEqual(classify_terminal(term(903, 1, 903, 903, "python", "python serve.py",
+                                                argv_source="inherit", tty=None)),
+                         ("housekeeping", "daemon"))
+
+    def test_without_its_groups_nothing_is_decided(self):
+        for pgrp, sid in ((None, 500), (510, None), (None, None), (0, 500), (510, 0)):
+            with self.subTest(pgrp=pgrp, sid=sid):
+                rec = term(510, 500, pgrp, sid, "make", "make")
+                self.assertIsNone(classify_terminal(rec))
+                self.assertFalse(in_job(rec))
+
+    def test_which_shells_read_from_their_terminal(self):
+        for command, args, want in (
+                ("bash", "-bash", True), ("bash", "bash", True), ("bash", "/bin/bash --login", True),
+                ("bash", "bash -il", True), ("bash", "bash --norc --noprofile", True),
+                ("bash", "bash -o vi", True), ("bash", "bash --rcfile /h/.bashrc2", True),
+                ("tcsh", "-tcsh", True), ("zsh", "zsh -l", True), ("fish", "fish --login", True),
+                ("bash", "bash -c ls", False), ("bash", "bash -lc ls", False), ("sh", "sh -s", False),
+                ("bash", "bash run.sh", False), ("bash", "", False), ("python", "python", False),
+                ("bash", "bash -- ", True)):
+            with self.subTest(args=args):
+                self.assertIs(interactive_shell(command, args), want)
+
+    def test_the_editors_and_monitors_a_person_runs(self):
+        for text, cat in (("vim train.py", "edit"), ("nano notes.md", "edit"), ("emacs -nw a.c", "edit"),
+                          ("man sbatch", "explore"), ("htop", "explore"), ("nvtop", "explore")):
+            with self.subTest(text=text):
+                self.assertEqual(category_of(text), cat)
 
 
 class CodexAppReadsTest(unittest.TestCase):

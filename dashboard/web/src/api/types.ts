@@ -28,7 +28,7 @@ export function isConfigLeaf(n: ConfigNode): n is ConfigLeaf {
 
 /* ----------------------------------------------------------------- feeds */
 
-export type FeedStatus = 'ok' | 'stale' | 'empty' | 'missing' | 'degraded';
+export type FeedStatus = 'ok' | 'stale' | 'empty' | 'missing';
 
 export interface FeedReport {
   name: string;
@@ -347,11 +347,10 @@ export interface ToolClassBlock {
   mem_mb?: number;
   rows: ToolBucketRow[];
 }
-/** One agent type's processes alone: its mix, its top tools, its head. */
+/** One agent type's processes alone: its mix and its top tools. */
 export interface ToolTypeBlock {
   by: ToolClassBlock;
   tools: ToolCostRow[];
-  head: ToolHeadRow[];
   n_tools: number;
 }
 /** One tool, with every resource it used, for sorting by any of them. */
@@ -369,26 +368,18 @@ export interface ToolCostRow {
   mem_mean_mb: number | null;
   mem_max_mb: number | null;
 }
-export interface ToolHeadRow {
-  tool: string;
-  calls: number;
-  calls_pct: number | null;
-  cpu_pct: number | null;
-}
 export interface ToolMix extends PanelEnvelope {
   buckets: string[];
   by_class: Record<string, ToolClassBlock>;
-  head: Record<string, ToolHeadRow[]>;
   /** class -> the top tools by every resource, each with all of them */
   tools?: Record<string, ToolCostRow[]>;
-  /** distinct tools each class ran (the head lists only the top few) */
+  /** distinct tools each class ran (`tools` lists only the busiest) */
   n_tools?: Record<string, number>;
   /** class -> agent type ("" = untagged) -> its share of the class's calls and CPU */
   by_type?: Record<string, Record<string, { calls: number; calls_pct: number | null; cpu_s: number; cpu_pct: number | null }>>;
   /** agent type -> that type's processes alone, so the Agents tab never mixes types */
   by_agent_type?: Record<string, ToolTypeBlock>;
   dedup: { dropped: number; dropped_pct: number | null; rule: string };
-  cpu_basis: string;
   /** how the counted processes ended (reducers/tools.py `exits`); absent on a
    *  window reduced before they were counted */
   exits?: ToolExits;
@@ -423,7 +414,6 @@ export interface ToolExits {
   by_agent_type: Record<string, ExitBlock>;
   /** programs whose exit 1 is an answer */
   answers: string[];
-  basis: string;
 }
 
 /* ----------------------------------------------------------- io_process */
@@ -440,7 +430,6 @@ export interface IoClassBlock {
   cache_hit_pct: number | null;
   net_tx_mb: Accum;
   net_rx_mb: Accum;
-  net_calls: Accum | null;
   scope: Record<string, unknown>;
   quants: Record<string, Quant>;
 }
@@ -536,7 +525,6 @@ export interface IoProcess extends PanelEnvelope {
   by_user: IoByUser[];
   /** the remote ends of the network bytes, named and ranked */
   endpoints?: EndpointList;
-  notes: Record<string, string>;
 }
 
 /* ------------------------------------------------------------ resources */
@@ -546,7 +534,6 @@ export interface ResClassBlock {
   cpu_s: number | null;
   sched_run_s: Accum;
   sched_wait_s: Accum;
-  schedstat_ratio: number | null;
   quants: Record<string, Quant>;
   /** metric -> the process behind its max */
   top?: Record<string, MaxProcess>;
@@ -586,28 +573,25 @@ export interface ResSeries {
   /** epoch seconds at the start of each bin */
   t: number[];
   /** sums by exit time: a process's whole-life counters land in its exit bin */
-  by_class: Record<string, Record<'n' | 'cpu_s' | 'sched_wait_s' | 'dstate_wait_s' | 'maj_flt'
+  by_class: Record<string, Record<'cpu_s' | 'sched_wait_s' | 'maj_flt'
     | 'rchar_mb' | 'rd_mb' | 'wchar_mb' | 'wr_mb', Bins> & Partial<Record<'net_tx_mb' | 'net_rx_mb', Bins>>>;
   /** D-state seconds per bin for the heaviest stallers; 0 where measured and none */
   stall_by_tool: Record<string, Bins>;
   stall_other: Bins;
   /** sampled from residency ticks: per host mean over the bin, summed over hosts */
-  resident: Record<string, Record<'rss_mb' | 'n_procs' | 'd_state', Bins>>;
-  resident_hosts: (number | null)[];
+  resident: Record<string, Record<'rss_mb', Bins>>;
   skipped: { no_ts: number; future: number; clipped_bins: number };
 }
 export interface Resources extends PanelEnvelope {
   by_class: Record<string, ResClassBlock>;
   stall_by_tool: StallByTool[];
   scope: Record<string, unknown>;
-  cpu_basis: string;
   series?: ResSeries;
   worst_stall?: ResourceInstance[];
   worst_fault?: ResourceInstance[];
   worst_wait?: ResourceInstance[];
   /** waits longer than the process lived, set aside as not measured: class -> field -> n */
   impossible_waits?: Record<string, Record<string, number>>;
-  impossible_basis?: string;
 }
 
 /* -------------------------------------------------------------- sandbox */
@@ -631,16 +615,6 @@ export type ApprovalState = 'bypassed' | 'auto' | 'supervised' | 'unobservable' 
  *  app: `desktop`, `extension`, `web`. */
 export type Surface = 'terminal' | 'script' | 'desktop' | 'extension' | 'web' | 'unknown';
 
-export interface AncestryRow {
-  ancestry: string;
-  /** `wrapper` (bwrap / codex-linux-sandbox, read before it unshares) or `process` */
-  kind: 'wrapper' | 'process';
-  sandbox: SandboxState;
-  n: number;
-  dstate_wait_s: number | null;
-  dstate_coverage_pct: number | null;
-  reading: string | null;
-}
 export interface SandboxSessionRow {
   host: string;
   pid: number | null;
@@ -681,10 +655,6 @@ export interface Sandbox extends PanelEnvelope {
   sessions: SandboxSessionRow[];
   sessions_total: number;
   launch_modes: LaunchModeRow[];
-  ancestry_matrix: AncestryRow[];
-  sandbox_src: Record<string, number>;
-  sandbox_detail: Record<string, unknown>;
-  agent_only: Record<string, unknown>;
   below_capped?: number;
   states: {
     sandbox: string[];
@@ -696,7 +666,6 @@ export interface Sandbox extends PanelEnvelope {
     approval: string[];
     approval_known?: string[];
   };
-  notes: Record<string, string>;
 }
 
 /* --------------------------------------------------------- trajectories */
@@ -875,8 +844,11 @@ export interface PhaseDay {
 export interface PhaseBlock {
   /** 2 for a block that carries its tasks; a block of the first version has no `tasks`, `headline`, or `days` */
   v: number;
-  basis: string;
-  /** every tool call seen, the cut ones included. For an agent over several days, the whole session's */
+  /** whose calls it was read from: an agent's tool calls (`agent`), or, where no agent ran the session, the jobs its
+   *  terminals' shells ran (`terminal`: a person's login, an editor's terminal). Absent from a service that read
+   *  agents alone, which is `agent` */
+  driver?: PhaseDriver;
+  /** every call seen, the cut ones included. For an agent over several days, the whole session's */
   n_calls: number;
   /** calls past the log's bound: in `n_calls` and in no phase. The earliest began at `cut_at` */
   cut: number;
@@ -909,15 +881,21 @@ export interface PhaseBlock {
  *  mostly not recorded; `none` for one that made no tool call. */
 export type SessionCategory = UseKind | 'mixed' | 'wait' | 'unknown' | 'none';
 
+/** Whose calls a block was read from (`PhaseBlock.driver`). */
+export type PhaseDriver = 'agent' | 'terminal';
+
 /** A block's category, the uses it rests on, and its summary, as a portrait's session carries them too: null where no
  *  block was built for it. */
 export interface SessionKind {
   category?: SessionCategory | null;
   uses?: [UseKind, number][] | null;
   summary?: string | null;
+  /** whose calls it was read from; `agent` where absent */
+  driver?: PhaseDriver;
 }
 
-/** A row whose calls are not recognized: an agent type outside Claude Code and Codex, a person, an IDE. */
+/** What a service that read agents alone sent for a row whose calls it did not read: an agent type outside Claude
+ *  Code and Codex, a person, an IDE. The service now reads every row, and sends a block for each. */
 export interface PhasesUnavailable {
   unavailable: string;
 }
@@ -951,7 +929,6 @@ export interface TrajRunning {
 /** How a session's collector keys were attributed to it, most certain first
  * (`rc_dashboard/procindex.py: VIA`). A row reports its least certain key. */
 export type OwnerVia = 'self' | 'ancestor' | 'parent' | 'tree_root' | 'root' | 'unknown';
-export const OWNER_VIA: OwnerVia[] = ['self', 'ancestor', 'parent', 'tree_root', 'root', 'unknown'];
 
 export interface TrajRow {
   sid: string;
@@ -959,7 +936,6 @@ export interface TrajRow {
   /** collector session keys folded into this row; 1 when nothing was folded */
   fragments?: number;
   owner_via?: OwnerVia | null;
-  drift?: Drift;
   host: string;
   user: string;
   actor3: string | null;
@@ -1036,17 +1012,8 @@ export interface Trajectories extends PanelEnvelope {
   rows: Record<string, TrajRow>;
   by_class_counts: Record<string, number>;
   by_key_type: Record<string, number>;
-  fold?: {
-    raw_sessions: number;
-    sessions: number;
-    by_via: Partial<Record<OwnerVia, number>>;
-    index: { entries: number; cap: number; evicted: number } | null;
-  };
-  dominant_user_share_pct?: Partial<Record<TrajRank, number | null>> | null;
   /** Over every session in the window, per class (not just the listed rows). */
   summary?: Record<string, TrajSummary>;
-  buffer: unknown;
-  basis: string;
 }
 
 /* ------------------------------------------- one trajectory's process tree
@@ -1230,7 +1197,6 @@ export interface TrajectoryDetail extends PanelEnvelope {
   timeline?: { lo: number | null; hi: number | null };
   nav?: TrajNav;
   tree?: ProcNode;
-  basis?: Record<string, string>;
 }
 
 /** A process the navigator can jump to: when it started and exited, which. */
@@ -1270,28 +1236,6 @@ export interface TrajNav {
 }
 
 /* ---------------------------------------------------------- agents (cascades) */
-
-/** Two process-level proxies for an agent leaving its task, carried by
- *  trajectory rows (`rc_dashboard/reducers/trajectories.py: drift`). Neither
- *  sees the context. The Agents page does not use them: it shows where an
- *  agent worked instead (`Workspace`). */
-export interface Drift {
-  n: number;
-  capped: boolean;
-  min_n: number;
-  /** Jensen-Shannon divergence, first vs last third of the purpose mix; null below min_n */
-  mix_jsd: number | null;
-  mix_first: [string, number][] | null;
-  mix_last: [string, number][] | null;
-  cwd_coverage_pct: number | null;
-  cwd_anchor: string | null;
-  cwd_anchor_src: 'agent' | 'first_call' | null;
-  cwd_outside_pct: number | null;
-  cwd_distinct: number;
-  cwd_top: [string, number][];
-  cwd_first: string | null;
-  cwd_last: string | null;
-}
 
 export type CascadeRole = 'agent' | 'infra' | 'client';
 export type CascadeVia = 'ancestor' | 'spawned_by' | 'same_user_daemon' | 'tree_root';
@@ -1345,7 +1289,7 @@ export interface CascadeNode {
    *  front-end's); null for a node that is not an agent */
   surface?: Surface | null;
   surface_detail?: string | null;
-  /** whether its tool calls ran sandboxed, as the Internal tab counts its session; null: it made none */
+  /** whether its tool calls ran sandboxed, as the Security tab counts its session; null: it made none */
   sandbox?: SessionSandboxState | null;
   sandbox_calls?: Partial<Record<ToolCallOutcome, number>> | null;
   /** a tree bigger than the service sends: what this node's agents that were
@@ -1517,7 +1461,6 @@ export interface Workspace {
     rows_cap: number;
   };
   buffer?: Record<string, number>;
-  basis?: Record<string, string>;
 }
 
 export interface Cascades extends PanelEnvelope {
@@ -1539,13 +1482,9 @@ export interface Cascades extends PanelEnvelope {
   };
   depth_hist?: Record<string, number>;
   fanout_hist?: Record<string, number>;
-  edges?: { parent: string; child: string; n: number }[];
-  edge_via?: Partial<Record<CascadeVia, number>>;
   trees?: CascadeTree[];
-  role_census?: { agent_type: string | null; role: string; n: number; cpu_s: number; pct: number }[];
   buffer?: { nodes: number; cap: number; dropped: number };
   workspace?: Workspace | null;
-  basis?: Record<string, unknown>;
 }
 
 /* ---------------------------------------------------------------- panels */
@@ -1553,12 +1492,10 @@ export interface Cascades extends PanelEnvelope {
 export interface PanelsResponse {
   panels: Record<string, PanelEnvelope & Record<string, unknown>>;
   full_built_at: string | null;
-  node_built_at: string | null;
   window: WindowSpec;
   window_status: WindowStatus;
   filter?: ViewFilterBlock;
   facets?: Facets | null;
-  purposes: string[] | Record<string, string> | null;
 }
 
 /* ------------------------------------------------------------------ live */
@@ -1571,9 +1508,6 @@ export interface RateRow {
   human: number | null;
   ide: number | null;
   [k: string]: string | number | null;
-}
-export interface LiveNow {
-  [k: string]: number | string | null | undefined;
 }
 export interface LiveHost {
   host: string;
@@ -1687,13 +1621,31 @@ export interface SlurmSession {
   poll_gap_s: number | null;
   loop: SlurmLoop | null;
   queries_unplaced: number;
+  /** the longest stretch of checks at most `poll_gap_s` apart (`reducers.slurm.abnormal`) */
+  fast_loop?: SlurmStretch | null;
+  /** the most queue checks in any 60 s; a lower bound when `queries_unplaced` */
+  queries_peak_per_min?: number;
+  /** jobs past the service's cap of times per key: `peak_per_min` is then a lower bound */
+  jobs_unplaced?: number;
   cancels: number;
   runs: number;
   runs_failed: number;
   fails: { why: string; n: number }[];
   /** the latest job's command line, credentials masked */
   args: string | null;
+  /** the rules it broke (`SlurmPanel.abnormal.rules`), in their order; absent from a
+   *  service that does not judge them */
+  abnormal?: SlurmRuleId[];
 }
+
+/** A stretch of polls each at most some gap after the one before. */
+export type SlurmStretch = Omit<SlurmLoop, 'polling'>;
+/** What makes activity at the scheduler abnormal (reducers/slurm.py, ABNORMAL). */
+export type SlurmRuleId = 'fast_polling' | 'query_burst' | 'submit_burst' | 'refused' | 'cancels' | 'failed_runs';
+/** A rule and its threshold: a stretch's gap and length for fast polling, a count for the rest. */
+export type SlurmRule =
+  | { id: 'fast_polling'; gap_s: number; min_s: number }
+  | { id: Exclude<SlurmRuleId, 'fast_polling'>; min: number };
 
 export interface SlurmClass {
   sessions: number;
@@ -1723,15 +1675,21 @@ export interface SlurmClass {
   gpu_h_known: number;
   time_limit_s: Quant | null;
   peak_per_min: number;
+  /** sessions that broke a rule, and each rule's, 0 included */
+  abnormal_sessions?: number;
+  abnormal_by?: Partial<Record<SlurmRuleId, number>>;
 }
 
 export interface SlurmPanel extends PanelEnvelope {
   by_class?: Record<string, SlurmClass>;
+  /** the busiest `sessions_busiest`, then every other one that broke a rule */
   sessions?: SlurmSession[];
   sessions_total?: number;
+  sessions_busiest?: number;
+  /** the rules, and the sessions that broke one: `served` of them are in `sessions` */
+  abnormal?: { rules: SlurmRule[]; sessions: number; served: number };
   series?: { bin_s: number; t: number[]; by_class: Record<string, { jobs: (number | null)[]; queries: (number | null)[] }> };
   rejections?: { cls: string; tool: string; why: string; n: number; eg: { user: string | null; ts: string | null; args: string } | null }[];
-  basis?: Record<string, unknown>;
 }
 
 /** The present the service computed a frame at (rc_dashboard/clock.py). */
@@ -1761,7 +1719,6 @@ export interface LiveResponse {
     retained_minutes?: number | null;
   };
   rate: RateRow[];
-  now: LiveNow;
   hosts: LiveHost[];
   events: LiveEvent[];
   events_tail_depth?: number | null;
@@ -1807,10 +1764,6 @@ export interface LiveUserRow {
   last_epoch: number | null;
 }
 export interface LiveUsers {
-  /** distinct accounts: a person in three classes is one */
-  total: number;
-  by_class: Partial<Record<string, number>>;
-  with_live_agent: number;
   /** class -> agent type -> users with such a session running now */
   running_by_type?: Partial<Record<string, Record<string, number>>>;
   /** the busiest first; the frame carries only the top `rows.length` */
@@ -1900,7 +1853,7 @@ export interface TraitRule {
   rule: string;
 }
 
-/** What a user's agent sessions asked of the scheduler, folded as the Slurm tab folds them. */
+/** What a user's agent sessions asked of the scheduler, folded as the HPC tab folds them. */
 export interface UserSlurm {
   sessions: number;
   jobs: number;
@@ -1957,7 +1910,7 @@ export interface UserRow {
   agent_types: Record<string, number>;
   surfaces: Partial<Record<Surface, number>>;
   approval: Partial<Record<ApprovalState, number>>;
-  /** sessions by whether their tool calls ran sandboxed, as the Internal tab counts them */
+  /** sessions by whether their tool calls ran sandboxed, as the Security tab counts them */
   sandbox: Partial<Record<SessionSandboxState, number>>;
   /** tool calls; null where no session's calls are recognized, which is not none */
   calls: number | null;
@@ -2027,14 +1980,13 @@ export interface UsersResponse extends PanelEnvelope {
   unattributed?: number;
   traits: TraitRule[];
   rules: Record<string, number>;
-  basis?: Record<string, string>;
 }
 
 /** One session in a portrait. */
 /** One of a user's sessions. Its `category`, `uses`, and `summary` are its phase block's (`SessionKind`), null where no
  *  block was built for it. */
 export interface PortraitSession extends SessionKind {
-  /** its newest day's row: what the Sessions tab opens it by */
+  /** its newest day's row: what the portrait opens it by, as the Agents tab's list does */
   sid: string;
   /** every day row it is */
   sids: string[];
@@ -2094,7 +2046,6 @@ export interface UserPortrait extends PanelEnvelope {
   fleet?: UsersFleet | null;
   traits?: TraitRule[];
   rules?: Record<string, number>;
-  basis?: Record<string, string>;
   row?: UserRow;
   phases?: {
     /** seconds in each phase over the sessions whose block was built */
@@ -2117,19 +2068,6 @@ export interface UserPortrait extends PanelEnvelope {
   commands?: [string, number][];
   /** the service's time zone, which the hours are in */
   tz?: string;
-}
-
-/* ---------------------------------------------------------------- events */
-
-export interface EventsResponse {
-  rows: LiveEvent[];
-  next_cursor: number | string | null;
-  total_scanned: number | null;
-  truncated: boolean;
-  order?: string;
-  cursor?: number;
-  limit?: number;
-  event_filter_defaulted?: boolean;
 }
 
 /* -------------------------------------------------------------------- ws */
@@ -2259,13 +2197,11 @@ export interface RiskPanel extends PanelEnvelope {
     compute_cpu_h: number;
     share_of_all_cpu_pct: number;
     by_class: Partial<Record<string, { n: number; cpu_s: number; cpu_h: number; users: number }>>;
-    basis?: string;
   };
   dangerous?: {
     rows: DangerousRow[];
     axes?: Record<string, string>;
     site_assumption?: string;
-    basis?: string;
   };
   secrets?: {
     rows: SecretRow[];
@@ -2289,55 +2225,6 @@ export interface AskInfo {
   available: boolean;
   error: string | null;
   timeout_s: number;
-}
-/* -------------------------------------------------------------- annotate */
-
-/** The model that labels tool calls with their purpose (rc_dashboard/annotate.py). */
-export interface AnnotateInfo {
-  enabled: boolean;
-  provider: string;
-  model: string | null;
-  /** where the command lines go, for an HTTP provider */
-  endpoint: string | null;
-  available: boolean;
-  error: string | null;
-  /** annotate a session as soon as it opens */
-  auto: boolean;
-  max_calls: number;
-  kinds: string[];
-  prompt_version: number;
-}
-/** command line, as the tree serves it -> [purpose, kind] */
-export type AnnotateResults = Record<string, [string, string]>;
-export interface AnnotateJob {
-  id: string;
-  state: 'queued' | 'running' | 'done' | 'error';
-  provider: string;
-  model: string | null;
-  /** `provider:model`, who wrote the answers */
-  label: string;
-  /** the session the job was started for */
-  about?: string | null;
-  /** calls asked about, answered so far, and left out by the model's answers */
-  total: number;
-  done: number;
-  unlabelled: number;
-  error: string | null;
-  elapsed_s: number;
-  results: AnnotateResults;
-}
-export interface AnnotateResponse {
-  info: AnnotateInfo;
-  /** distinct tool calls taken (at most info.max_calls), and how many there are */
-  calls: number;
-  total: number;
-  /** the calls taken, as the tree serves their command lines */
-  cmds?: string[];
-  known: AnnotateResults;
-  /** this request's job, or, when it started none, the one already asking about its calls */
-  job: AnnotateJob | null;
-  /** other jobs already asking about some of its calls, to follow too */
-  also?: string[];
 }
 
 /** Part of one panel's data, as the service keys it: a window panel
@@ -2607,9 +2494,7 @@ export interface NodeDisk {
   /** at or past the service's line for space or inodes (`thresholds`) */
   full?: boolean;
 }
-export type NodeField =
-  | 'fork_exec_ms' | 'stat_local_ms' | 'getent_ms' | 'load_1' | 'iowait_pct'
-  | 'mem_used_pct' | 'd_state' | 'nfs_rd_rtt_ms' | 'nfs_wr_rtt_ms' | 'nfs_retrans';
+export type NodeField = 'fork_exec_ms' | 'getent_ms' | 'load_1' | 'nfs_rd_rtt_ms';
 /** The node tier over the window, per host (rc_dashboard/nodehist.py). */
 export interface NodeSeries {
   bin_s: number;
@@ -2635,7 +2520,6 @@ export interface NodePanel extends PanelEnvelope {
   disk?: NodeDisk[];
   thresholds?: { disk_full_pct: number; inode_full_pct: number };
   series?: NodeSeries;
-  cpu_delta_basis?: string;
   privilege?: string;
   _error?: string;
 }

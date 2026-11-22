@@ -43,20 +43,19 @@ export function surfaceShort(s: Surface, detail?: string | null): string {
 
 /* What each detail the service sends means, in the reader's words. */
 const DETAIL_TIP: Record<string, string> = table({
-  interactive: 'a person at the agent’s own interactive screen, in a terminal (tmux and an IDE’s terminal included)',
+  interactive: 'a person at the agent’s own interactive screen (tmux and an IDE’s terminal included)',
   'background session': 'a background session that `claude daemon` keeps for its user, who attaches to it from a terminal',
   'claude -p': 'a program runs `claude -p`, with no one at a terminal',
   '-p': 'a program runs it with `-p`, with no one at a terminal',
-  'Agent SDK': 'a program drives it through the Agent SDK (stream-json), with no one at a terminal',
+  'Agent SDK': 'a program drives it through the Agent SDK, with no one at a terminal',
   'MCP server': 'it serves another program as an MCP server',
   'codex exec': 'a program runs `codex exec`, with no one at a terminal',
-  'Codex SDK': 'a program drives it through the Codex SDK (`codex exec --experimental-json`)',
-  'Claude desktop app': 'the Claude desktop app’s Code tab, over SSH: the programs it installs under `~/.claude/remote/`',
-  'Codex app': 'the Codex app, over SSH: an app server on a unix socket, started with code mode on',
+  'Codex SDK': 'a program drives it through the Codex SDK',
+  'Claude desktop app': 'the Claude desktop app’s Code tab, over SSH',
+  'Codex app': 'the Codex app, over SSH',
   'Claude Remote Control': 'Remote Control: driven from claude.ai or the Claude app on a phone',
   'Codex Remote Control': 'Codex Remote Control: driven from another device',
-  'shared app server':
-    'a Codex app-server daemon serves whichever client attaches to it, so its own command line names none, and no terminal of its user started it',
+  'shared app server': 'a Codex app-server daemon serving whichever client attaches: its command line names none',
   'app server': 'a Codex app server on stdio, started by a program whose own record is not here',
 });
 
@@ -75,7 +74,7 @@ export function surfaceSplit(
   const lines = SURFACE_ORDER.filter((s) => n(s)).map((s) => `${SURFACE_LBL[s]}: ${fint(n(s))}`);
   return {
     text: parts.join(' · '),
-    tip: ['agent sessions by where each is driven from, read off the agent’s own command line', ...lines].join('\n'),
+    tip: ['agent sessions by where each is driven from', ...lines].join('\n'),
   };
 }
 
@@ -86,7 +85,7 @@ export function surfaceTip(s: Surface, detail?: string | null): string {
     s === 'extension'
       ? `the ${detail ?? 'IDE'} extension’s own bundled program runs it`
       : s === 'unknown' && !detail
-        ? 'the agent’s own record was not read, so nothing says where it was driven from'
+        ? 'the agent’s own record was not read'
         : (detail && DETAIL_TIP[detail]) || '';
-  return `driven from: ${name}${why ? `, ${why}` : ''}\nread off the agent’s own command line`;
+  return `driven from: ${name}${why ? `, ${why}` : ''}`;
 }

@@ -6,9 +6,9 @@
 `dump` starts the service from an empty cache with the clock pinned to the feed's
 end (`clock.as_of=auto`, so every build over the same bytes is the same build) and
 the hash seed fixed, waits for the backfill and the default window, opens a
-filtered view and the inspector on the busiest sessions, and writes every
-response a page reads, with the keys that say when or how fast something ran
-removed (`VOLATILE`). `compare` parses both and lists every difference: a speed-up
+filtered view and the inspector on the busiest sessions, and writes the main
+responses a page reads, with the keys that say when or how fast something ran
+removed (`VOLATILE`). `compare` parses both and lists the differences, up to 60: a speed-up
 that changes a number the page shows is a regression, whatever it saves.
 """
 import argparse
@@ -30,7 +30,7 @@ VOLATILE = frozenset((
     "panels_note", "restored", "cache", "installed_at", "materialized_at", "built_age_s",
     "last_poll", "compressed", "elapsed_ms", "took_s", "scan_s",
     # the wall clock, which a pinned clock leaves running beside it
-    "generated_at", "behind_wall_s",
+    "behind_wall_s",
     # how many times the node history's thread has read the node tier, once a
     # minute (`nodehist.IDLE_S`): how long the service had been up when asked
     "passes",
@@ -109,11 +109,6 @@ def dump(feed, out, cache, anon=False):
         # each host's verdict; not `tiers`, the feeds' freshness as of the last
         # report refresh (every 30 s, and by file mtime), which is when, not what
         got["collectors"] = {k: v for k, v in s.json("/api/collectors").items() if k != "tiers"}
-        got["events"] = s.json("/api/events?limit=300")
-        # the rows, not the `_meta` header: it carries the feed report as of its last
-        # refresh (schema counts, paths), which is when the export ran, not what it holds
-        rows = [json.loads(x) for x in s.lines("/api/export", 5000) if x.strip()]
-        got["export"] = [r for r in rows if "_meta" not in r]
         got["_meta"] = {"user": user, "sids": sids, "tty": tty}
     with open(out, "w") as fh:
         json.dump(strip(got), fh, sort_keys=True)

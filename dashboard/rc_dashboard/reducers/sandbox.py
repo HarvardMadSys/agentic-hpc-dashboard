@@ -121,24 +121,6 @@ def session_state(calls):
     return "unsandboxed"
 
 
-def _reading(anc, kind, sb):
-    if kind == "wrapper":
-        if sb == "unsandboxed":
-            return ("wrapper, read at its own exec before it unshares -- says nothing "
-                    "about the call it wraps; see the tool-call outcomes")
-        if sb == "sandboxed":
-            return "wrapper already inside a sandbox (nested)"
-        return None
-    if sb == "sandboxed":
-        if anc == "none":
-            return ("in its own namespaces with no agent sandbox wrapper above it: a container, "
-                    "apptainer, a systemd unit, or a reused pid inheriting one -- not an agent sandbox")
-        return "under a sandbox wrapper, sandboxed"
-    if sb == "unsandboxed" and anc != "none":
-        return "under a sandbox wrapper, not sandboxed"
-    return None
-
-
 class SandboxReducer:
     EVENTS = ("exit", "truncated", "residency", "conn", "netio")
     # Only exits are counted; the other records are read for the root's
@@ -159,12 +141,6 @@ class SandboxReducer:
         self.procs = procs
         self.sb = collections.defaultdict(collections.Counter)
         self.ap = collections.defaultdict(collections.Counter)
-        self.matrix = collections.Counter()       # (ancestry, kind, sandbox) -> n
-        self.matrix_dwait = collections.Counter()  # same key -> summed dstate_wait_s
-        self.matrix_dseen = collections.Counter()
-        self.src = collections.Counter()
-        self.detail = collections.Counter()
-        self.agents_only = collections.defaultdict(collections.Counter)
         # (host, pid) -> [cls, agent_type, approval, detail, user, start, exit]: the
         # first root on a pid; `later_roots` holds those after it (a pid is reused)
         self.roots = {}
@@ -196,21 +172,7 @@ class SandboxReducer:
         sb, ap = rec.get("_sandbox", "unknown"), rec.get("_approval", "unknown")
         self.sb[cls][sb] += 1
         self.ap[cls][ap] += 1
-        if rec.get("_sandbox_src"):
-            self.src[rec["_sandbox_src"]] += 1
-        if rec.get("sandbox_detail"):
-            for tok in str(rec["sandbox_detail"]).split(","):
-                self.detail[tok] += 1
         wrapper = (rec.get("_command") or "").startswith(WRAPPERS)
-        anc = rec.get("_sandbox_ancestry") or "none"
-        mk = (anc, "wrapper" if wrapper else "process", sb)
-        self.matrix[mk] += 1
-        dw = rec.get("dstate_wait_s")
-        if dw is not None:
-            self.matrix_dwait[mk] += dw
-            self.matrix_dseen[mk] += 1
-        if rec.get("is_agent"):
-            self.agents_only[cls][(sb, ap)] += 1
         if cls == "agent" and pid is not None:
             self._calls(rec, pid, wrapper, sb)
 
@@ -385,14 +347,9 @@ class SandboxReducer:
 
     def merge(self, o):
         """Fold a LATER state into this one. `o` is consumed."""
-        for mine, theirs in ((self.sb, o.sb), (self.ap, o.ap),
-                             (self.agents_only, o.agents_only)):
+        for mine, theirs in ((self.sb, o.sb), (self.ap, o.ap)):
             for cls, c in theirs.items():
                 add_counts(mine[cls], c)
-        for mine, theirs in ((self.matrix, o.matrix), (self.matrix_dwait, o.matrix_dwait),
-                             (self.matrix_dseen, o.matrix_dseen), (self.src, o.src),
-                             (self.detail, o.detail)):
-            add_counts(mine, theirs)
         for key, _gen, r in o._all_roots():   # the newest record of a root wins, as in `feed`
             self._take_root(key, r, r[_R_START])
         for uid, u in o.units.items():
@@ -481,16 +438,6 @@ class SandboxReducer:
         def _totals(d):
             return {cls: sum(c.values()) for cls, c in d.items()}
 
-        rows = []
-        for (anc, kind, sb), n in sorted(self.matrix.items(), key=lambda kv: -kv[1]):
-            seen = self.matrix_dseen.get((anc, kind, sb), 0)
-            rows.append({
-                "ancestry": anc, "kind": kind, "sandbox": sb, "n": n,
-                "dstate_wait_s": round(self.matrix_dwait.get((anc, kind, sb), 0.0), 2),
-                "dstate_coverage_pct": pct(seen, n),
-                "reading": _reading(anc, kind, sb),
-            })
-
         def _calls_known(c):
             return sum(c.get(k, 0) for k in CALL_KNOWN)
 
@@ -526,12 +473,6 @@ class SandboxReducer:
             "launch_modes": [{"agent_type": at, "approval": ap, "detail": det, "n": n}
                              for (at, ap, det), n in sorted(modes.items(),
                                                             key=lambda kv: -kv[1])],
-            "ancestry_matrix": rows,
-            "sandbox_src": dict(self.src),
-            "sandbox_detail": dict(self.detail),
-            "agent_only": {c: [{"sandbox": k[0], "approval": k[1], "n": v}
-                               for k, v in sorted(m.items(), key=lambda kv: -kv[1])]
-                           for c, m in self.agents_only.items()},
             "below_capped": self.below_capped,
             "states": {"sandbox": list(SANDBOX_STATES),
                        "sandbox_known": ["sandboxed", "unsandboxed"],

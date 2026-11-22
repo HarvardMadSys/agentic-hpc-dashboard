@@ -304,7 +304,7 @@ class FeedTest(unittest.TestCase):
 class ConfigTest(unittest.TestCase):
     def test_the_demo_reads_its_own_feed_whatever_the_shell_says(self):
         env = {"RC_DASH_EBPF_ROOTS": "/var/log/ebpfm", "RC_DASH_NODE_ROOTS": "/var/log/ebpfm-login",
-               "RC_DASH_SACCT_DIR": "/n/sacct", "RC_DASH_AS_OF": "auto",
+               "RC_DASH_AS_OF": "auto",
                "RC_DASH_SITE_NAME": "FAS RC", "RC_DASH_CACHE_DIR": "/srv/cache"}
         with mock.patch.dict(os.environ, env):
             cfg = configmod.load(None, None)
@@ -313,7 +313,6 @@ class ConfigTest(unittest.TestCase):
         feed = demomod.Feed(o["dir"])
         self.assertEqual(cfg.get("feeds.ebpf.roots"), [feed.ebpf])
         self.assertEqual(cfg.get("feeds.ebpf_node.roots"), [feed.node])
-        self.assertTrue(cfg.get("feeds.sacct.dir").startswith(feed.base))
         self.assertEqual(cfg.get("clock.as_of"), "")
         self.assertEqual(cfg.get("cache.dir"), feed.cache)
         self.assertEqual(cfg.get("site.name"), demomod.SITE_NAME)
@@ -408,6 +407,24 @@ class EveryKindTest(unittest.TestCase):
         kinds = {p["kind"] for r in self.rows() for p in ((r.get("phases") or {}).get("list") or [])}
         # a commit and its push are a burst of two calls, folded into the phase beside it
         self.assertTrue({"explore", "test", "slurm", "wait"} <= kinds, kinds)
+
+    def test_a_persons_shell_and_an_editors_terminal_have_phases_of_the_commands_typed(self):
+        # every row is read: a person's login and VS Code's terminal by the jobs their shells ran,
+        # each typed command its own process group, the prompt's git in the shell's
+        rows = self.rows()
+        for cls in ("human", "ide"):
+            with self.subTest(cls=cls):
+                read = [r for r in rows if r["actor3"] == cls and r["phases"]["list"]]
+                self.assertTrue(read, "a %s row with phases" % cls)
+                for r in read:
+                    self.assertEqual(r["phases"]["driver"], "terminal")
+                    self.assertGreater(r["n_calls"], 0)
+                    self.assertIn("command", r["phases"]["summary"])
+        person = [r for r in rows if r["actor3"] == "human" and r["phases"]["list"]]
+        shapes = {s for r in person for s, _n in r["phases"]["housekeeping"]["shapes"]}
+        self.assertIn("prompt", shapes)
+        tops = {c.split()[0] for r in person for p in r["phases"]["list"] for c, _n in p["top"]}
+        self.assertTrue({"vim", "git", "squeue"} & tops, tops)
 
     def test_every_surface_and_approval_state(self):
         rows = [r for r in self.rows() if r.get("actor3") == "agent"]

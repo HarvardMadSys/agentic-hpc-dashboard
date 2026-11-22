@@ -20,7 +20,7 @@ import { StatusPill } from './components/Panel';
 import { useSections } from './components/SectionNav';
 import { useScrollEdges } from './lib/scrollEdges';
 import { buildStamp } from './lib/buildStamp';
-import { WindowPicker } from './components/WindowPicker';
+import { WindowPicker, offeredWindows } from './components/WindowPicker';
 import { TooltipLayer } from './components/Tooltip';
 import { ago, fint, lagStr } from './lib/format';
 import { whoQuery } from './lib/filters';
@@ -36,12 +36,14 @@ import type { IconName } from './components/Icon';
 import { CommandPalette } from './components/CommandPalette';
 import type { PaletteItem } from './components/CommandPalette';
 import { arriveFromHash } from './lib/cites';
+import type { SessionNav } from './tabs/OpenSession';
 import { LiveTab } from './tabs/LiveTab';
 import { OverviewTab } from './tabs/OverviewTab';
-import { TrajectoriesTab } from './tabs/TrajectoriesTab';
 // The other tabs are chunks of their own (lib/lazyTab.tsx). Their stylesheets
 // are not: imported here, where the tabs were, each keeps its place in the
-// page's one stylesheet.
+// page's one stylesheet -- the sessions list's and its inspector's where the
+// Sessions tab was imported, before it was the Agents tab's last part.
+import './tabs/trajectories.css';
 import './tabs/agents.css';
 import './tabs/users.css';
 import { TabBoundary, lazyTab, preloadTabs } from './lib/lazyTab';
@@ -50,54 +52,75 @@ import { feedLabel } from './lib/feeds';
 import { table } from './lib/lookup';
 
 /* Live is the first paint, with the shell; every other tab loads its code
- * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). Search &
- * export is hidden, and its code is fetched like the rest. Sessions is not
- * split off: its inspector scrolls itself into view as it mounts, and on a page
- * opened on a session that has always happened in the first render, before the
- * list fills the page; mounted later, it would scroll the page down. */
+ * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). The sessions
+ * list and its inspector (TrajectoriesTab), the Agents tab's last part, are split
+ * off like a tab: the Sessions tab was not, so that its inspector, near the
+ * top of that tab, opened in the first render without scrolling the page. At
+ * the foot of the Agents tab, scrolling to it is what opening it is for. */
 const ResourcesTab = lazyTab(() => import('./tabs/ResourcesTab').then((m) => m.ResourcesTab));
 const RiskIoTab = lazyTab(() => import('./tabs/RiskIoTab').then((m) => m.RiskIoTab));
 const InternalTab = lazyTab(() => import('./tabs/InternalTab').then((m) => m.InternalTab));
+const SecurityTab = lazyTab(() => import('./tabs/SecurityTab').then((m) => m.SecurityTab));
 const AgentsTab = lazyTab(() => import('./tabs/AgentsTab').then((m) => m.AgentsTab));
+const TrajectoriesTab = lazyTab(() => import('./tabs/TrajectoriesTab').then((m) => m.TrajectoriesTab));
 const SlurmTab = lazyTab(() => import('./tabs/SlurmTab').then((m) => m.SlurmTab));
 const FeedsTab = lazyTab(() => import('./tabs/FeedsTab').then((m) => m.FeedsTab));
 const ChatTab = lazyTab(() => import('./tabs/ChatTab').then((m) => m.ChatTab));
 const UsersTab = lazyTab(() => import('./tabs/UsersTab').then((m) => m.UsersTab));
 const TrendTab = lazyTab(() => import('./tabs/TrendTab').then((m) => m.TrendTab));
-const EventsExplorer = lazyTab(() => import('./components/EventsExplorer').then((m) => m.EventsExplorer));
 
 /* In the order an operator reads them (roadmap notes 32 and 50): what is
- * happening and who uses what, how each user works with agents, the agents,
- * one session, then the detail. Old tab keys still open (lib/filters.ts
- * TAB_ALIAS): sessions and cascades -> agents, io -> resources, sandbox ->
- * internal, and overview -> live, where its table now is.
+ * happening and who uses what, how each user works with agents, the agents
+ * and one session at a time, how safely the agents ran, then the detail: the
+ * login nodes, and the cluster behind them. Old tab keys still open
+ * (lib/filters.ts TAB_ALIAS): sessions, cascades and trajectories -> agents,
+ * io -> resources, sandbox -> security, and overview -> live, where its table
+ * now is; `?tab=hpc` opens HPC, whose key stays `slurm`.
  *
- * Fewer stops in the rail: Overview's last table is a section of Live, and
- * Resources, Risks and Slurm are one entry, the login nodes, with a
- * sub-tab each. A sub-tab keeps its own key, so `?tab=resources`, a citation
- * and every link into it land where they always did. */
+ * Fewer stops in the rail: Overview's last table is a section of Live; the
+ * Sessions tab is the Agents tab's last part, its list of every session and
+ * the inspector beside it, while a user's own sessions open under their
+ * portrait on Users; and Resources and Risks are one entry, the login nodes,
+ * with a sub-tab each. HPC, the scheduler, is an entry of its own: what a
+ * session asks of the cluster is not login-node use. A sub-tab keeps its own
+ * key, so `?tab=resources`, a citation and every link into it land where they
+ * always did. */
 /* `also`: the names a tab had before, which "go to" still finds it by. */
 type Tab = { k: string; lbl: string; eyebrow: string; icon: IconName; group: string; parent?: 'nodes'; also?: string };
 const TABS: Tab[] = [
-  { k: 'live', lbl: 'Live', eyebrow: 'right now, over the window, and who uses what', icon: 'live', group: 'Monitor', also: 'overview who uses what' },
+  { k: 'live', lbl: 'Live', eyebrow: 'what runs, and who runs it', icon: 'live', group: 'Monitor', also: 'overview who uses what' },
   { k: 'trend', lbl: 'Trend', eyebrow: 'each class’s use over up to a year, from the roll-up table', icon: 'trend', group: 'Monitor', also: 'year history growth' },
-  { k: 'users', lbl: 'Users', eyebrow: 'a portrait of each user, from how they use coding agents', icon: 'users', group: 'Monitor' },
-  { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, and the tools they ran', icon: 'agents', group: 'Monitor' },
-  { k: 'trajectories', lbl: 'Sessions', eyebrow: 'one session at a time: what it ran, and when', icon: 'trajectories', group: 'Monitor', also: 'trajectories trajectory' },
+  { k: 'users', lbl: 'Users', eyebrow: 'how each user works with coding agents, and their sessions', icon: 'users', group: 'Monitor' },
+  { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, the tools they ran, and each session', icon: 'agents', group: 'Monitor', also: 'sessions session trajectories trajectory inspector process tree' },
+  { k: 'security', lbl: 'Security', eyebrow: 'how agents were launched and sandboxed, what they exposed, and where they reached', icon: 'security', group: 'Monitor', also: 'sandbox approval bypass credentials secrets blast radius' },
   { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O', icon: 'resources', group: 'Monitor', parent: 'nodes' },
   { k: 'risk', lbl: 'Risks', eyebrow: 'what should not run here', icon: 'risk', group: 'Monitor', parent: 'nodes', also: 'risk warning' },
-  { k: 'slurm', lbl: 'Slurm', eyebrow: 'jobs and the scheduler', icon: 'queue', group: 'Monitor', parent: 'nodes' },
+  { k: 'slurm', lbl: 'HPC', eyebrow: 'what sessions ask of the Slurm scheduler, and what looks abnormal', icon: 'hpc', group: 'Monitor', also: 'slurm scheduler jobs queue abnormal cluster' },
   { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask a language model about this window', icon: 'chat', group: 'More' },
-  { k: 'events', lbl: 'Search & export', eyebrow: 'every process record, filtered and downloadable', icon: 'events', group: 'More' },
   { k: 'internal', lbl: 'Internal', eyebrow: 'not settled yet', icon: 'internal', group: 'More' },
   { k: 'feeds', lbl: 'Feeds', eyebrow: 'where the data comes from, and how fresh it is', icon: 'feeds', group: 'More', also: 'provenance data sources' },
 ];
 /** The one entry the three node tabs share. It is named in the site's own
  *  word for its hosts (`ui.node_noun`, "login nodes"): their figures are
  *  login-node use, not the cluster's (README, "Scope is stated"). */
-const NODES_EYEBROW = 'what runs on them, what should not, and what they ask of the scheduler';
-/** A link to a tab that folded into another lands on the part it became. */
-const LANDS_ON: Record<string, string> = table({ overview: 'sec-who-uses-what' });
+const NODES_EYEBROW = 'what runs on them, and what should not';
+/** The Agents tab's list of every session (TrajectoriesTab.tsx), its last part,
+ *  and the inspector beside it (TrajectoryInspector.tsx). */
+const SESSIONS_SEC = 'sec-ranked-sessions';
+const INSPECTOR_SEC = 'sec-session-inspector';
+/** A link to a tab that folded into another lands on the part it became: the
+ *  Sessions tab's on its list, at the foot of the Agents tab. */
+const LANDS_ON: Record<string, string> = table({ overview: 'sec-who-uses-what', trajectories: SESSIONS_SEC });
+
+/** Where a page opened on this link lands: a tab that folded into another, on
+ *  the part it became; the Agents tab with a session open, on its inspector,
+ *  and narrowed to one user's sessions, on its list -- each at the foot of
+ *  the tab. */
+function landsOn(opened: string, url: { tab: string; traj: string | null; tuser: string | null }): string | null {
+  if (url.tab === 'agents' && url.traj) return INSPECTOR_SEC;
+  if (LANDS_ON[opened]) return LANDS_ON[opened];
+  return url.tab === 'agents' && url.tuser ? SESSIONS_SEC : null;
+}
 /** The tab the page was opened on, read once, before the link is rewritten
  *  (an effect can run twice on mount, and the second saw the rewritten link). */
 const OPENED_ON = new URLSearchParams(window.location.search).get('tab') ?? '';
@@ -110,10 +133,7 @@ const TRANSPORT_WORDS = { ws: 'streaming', polling: 'every 15 s', connecting: 'c
 const typing = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
-/* Hidden for now, its code kept (user, 2026-10-13): Search & export. An old
- * link to it (?tab=events) opens the first tab instead. */
-const HIDDEN_TABS = new Set(['events']);
-/** How long after each answer the Sessions list asks again, while it is shown. */
+/** How long after each answer the sessions list asks again, while the Agents tab, whose last part it is, is shown. */
 const TRAJ_LIVE_MS = 5000;
 /** No panels yet: one empty map, not a new one each render, so a memoized tab
  *  handed it is not drawn again for nothing. */
@@ -135,7 +155,6 @@ function headline(feeds: Record<string, FeedReport> | null): {
     (f) => f.lag_s != null && f.max_age_s != null && f.lag_s > f.max_age_s,
   );
   const bad = pool.find((f) => f.status === 'missing') ||
-    pool.find((f) => f.status === 'degraded') ||
     pool.find((f) => f.status === 'stale') ||
     pool.find((f) => f.status === 'empty');
   // The freshest lag among live-cadence feeds is the number a user wants.
@@ -154,7 +173,6 @@ function headline(feeds: Record<string, FeedReport> | null): {
 const DATA_WORDS: Record<FeedStatus, [string, string]> = {
   ok: ['live', ''],
   stale: ['data delayed', 'a feed is older than its own max age: the numbers are not current'],
-  degraded: ['partial data', 'a feed is reporting, but not all of it'],
   empty: ['no data yet', 'the collector is running but has written nothing in this window'],
   missing: ['collector not found', 'a required feed has no files where it is expected'],
 };
@@ -173,33 +191,67 @@ function pillOf(
         tip: 'new records stream in as the collector writes them' };
     case 'polling':
       return { status: 'stale', text: 'refreshing every 15 s', beat: false,
-        tip: 'the live stream is unavailable, so the page asks for new data every 15 seconds' };
+        tip: 'the live stream is unavailable' };
     case 'connecting':
       return { status: 'empty', text: 'connecting…', beat: false,
         tip: 'opening the live stream to the dashboard service' };
     default:
       return { status: 'missing', text: 'disconnected · retrying', beat: false,
-        tip: 'the dashboard service is not answering; the page keeps retrying' };
+        tip: 'the dashboard service is not answering' };
   }
 }
 
 export default function App() {
   const [url, setUrl] = useUrlState();
+  // A part of a tab to go to once it is drawn (its anchor), while that tab is the one open: where the page
+  // was opened on (`landsOn`), and the Agents tab's list or inspector, at its foot, when a session or a
+  // user's sessions are opened there from elsewhere.
+  const [land, setLand] = useState<{ tab: string; sec: string } | null>(() => {
+    const sec = landsOn(OPENED_ON, url);
+    return sec ? { tab: url.tab, sec } : null;
+  });
+  // The user whose portrait was opened from "sessions →": it lands on its list of their sessions, not its top.
+  const [toSessions, setToSessions] = useState<string | null>(null);
   // Every handler a tab is given keeps its identity across renders, so the
   // tabs (React.memo) are drawn again only when what they show changes, not
   // with every live frame. `setUrl` itself is stable (useUrlState).
   // Opening a tab, a session or a user's sessions is navigation: back returns.
+  // Another tab closes the session open on this one (lib/filters.ts `patched`).
   const goto = useCallback((t: string) => setUrl({ tab: t }, true), [setUrl]);
   const goResources = useCallback(() => setUrl({ tab: 'resources' }, true), [setUrl]);
+  // Every session is the Agents tab's: its list, and the inspector beside it.
   const openTraj = useCallback(
-    (sid: string) => setUrl({ tab: 'trajectories', traj: sid, tfrom: null, tuser: null }, true),
+    (sid: string) => {
+      setUrl({ tab: 'agents', traj: sid, tfrom: null, tuser: null }, true);
+      setLand({ tab: 'agents', sec: INSPECTOR_SEC });
+    },
     [setUrl],
   );
+  // A user's sessions are their portrait's, on Users, where each opens in place.
   const openUserTraj = useCallback(
-    (u: string) => setUrl({ tab: 'trajectories', tuser: u, traj: null, tfrom: null }, true),
+    (u: string) => {
+      setToSessions(u);
+      setUrl({ tab: 'users', portrait: u, traj: null, tfrom: null }, true);
+    },
     [setUrl],
   );
-  const setPortrait = useCallback((u: string | null) => setUrl({ portrait: u }, true), [setUrl]);
+  // Every one of a user's sessions, of every class, the portrait's newest few
+  // and the rest: the Agents tab's list, narrowed to them.
+  const listUserTraj = useCallback(
+    (u: string) => {
+      setUrl({ tab: 'agents', tuser: u, traj: null, tfrom: null }, true);
+      setLand({ tab: 'agents', sec: SESSIONS_SEC });
+    },
+    [setUrl],
+  );
+  // A portrait opened or closed closes the session open under the last one.
+  const setPortrait = useCallback(
+    (u: string | null) => {
+      setToSessions(null);
+      setUrl({ portrait: u, traj: null, tfrom: null }, true);
+    },
+    [setUrl],
+  );
   const setRank = useCallback((r: TrajRank) => setUrl({ rank: r }), [setUrl]);
   const select = useCallback((sid: string | null) => setUrl({ traj: sid, tfrom: null }, true), [setUrl]);
   const setTfrom = useCallback((t: number | null) => setUrl({ tfrom: t }, true), [setUrl]);
@@ -228,9 +280,9 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const who: Who = useMemo(() => ({ users: url.users, atypes: url.atypes }), [whoKey]);
   const panels = usePanels(url.win, live.buildNonce, who);
-  // Re-read every few seconds while the Sessions list is on screen.
+  // Re-read every few seconds while the sessions list, the Agents tab's last part, is open.
   const traj = useTrajectories(url.rank, url.win, live.buildNonce, who,
-    url.tab === 'trajectories' ? TRAJ_LIVE_MS : null);
+    url.tab === 'agents' ? TRAJ_LIVE_MS : null);
   // The filter's choices come with the panels whenever the unfiltered view of
   // this window is held. Kept across a fetch that has none -- a window not yet
   // built unfiltered -- so the dropdowns do not empty under the reader.
@@ -243,6 +295,9 @@ export default function App() {
   // websocket's `windows` frame supersedes it with live build progress.
   const windowsRest = useWindows();
   const windows = live.windows ?? windowsRest.data;
+  // The service's floor (5 minutes): `/api/windows` says it, the websocket's
+  // `windows` frame that supersedes it does not.
+  const minWin = windowsRest.data?.min_minutes ?? windows?.min_minutes ?? null;
   // The window the SERVICE resolved, which is what every panel was built over --
   // not the one in the URL, which may have been clamped.
   const resolvedWin = live.live?.window;
@@ -284,7 +339,9 @@ export default function App() {
 
   // A cluster without Slurm sets `slurm.enabled: false`; its tab goes away.
   const slurmLeaf = (config.data?.slurm as Record<string, { _value?: unknown }> | undefined)?.enabled;
-  const tabs = TABS.filter((t) => !HIDDEN_TABS.has(t.k) && (t.k !== 'slurm' || slurmLeaf?._value !== false));
+  const tabs = TABS.filter((t) => t.k !== 'slurm' || slurmLeaf?._value !== false);
+  // A tab that is not here -- an old link to Search & export (`?tab=events`),
+  // since removed, or HPC where it is off -- opens the first.
   const tab = tabs.find((t) => t.k === url.tab) || tabs[0];
   // What the site calls its hosts (`ui.node_noun`): every place the page names
   // them says it, through NodeNounCtx (lib/nodes.ts).
@@ -347,24 +404,49 @@ export default function App() {
   const mainRef = useRef<HTMLElement>(null);
   const { secs, go: goSec } = useSections(mainRef, tab.k);
   useScrollEdges(mainRef);
-  // A link to a tab that folded into another (`?tab=overview`) lands on the
-  // part it became, once that part is on the page; the link is rewritten to
-  // the tab it is now.
+  // A link to a tab that folded into another (`?tab=overview`) is rewritten to
+  // the tab it is now; it lands on the part it became (`land`).
   useEffect(() => {
-    const sec = LANDS_ON[OPENED_ON];
-    if (!sec) return;
-    setUrl({ tab: url.tab });
-    let tries = 0;
-    const t = window.setInterval(() => {
-      const el = document.getElementById(sec);
-      if (el || ++tries > 50) {
-        window.clearInterval(t);
-        if (el) goSec(sec, 'auto');
-      }
-    }, 120);
-    return () => window.clearInterval(t);
+    if (LANDS_ON[OPENED_ON]) setUrl({ tab: url.tab });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // A part of a tab to go to (`land`), gone to once it is on the page and what
+  // is drawn above it has come -- the panels and the sessions: a part at the
+  // foot of the Agents tab, gone to sooner, is pushed down by what arrives
+  // above it after the jump. Going to another tab, or scrolling by hand first,
+  // lets it go.
+  const settled = (panels.data != null || panels.error != null) && (traj.data != null || traj.error != null);
+  useEffect(() => {
+    if (!land) return;
+    if (land.tab !== tab.k) {
+      setLand(null);
+      return;
+    }
+    const byHand = () => setLand(null);
+    window.addEventListener('wheel', byHand, { passive: true });
+    window.addEventListener('touchstart', byHand, { passive: true });
+    let t = 0;
+    const done = () => {
+      window.clearInterval(t);
+      window.removeEventListener('wheel', byHand);
+      window.removeEventListener('touchstart', byHand);
+    };
+    if (!settled) return done;
+    let tries = 0;
+    const reach = () => {
+      const el = document.getElementById(land.sec);
+      if (!el && ++tries <= 50) return false;
+      setLand(null);
+      if (el) goSec(land.sec, 'auto');
+      return true;
+    };
+    if (!reach()) {
+      t = window.setInterval(() => {
+        if (reach()) done();
+      }, 120);
+    }
+    return done;
+  }, [land, tab.k, goSec, settled]);
   // The window and the filters, one strip held at the top while the tab scrolls
   // (lib/sticky.ts). Feeds is about the service, not a window of data: none.
   const showControls = tab.k !== 'feeds';
@@ -477,6 +559,12 @@ export default function App() {
   const uiLeaf = config.data?.ui as Record<string, { _value?: unknown }> | undefined;
   const userCols = (uiLeaf?.user_columns?._value as string[] | undefined) ?? null;
   const routine = (uiLeaf?.routine_commands?._value as string[] | undefined) ?? null;
+  // A session opened under a portrait on Users: the same URL keys as the Agents
+  // tab's inspector, one object while none of them changes, so the tab's memo holds.
+  const sessionNav: SessionNav = useMemo(
+    () => ({ sel: url.traj, select, tfrom: url.tfrom, setTfrom, torder: url.torder, setTorder, routine }),
+    [url.traj, select, url.tfrom, setTfrom, url.torder, setTorder, routine],
+  );
 
   const nClasses = url.cls.length;
   const body = (() => {
@@ -507,8 +595,11 @@ export default function App() {
             open={url.portrait}
             // Opening a portrait, or a session from it, is navigation: back returns.
             setOpen={setPortrait}
-            openTraj={openTraj}
-            openUserTraj={openUserTraj}
+            // a session of theirs opens under the portrait, on this tab
+            session={sessionNav}
+            trajRows={traj.data?.rows ?? null}
+            toSessions={toSessions != null && toSessions === url.portrait}
+            listUserTraj={listUserTraj}
           />
         );
       case 'trend':
@@ -526,34 +617,38 @@ export default function App() {
             goto={goto}
           />
         );
-      case 'events':
-        return <EventsExplorer url={url} setUrl={setUrl} windowMin={resolvedWin?.minutes ?? null} />;
       case 'internal':
         return <InternalTab P={P} cls={cls} />;
-      case 'trajectories':
-        return (
-          <TrajectoriesTab
-            traj={traj}
-            rank={url.rank}
-            setRank={setRank}
-            cls={cls}
-            win={url.win}
-            sel={url.traj}
-            // Opening a session is navigation: back closes it again.
-            select={select}
-            tfrom={url.tfrom}
-            setTfrom={setTfrom}
-            torder={url.torder}
-            setTorder={setTorder}
-            tuser={url.tuser}
-            clearUser={clearUser}
-            routine={routine}
-          />
-        );
+      case 'security':
+        return <SecurityTab P={P} cls={cls} />;
       case 'slurm':
         return <SlurmTab P={P} live={live.live} cls={cls} goResources={goResources} />;
       case 'agents':
-        return <AgentsTab P={P} cls={cls} />;
+        return (
+          <>
+            <AgentsTab P={P} cls={cls} />
+            {/* then every session, one at a time: the Sessions tab was this part */}
+            <div className="grid-gap" />
+            <TrajectoriesTab
+              traj={traj}
+              rank={url.rank}
+              setRank={setRank}
+              cls={cls}
+              win={url.win}
+              sel={url.traj}
+              // Opening a session is navigation: back closes it again.
+              select={select}
+              tfrom={url.tfrom}
+              setTfrom={setTfrom}
+              torder={url.torder}
+              setTorder={setTorder}
+              tuser={url.tuser}
+              clearUser={clearUser}
+              routine={routine}
+              landing={land?.sec === INSPECTOR_SEC}
+            />
+          </>
+        );
       case 'feeds':
         return <FeedsTab feeds={feeds} config={config} builtAt={panels.data?.full_built_at ?? null} />;
       default:
@@ -613,7 +708,7 @@ export default function App() {
       run: () => goSec(s.id),
     })),
     ...(showControls
-      ? (windows?.presets ?? []).map((p) => ({
+      ? offeredWindows(windows?.presets, minWin).map((p) => ({
           id: `win:${p.minutes}`,
           group: 'Window',
           label: `Last ${p.label}`,
@@ -692,7 +787,7 @@ export default function App() {
             </span>
             <span className="mark-t">Agent Observatory</span>
           </div>
-          <div className="sub mono" data-tip="which deployment this is: site.name (RC_DASH_SITE_NAME)">
+          <div className="sub mono" data-tip="which deployment this is">
             {siteName || 'rc_measurement'}
           </div>
         </div>
@@ -740,7 +835,7 @@ export default function App() {
               form, so signing out works without the page's own code. */}
           {passwordSet && (
             <form className="rail-signout" method="post" action="/logout">
-              <button type="submit" data-tip="sign this browser out; the page then asks for the password again">
+              <button type="submit" data-tip="sign this browser out">
                 <Icon name="signout" size={16} />
                 <span>Sign out</span>
               </button>
@@ -812,8 +907,8 @@ export default function App() {
       <main ref={mainRef}>
         {synthetic.length > 0 && (
           <p className="fake-note" role="note">
-            <b>Fake data.</b> This is a demo: every record on this page was made up for
-            fictional login nodes, users and sessions. Nothing here was measured.
+            <b>Fake data.</b> A demo: every record on this page was made up. Nothing here was
+            measured.
           </p>
         )}
         <div className={`head${showControls ? ' with-bar' : ''}`}>
@@ -831,8 +926,8 @@ export default function App() {
                 status="empty"
                 text={`frozen capture · as of ${live.live.clock.as_of ?? '—'}`}
                 tip={
-                  "not a live feed: the service's clock is pinned to the capture's end and does not move; " +
-                  `every window ends there, and nothing after it exists in this feed\n${live.live.clock.source}`
+                  "not a live feed: the clock stops at the capture's end; every window ends there, and nothing " +
+                  `after it exists in this feed\n${live.live.clock.source}`
                 }
               />
             ) : (
@@ -841,10 +936,7 @@ export default function App() {
             {anonymized && (
               <span
                 className="pill"
-                data-tip={
-                  'names are replaced by stable aliases (user-…, lab-…) before anything leaves ' +
-                  'the service; email addresses and user IDs are hidden'
-                }
+                data-tip="names are stable aliases (user-…, lab-…); email addresses and user IDs are hidden"
               >
                 anonymized
               </span>
@@ -852,10 +944,7 @@ export default function App() {
             {synthetic.length > 0 && (
               <span
                 className="pill synthetic"
-                data-tip={
-                  `a demo: every record here was made up by rc_dashboard/demo -- fictional ${nodes.many}, ` +
-                  `users and sessions; nothing was measured\n${synthetic.join(', ')}`
-                }
+                data-tip={`made up by the demo:\n${synthetic.join(', ')}`}
               >
                 fake data
               </span>
@@ -912,6 +1001,7 @@ export default function App() {
                 value={url.win}
                 onChange={(w) => setUrl({ win: w })}
                 windows={windows}
+                minMinutes={minWin}
                 resolved={resolvedWin}
                 status={winStatus}
                 backfill={live.live?.backfill}
