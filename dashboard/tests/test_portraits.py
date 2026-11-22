@@ -137,14 +137,15 @@ class RosterTest(unittest.TestCase):
     def test_the_busiest_user_is_first(self):
         self.assertEqual(self.ros["users"][0]["user"], "alice")
 
-    def test_a_session_whose_calls_are_not_read_is_counted_as_unknown_not_zero(self):
+    def test_a_session_of_any_agent_type_has_its_calls_counted(self):
+        # Copilot's direct children are read by the general rule, as Codex's are
         t0 = time.time() - 3600
         red = build(agent("erin", 6000, t0, ["ls"], launch="copilot", agent_type="copilot"))
         row = rows_of(portraits.roster(portraits.Context(red)))["erin"]
         self.assertEqual(row["sessions"], 1)
-        self.assertIsNone(row["calls"])
-        self.assertEqual(row["calls_sessions"], 0)
-        self.assertEqual(row["cats"], {})
+        self.assertEqual(row["calls"], 1)
+        self.assertEqual(row["calls_sessions"], 1)
+        self.assertEqual(row["cats"], {"explore": 1})
 
     def test_nothing_before_the_view_is_built(self):
         ctx = portraits.Context({})

@@ -107,16 +107,6 @@ class Service:
         except (urllib.error.URLError, ConnectionError, socket.timeout, OSError):
             return 0, b"", time.monotonic() - t
 
-    def lines(self, path, n, timeout=300):
-        """The first `n` lines of a streamed body, then hang up (the server stops)."""
-        out = []
-        with urllib.request.urlopen(self.url(path), timeout=timeout) as r:
-            for line in r:
-                out.append(line)
-                if len(out) >= n:
-                    break
-        return out
-
     def json(self, path, timeout=300):
         st, body, _ = self.get(path, timeout)
         if st != 200:

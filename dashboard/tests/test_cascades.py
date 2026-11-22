@@ -17,7 +17,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import test_merge as TM                                              # noqa: E402
-from test_sessions import HOME, SNAP, claude_session, rec, reduce   # noqa: E402
+from test_sessions import HOME, SNAP, claude_session, rec, reduce, reduced   # noqa: E402
 from test_sandbox import (CODEX_APP, codex_failed_call, reused_agent_pid,   # noqa: E402
                           root_tick)
 
@@ -62,9 +62,11 @@ class CascadeTest(unittest.TestCase):
         p = reduce(recs)
         c = p["cascades"]
         self.assertEqual(c["summary"]["nested"], 1)
-        self.assertEqual(tree_of(p, 100)["agent_depth"], 2)
-        self.assertIn({"parent": "claude_code agent", "child": "codex agent", "n": 1},
-                      c["edges"])
+        t = tree_of(p, 100)
+        self.assertEqual(t["agent_depth"], 2)
+        sub, lead = node(t, 250), node(t, 100)
+        self.assertEqual((sub["agent_type"], sub["role"], sub["parent"]), ("codex", "agent", 100))
+        self.assertEqual((lead["agent_type"], lead["role"]), ("claude_code", "agent"))
 
     def test_remote_control_workers_are_hosted_not_nested(self):
         t0 = self.t0
@@ -455,11 +457,6 @@ class CascadeTest(unittest.TestCase):
         self.assertEqual([(n["pid"], n["user"], n["implied"], n["tool_calls"])
                           for n in tree["nodes"]], [(100, "alice", True, 5)])
 
-    def test_the_role_census_counts_what_the_classifier_tagged(self):
-        census = reduce(claude_session(self.t0))["cascades"]["role_census"]
-        got = {(r["agent_type"], r["role"]): r["n"] for r in census}
-        self.assertEqual(got, {("claude_code", "tool-shell"): 2})
-
     def test_a_sandboxed_tool_call_is_not_an_agent_of_its_own(self):
         # Claude Code's sandbox runs a Bash call's shell inside bwrap, behind the sandbox
         # runtime's proxy prologue (`_srt_http=$!`): the shell's parent is the inner
@@ -523,7 +520,10 @@ class CascadeTest(unittest.TestCase):
                                                      time.localtime(t0 - 120.0)))
 
 
-class DriftTest(unittest.TestCase):
+class AnchorTest(unittest.TestCase):
+    """The folder a session's project is named for (`cwd_anchor`): the agent's
+    launch folder, else its first call's that is not `/`."""
+
     def setUp(self):
         self.t0 = time.time() - 3000
 
@@ -538,58 +538,37 @@ class DriftTest(unittest.TestCase):
                             tree_root=100, cwd=cwd))
         return recs
 
-    def drift(self, recs):
-        p = reduce(recs)
+    def anchor(self, recs):
+        """The one row's anchor and where it came from, and the payload."""
+        view = reduced(recs)
+        p = view.payload
         rows = [p["trajectories"]["rows"][s] for s in p["trajectories"]["ranks"]["events"]]
         self.assertEqual(len(rows), 1)
-        return rows[0]["drift"], p
+        traj = view.reducers["trajectories"]
+        s = next(s for s, _via, _k in traj.folded()[0] if s.sid == rows[0]["sid"])
+        return traj.cwd_anchor(s, traj.anchor_of(s)), p
 
-    def test_cwd_drift_is_the_share_of_processes_outside_the_launch_directory(self):
-        d, _ = self.drift(self.session([
+    def test_the_anchor_is_the_launch_directory(self):
+        (anchor, src), _ = self.anchor(self.session([
             ("git", PROJ), ("git", PROJ), ("ls", PROJ + "/sub"),
             ("ls", "/scratch/other"), ("cat", "/scratch/other")]))
-        self.assertEqual(d["cwd_anchor"], PROJ)
-        self.assertEqual(d["cwd_outside_pct"], 40.0)
-        self.assertEqual(d["cwd_distinct"], 3)
-        self.assertEqual(d["cwd_last"], "/scratch/other")
+        self.assertEqual((anchor, src), (PROJ, "agent"))
 
     def test_an_agent_launched_at_the_filesystem_root_is_anchored_on_its_first_call(self):
-        # IDE-hosted agents run with cwd `/`, under which every path is "inside":
-        # the share would read 0% by construction, which is not a measurement.
-        d, _ = self.drift(self.session([("git", PROJ), ("ls", "/scratch/other")],
-                                       launch_cwd="/"))
-        self.assertEqual((d["cwd_anchor"], d["cwd_anchor_src"]), (PROJ, "first_call"))
-        self.assertEqual(d["cwd_outside_pct"], 50.0)
+        # IDE-hosted agents run with cwd `/`, which names no project
+        (anchor, src), _ = self.anchor(self.session([("git", PROJ), ("ls", "/scratch/other")],
+                                                    launch_cwd="/"))
+        self.assertEqual((anchor, src), (PROJ, "first_call"))
 
     def test_the_first_call_anchor_skips_calls_made_at_the_root(self):
-        d, _ = self.drift(self.session([("ls", "/"), ("git", PROJ), ("ls", "/scratch/other")],
-                                       launch_cwd="/"))
-        self.assertEqual(d["cwd_anchor"], PROJ)
-        self.assertEqual(d["cwd_outside_pct"], 66.67)
-
-    def test_a_sibling_with_a_shared_prefix_is_outside(self):
-        d, _ = self.drift(self.session([("git", PROJ), ("git", PROJ + "-old")]))
-        self.assertEqual(d["cwd_outside_pct"], 50.0)
-
-    def test_tool_mix_drift_compares_the_first_and_last_third(self):
-        calls = [("git", PROJ)] * 10 + [("ls", PROJ)] * 10 + [("make", PROJ)] * 10
-        d, _ = self.drift(self.session(calls))
-        self.assertEqual(d["mix_jsd"], 1.0)              # git only, then build only
-        self.assertEqual(d["mix_first"][0][0], "git")
-        self.assertEqual(d["mix_last"][0][0], "build")
-
-    def test_an_unchanging_mix_has_no_drift(self):
-        d, _ = self.drift(self.session([("git", PROJ)] * 30))
-        self.assertEqual(d["mix_jsd"], 0.0)
-
-    def test_too_short_a_session_has_no_mix_drift(self):
-        d, _ = self.drift(self.session([("git", PROJ)] * 10 + [("make", PROJ)] * 10))
-        self.assertIsNone(d["mix_jsd"])
+        (anchor, _src), _ = self.anchor(self.session(
+            [("ls", "/"), ("git", PROJ), ("ls", "/scratch/other")], launch_cwd="/"))
+        self.assertEqual(anchor, PROJ)
 
     def test_the_agent_node_carries_its_session_and_home_but_no_drift(self):
-        # drift is the trajectory rows' reading; the Agents page shows where an
-        # agent worked instead (workspace.py), so its nodes carry the home
-        _, p = self.drift(self.session([("git", PROJ), ("ls", "/scratch/other")]))
+        # the Agents page shows where an agent worked (workspace.py), so its
+        # nodes carry the home
+        _, p = self.anchor(self.session([("git", PROJ), ("ls", "/scratch/other")]))
         n = node(tree_of(p, 100), 100)
         self.assertNotIn("drift", n)
         self.assertEqual((n["home"], n["home_src"]), (PROJ, "agent"))

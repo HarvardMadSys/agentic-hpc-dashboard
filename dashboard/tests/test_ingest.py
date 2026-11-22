@@ -56,6 +56,11 @@ def line(rec):
     return json.dumps(rec).encode() + b"\n"
 
 
+def counted(live):
+    """Each class's exits in a live frame: its rate bins summed, a gap as none."""
+    return {c: sum(r[c] or 0 for r in live["rate"]) for c in NONE}
+
+
 class FeedCase(unittest.TestCase):
     """A scratch collector root, and a config that reads only from it."""
 
@@ -150,7 +155,7 @@ class FeedCase(unittest.TestCase):
 
     @staticmethod
     def events(agg):
-        return agg.live_payload(1440)["now"]["events"]
+        return counted(agg.live_payload(1440))
 
 
 class RestartTest(FeedCase):
@@ -301,9 +306,8 @@ class BackfillTest(FeedCase):
         live = agg.live_payload(1440)
         self.assertEqual([e["pid"] for e in live["events"]],
                          [203, 103, 202, 102, 201, 101])
-        self.assertEqual([(h["host"], h["ts"], h["procs"]) for h in live["hosts"]],
-                         [("h1", stamp(self.now - 10 * m), 3),
-                          ("h2", stamp(self.now - 10 * m), 3)])
+        self.assertEqual([(h["host"], h["procs"]) for h in live["hosts"]],
+                         [("h1", 3), ("h2", 3)])
 
     def test_a_failing_node_tier_does_not_stall_the_backfill(self):
         # The node tier is read first so its panel is not blank for the length

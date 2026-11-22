@@ -315,6 +315,14 @@ def spawned_by_agent(role, command, args=None):
     return role == "sandbox" and (command or "").startswith("codex-linux-san")
 
 
+def agent_exe(command, args):
+    """True for an agent's own executable, under whatever name it runs (a version, `rg` for
+    Claude's Grep) or through its JavaScript host, as `role_of` finds it: not a script a shell
+    or Python ran that is named after an agent, and not any other program."""
+    i, wrapped = _agent_index(command or "", (args or "").split())
+    return i is not None and not wrapped
+
+
 def js_launcher(command, args):
     """True for an agent's own JavaScript launcher, which only starts the agent's
     native binary: `node .../bin/codex`, or npm's `codex` run through its #! line as

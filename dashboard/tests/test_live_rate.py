@@ -40,12 +40,12 @@ class LiveRateTest(unittest.TestCase):
 
     def rows(self):
         out = self.r.result(now=self.now, window_s=600)
-        return {row["epoch"]: row for row in out["rate"]}, out["now"]
+        return {row["epoch"]: row for row in out["rate"]}
 
     def test_quiet_class_in_a_minute_with_records_reads_zero(self):
         self.feed(self.last_full, "agent", 3)
         self.feed(self.older, "human", 2)
-        rate, _now = self.rows()
+        rate = self.rows()
         self.assertEqual(rate[self.last_full]["agent"], 3)
         self.assertEqual(rate[self.last_full]["human"], 0)
         self.assertEqual(rate[self.last_full]["ide"], 0)
@@ -55,24 +55,9 @@ class LiveRateTest(unittest.TestCase):
     def test_minute_with_no_record_is_still_a_hole(self):
         self.feed(self.last_full, "agent", 3)
         self.feed(self.older, "human", 2)
-        rate, _now = self.rows()
+        rate = self.rows()
         self.assertEqual({c: rate[self.empty][c] for c in CLASSES},
                          dict.fromkeys(CLASSES))
-
-    def test_plate_counts_the_last_full_minute(self):
-        self.feed(self.last_full, "agent", 3)
-        self.feed(self.older, "human", 2)
-        self.feed(int(self.now // 60) * 60, "ide", 5)     # still filling: not counted
-        _rate, now = self.rows()
-        self.assertEqual(now["exits_per_min_by_class"],
-                         {"agent": 3, "human": 0, "ide": 0, "unlabeled": 0})
-        self.assertEqual(now["exits_per_min"], 3)
-
-    def test_plate_is_null_when_the_last_full_minute_holds_no_record(self):
-        self.feed(self.older, "human", 2)
-        _rate, now = self.rows()
-        self.assertEqual(now["exits_per_min_by_class"], dict.fromkeys(CLASSES))
-        self.assertIsNone(now["exits_per_min"])
 
 
 if __name__ == "__main__":

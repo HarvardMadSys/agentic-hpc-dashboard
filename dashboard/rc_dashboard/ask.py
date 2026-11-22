@@ -86,7 +86,7 @@ NO_PASSWORD = ("this dashboard has no password, and Ask runs only behind one, si
 AGENT_ENV = frozenset((
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TERM",
     "LD_LIBRARY_PATH", "CODEX_HOME",
-    # systemd-run --user, as deploy/fleet runs the agent, finds the user manager by these
+    # systemd-run --user, as hpc/deploy runs the agent, finds the user manager by these
     "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
     "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
     # passed as they are, a user and password in the URL included (README, Ask LLM)
@@ -118,8 +118,8 @@ DROP_KEYS = frozenset((
     "series", "stall_series", "rate", "bins", "t", "events", "instances",
     "top_procs", "nodes", "items", "chain", "purpose", "chain_t", "purpose_t",
     "tool_rle", "purpose_rle", "tool_t", "notes", "basis", "cpu_basis",
-    "impossible_basis", "by_class_detail", "nav", "_paths", "_notice", "_window",
-    "_feed", "_status", "_present", "_filter", "resident_hosts",
+    "impossible_basis", "nav", "_paths", "_notice", "_window",
+    "_feed", "_status", "_present", "_filter",
 ))
 ARGV_KEYS = frozenset(("args", "argv", "cmd", "command_line", "_argv"))
 
@@ -220,8 +220,8 @@ Answer with one JSON object and nothing else -- no prose, no code fence:
    "evidence": "<the numbers behind it, from the snapshot>",
    "users": ["<alias the suggestion concerns>", ...],
    "panel": "<where on the dashboard: Live, Active users, Login nodes right now,
-             Who uses what, Agents, Sessions, Resources, Risks, Slurm,
-             or Internal>"}]}
+             Who uses what, Agents, Sessions, Security, Resources, Risks,
+             HPC, or Internal>"}]}
 At most 8 suggestions. `risk_who` names who ran each flagged command and
 pattern, counted over the first runs the dashboard lists for it ("listed" of
 "n"), and the paths a flagged command's runs named: name the users in "users",
@@ -253,8 +253,11 @@ PANEL_TABS = {
     "resources": ("resources", "Resources"), "io_process": ("resources", "Resources · I/O"),
     "risk": ("risk", "Risks"), "risks": ("risk", "Risks"), "risk & warning": ("risk", "Risks"),
     "risk_who": ("risk", "Risks"),
-    "slurm": ("slurm", "Slurm"),
-    "sandbox": ("internal", "Internal · Sandbox"), "internal": ("internal", "Internal"),
+    # the Slurm tab is HPC, an entry of its own: its old name still places one
+    "slurm": ("slurm", "HPC"), "hpc": ("slurm", "HPC"),
+    # the sandbox panels were Internal's, and are Security's confinement half now
+    "security": ("security", "Security"),
+    "sandbox": ("security", "Security · Sandbox"), "internal": ("internal", "Internal"),
 }
 
 
@@ -383,7 +386,7 @@ window, filter, and classes the reader has on screen. Lists cut short end with
 "... N more".""" % (where, ", ".join(parts) or "its data"))
 
 
-SESSION_GUIDE = """The snapshot is ONE session the reader opened on the Sessions tab -- an
+SESSION_GUIDE = """The snapshot is ONE session the reader opened in the session inspector -- an
 agent (or a person's terminal, or an IDE) and every process it ran, re-read from
 the collector's records -- and nothing else from the dashboard.
 - session: whose, where, when (the host's local time), and its totals. For an
@@ -577,7 +580,7 @@ def session_digest(body, with_argv=False, max_lines=300):
     bounds = body.get("bounds") or {}
     keep = ("sid", "host", "actor3", "agent_type", "user", "n_users", "n_events", "cpu_s",
             "distinct_tools", "chain_runs", "peak_rss_mb", "io_rd_mb", "io_wr_mb",
-            "net_tx_mb", "net_rx_mb", "sandbox", "approval", "autonomous", "drift")
+            "net_tx_mb", "net_rx_mb", "sandbox", "approval", "autonomous")
     session = {k: row.get(k) for k in keep if row.get(k) is not None}
     session.update(first=_clock(row.get("first")), last=_clock(row.get("last")),
                    wall=_secs(row.get("wall_s")))
@@ -816,7 +819,7 @@ def snapshot(panels, live=None, budget_kb=120, with_argv=False, extra=None,
     drop = DROP_KEYS - frozenset(keep)
     sections = {"panels." + k: v for k, v in (panels or {}).items()}
     if live:
-        sections["live_now"] = {k: live.get(k) for k in ("now", "users", "hosts", "window")
+        sections["live_now"] = {k: live.get(k) for k in ("users", "hosts", "window")
                                 if live.get(k) is not None}
     lines = {}
     for k, v in (extra or {}).items():

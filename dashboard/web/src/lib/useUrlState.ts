@@ -6,7 +6,7 @@
  * was fetched with.
  */
 import { createContext, useCallback, useEffect, useRef, useState } from 'react';
-import { parseUrl, urlQuery } from './filters';
+import { parseUrl, patched, urlQuery } from './filters';
 import type { UrlState } from './filters';
 
 /** The page's URL state, provided by App. What is drawn from the URL itself
@@ -34,7 +34,8 @@ export function useUrlState(): [UrlState, (patch: Partial<UrlState>, push?: bool
   }, []);
 
   const update = useCallback((patch: Partial<UrlState>, push = false) => {
-    const next: UrlState = { ...cur.current, ...patch };
+    // another tab closes the session open on this one (`patched`)
+    const next: UrlState = patched(cur.current, patch);
     cur.current = next;
     const q = urlQuery(next);
     const url = location.pathname + (q ? '?' + q : '') + location.hash;

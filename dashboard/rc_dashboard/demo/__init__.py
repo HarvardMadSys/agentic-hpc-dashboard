@@ -16,7 +16,7 @@ The files are JSONL, as a collector writes them.
 Nothing in it was measured, and the page cannot be mistaken for a measurement:
 
 * every record carries `"synthetic": true`, so the label travels with the data:
-  an export of the demo says it on every row, and a service pointed at a demo
+  a copy of the demo's files says it on every row, and a service pointed at a demo
   feed by hand still finds it;
 * the header says "synthetic data" whenever a host's heartbeat does
   (`health.py`), and the Feeds tab marks each such host;
@@ -27,7 +27,6 @@ What a demo overrides, whatever the shell or the config file says (run.sh
 exports the cluster's feed roots, and a demo must never read them):
 
     feeds.ebpf.roots, feeds.ebpf_node.roots   the demo's own feed
-    feeds.sacct/sacctmgr/domains/user_actor   a path in the demo dir that does not exist
     cache.dir                                 the demo's own, so no real saved build is evicted
     rollup.dir                                the demo's own, so no made-up day lands in a
                                               real roll-up table (rollup.py)
@@ -90,17 +89,11 @@ def options(args):
 def configure(cfg, opts):
     """Point the service at the demo's feed and nothing else (see the module doc)."""
     feed = Feed(opts["dir"])
-    missing = os.path.join(feed.base, "not-in-a-demo")
     days, mins = opts["days"], opts["days"] * 1440
     for key, val in (
             ("feeds.ebpf.roots", [feed.ebpf]),
             ("feeds.ebpf.days", days + 1),
             ("feeds.ebpf_node.roots", [feed.node]),
-            ("feeds.sacct.dir", missing),
-            ("feeds.sacct.jobs_csv", None),
-            ("feeds.sacctmgr.dir", missing),
-            ("feeds.domains.path", os.path.join(missing, "map_user.csv")),
-            ("feeds.user_actor.path", os.path.join(missing, "user.csv")),
             ("cache.dir", feed.cache),
             ("rollup.dir", os.path.join(feed.cache, "rollup")),
             ("clock.as_of", ""),

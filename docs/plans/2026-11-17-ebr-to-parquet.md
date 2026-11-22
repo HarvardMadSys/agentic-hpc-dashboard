@@ -4,33 +4,37 @@
 > [PR #55](https://github.com/HarvardMadSys/agentic-hpc-dashboard/pull/55) (`claude/dashboard-parquet`)
 > on 2026-11-17, and [PR #56](https://github.com/HarvardMadSys/agentic-hpc-dashboard/pull/56) measured
 > the store's workers. This file is the record of how it was built, not work to do: what the store
-> does now is in [History in Parquet](../../dashboard/README.md#history-in-parquet).
+> does now is in [History in Parquet](../../dashboard/README.md#history-in-parquet), and its
+> files are in [docs/feed-parquet](../feed-parquet/README.md#layout). The layout below is the
+> plan's: the manifest the code writes holds more keys than it lists (`records` is the
+> `{table: rows}` map; `partial`, `malformed`, `bytes` and the source's `day`, `stem` and
+> `host` besides), and only the store's root and `SOURCE.json` are 0700/0600, the tables and
+> manifests inside them feedparquet's 0640 files in 0750 directories.
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
-**Goal:** Remove EBR from the collector, fleet and dashboard; keep JSONL as the one live format and
-give the dashboard a Parquet history store of sealed day-files that its analytical readers use.
+**Goal:** Remove EBR from the collector, fleet and dashboard. Keep JSONL as the only live format,
+and give the dashboard a Parquet history store of sealed day-files for its analytical readers.
 
 **Architecture:** The collector writes JSONL only (as FAS already does). The dashboard reads the
-collector's JSONL directly (the path `RC_DASH_CONVERT=0` takes today) and keeps, per sealed
-`<day>/<host>.<stream>.jsonl.gz`, a Parquet **replica**: `rc_dashboard/feedparquet.py`'s exact
-encoding, one file per table, each row carrying `_off`, the byte offset of its line in the
-uncompressed source. With the source's line starts, size, complete end and first 4 KB in its
-manifest, a replica answers every question a reader asks of the JSONL file -- a time seek, a
-ranged read forward or backward, `is_boundary`, the head digest -- with the same offsets and
-the same records. So positions, saved window builds, hour spans and the tail never change
-meaning, a reader can switch between a file and its replica at any time, and the API's answers
-are identical with the store on or off (the e2e test). Conversion runs in a background process
-pool, never blocking startup; a file without a current replica is read as JSONL.
+collector's JSONL directly (the path `RC_DASH_CONVERT=0` takes today). For each sealed
+`<day>/<host>.<stream>.jsonl.gz` it keeps a Parquet **replica** in `rc_dashboard/feedparquet.py`'s
+exact encoding: one file per table, with each row carrying `_off`, the byte offset of its line in
+the uncompressed source. The replica's manifest holds the source's line starts, size, complete end
+and first 4 KB. With those, a replica answers every question a reader asks of the JSONL file (a
+time seek, a ranged read forward or backward, `is_boundary`, the head digest) with the same
+offsets and the same records. As a result, positions, saved window builds, hour spans and the
+tail never change meaning, a reader can switch between a file and its replica at any time, and
+the API's answers are identical with the store on or off (the e2e test). Conversion runs in a
+background process pool and never blocks startup. A file without a current replica is read as
+JSONL.
 
 **Tech stack:** Python 3.12, pyarrow (now a required dependency), orjson, unittest.
 
 **Why (measured on a FAS host-day, boslogin05 2026-11-15, 1.81 M records):** the EBR view costs
-25-30 us/record to build and 52 GB of disk for a week of 8 hosts (the Parquet copy: 5.7 GB);
-reading a sealed `.jsonl.gz` costs ~15 us/record (gunzip 3 + orjson 12), the replica ~8 us
-building full records column-wise. The follow-ups that make restarts fast (stored normalized
-columns, per-reducer invalidation, per-host parallelism, vectorized reducers) build on this
-store; they are not in this plan.
+25-30 us/record to build and takes 52 GB of disk for a week of 8 hosts (the Parquet copy takes
+5.7 GB). Reading a sealed `.jsonl.gz` costs ~15 us/record (gunzip 3 + orjson 12); reading the
+replica costs ~8 us, building full records column-wise. The follow-ups that make restarts fast
+(stored normalized columns, per-reducer invalidation, per-host parallelism, vectorized reducers)
+build on this store, but they are not part of this plan.
 
 ---
 
@@ -114,7 +118,7 @@ resumes saved builds across the switch.
 `collector/lib/ebr.py`, `EBPFM_FORMAT`/`EBPFM_EBR_*`, the twins in `DailyWriter`, the node
 tier's `ebr.py append`, `ebpfm.sh` verbs (`compare`, `verify`, `bench`, `ebr`) and checks,
 fleet's `.ebr` carrying, packaging, tests and docs. `meta.output`/`stop.output` keep their
-shape with JSONL only (`"ebr": null`), so no schema bump.
+shape with JSONL only (`"ebr": null`), so there is no schema bump.
 
 ### Task 8: docs and measurements
 Dashboard README ("History in Parquet" replaces "Two formats" and "Reading EBR only"),

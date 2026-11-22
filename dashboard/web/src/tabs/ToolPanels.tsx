@@ -65,7 +65,6 @@ export function ToolPanels({ P, cls, type = null }: { P: Panels; cls: Cls[]; typ
         ...raw,
         by_class: { ...raw.by_class, agent: one.by },
         tools: { ...(raw.tools ?? {}), agent: one.tools },
-        head: { ...raw.head, agent: one.head },
         n_tools: { ...(raw.n_tools ?? {}), agent: one.n_tools },
       }
     : raw;
@@ -116,7 +115,7 @@ const METRICS: { k: Metric; lbl: string; tip: string }[] = [
   { k: 'cpu', lbl: 'CPU', tip: 'CPU seconds the processes used' },
   { k: 'io', lbl: 'disk I/O', tip: 'disk bytes read and written' },
   { k: 'net', lbl: 'network', tip: 'bytes sent and received over the network' },
-  { k: 'mem', lbl: 'memory', tip: 'each process’s peak memory, summed: how much memory the processes held at their highest' },
+  { k: 'mem', lbl: 'memory', tip: 'each process’s peak memory, summed' },
 ];
 const rowVal = (r: ToolBucketRow | undefined, m: Metric): number | null =>
   !r ? null : m === 'calls' ? r.calls : m === 'cpu' ? r.cpu_s : m === 'io' ? r.io_mb ?? null
@@ -322,15 +321,14 @@ const headTip = (r: ToolCostRow) => [
 function HeadPanel({ tm, have, scope = CLASS_SCOPE }: { tm: ToolMix; have: string[]; scope?: ToolScope }) {
   const [by, setBy] = useState<HeadSort>('calls');
   const tools = tm.tools;
-  const head = tm.head ?? {};
   return (
     <Panel
       title={scope.title('Top tools')}
-      ask={[{ panel: 'tool_mix', keys: scope.askKeys(['tools', 'head', 'n_tools']) }]}
+      ask={[{ panel: 'tool_mix', keys: scope.askKeys(['tools', 'n_tools']) }]}
       id="sec-head-of-the-tool-distribution"
       p={tm}
       span
-      empty={!have.some((c) => (tools?.[c]?.length ?? head[c]?.length ?? 0) > 0)}
+      empty={!have.some((c) => (tools?.[c]?.length ?? 0) > 0)}
       emptyWhat="no head list for the selected classes"
       header={tools && (
         <span className="wrapctl" style={{ gap: 6 }}>
@@ -341,8 +339,8 @@ function HeadPanel({ tm, have, scope = CLASS_SCOPE }: { tm: ToolMix; have: strin
     >
       <div className="head-row" style={{ gridTemplateColumns: `repeat(${have.length || 1}, minmax(0, 1fr))` }}>
         {have.map((c) => {
-          const rows: ToolCostRow[] | undefined = tools?.[c]
-            ?.filter((r) => (headVal(r, by) ?? 0) > 0)
+          const rows: ToolCostRow[] = (tools?.[c] ?? [])
+            .filter((r) => (headVal(r, by) ?? 0) > 0)
             .sort((a, b) => (headVal(b, by) ?? 0) - (headVal(a, by) ?? 0))
             .slice(0, 12);
           return (
@@ -350,34 +348,22 @@ function HeadPanel({ tm, have, scope = CLASS_SCOPE }: { tm: ToolMix; have: strin
               <div className="eyebrow" style={{ margin: '8px 0 5px', color: CLS_COL[c] }}>
                 {scope.lbl(c)}
               </div>
-              {rows ? (
-                rows.length ? (
-                  <HBars
-                    items={rows.map((r) => ({
-                      k: r.tool, v: headVal(r, by) ?? 0, c: CLS_COL[c], lbl: headLbl(r, by), tip: headTip(r),
-                      onPick: by === 'io' || by === 'net'
-                        ? () => openIoCmds({
-                            title: `${by === 'io' ? 'disk I/O' : 'network'} · ${r.tool} · ${scope.lbl(c)}`,
-                            sort: by === 'io' ? 'disk_mb' : 'net_mb', tool: [r.tool], ...scope.ioq(c), ...coveredBy(tm),
-                          })
-                        : undefined,
-                    }))}
-                    W={400}
-                    labelW={100}
-                    valW={190}
-                  />
-                ) : <div className="none">none</div>
-              ) : (
+              {rows.length ? (
                 <HBars
-                  items={(head[c] ?? []).slice(0, 12).map((r) => ({
-                    k: r.tool, v: r.calls_pct ?? 0, c: CLS_COL[c],
-                    lbl: `${pc(r.calls_pct)} processes / ${pc(r.cpu_pct)} CPU`,
+                  items={rows.map((r) => ({
+                    k: r.tool, v: headVal(r, by) ?? 0, c: CLS_COL[c], lbl: headLbl(r, by), tip: headTip(r),
+                    onPick: by === 'io' || by === 'net'
+                      ? () => openIoCmds({
+                          title: `${by === 'io' ? 'disk I/O' : 'network'} · ${r.tool} · ${scope.lbl(c)}`,
+                          sort: by === 'io' ? 'disk_mb' : 'net_mb', tool: [r.tool], ...scope.ioq(c), ...coveredBy(tm),
+                        })
+                      : undefined,
                   }))}
                   W={400}
                   labelW={100}
                   valW={190}
                 />
-              )}
+              ) : <div className="none">none</div>}
             </div>
           );
         })}

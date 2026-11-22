@@ -62,20 +62,15 @@ def snap(host, e, fork=2.0, load=1.0, nfs=None, resp=True):
 
 class PointTest(unittest.TestCase):
 
-    def test_a_snapshot_keeps_the_worst_mount_and_the_all_cores_row(self):
-        p = dict(zip(("fork", "stat", "getent", "load", "iowait", "mem", "dstate",
-                      "rd", "wr", "retr"), point(snap("h", 0.0))))
-        self.assertEqual((p["fork"], p["load"], p["iowait"], p["mem"], p["dstate"]),
-                         (2.0, 1.0, 0.5, 25.0, 0))
-        self.assertEqual((p["rd"], p["wr"], p["retr"]), (4.0, 6.0, 3))
+    def test_a_snapshot_keeps_the_worst_mount(self):
+        p = dict(zip(("fork", "getent", "load", "rd"), point(snap("h", 0.0))))
+        self.assertEqual((p["fork"], p["load"]), (2.0, 1.0))
+        self.assertEqual(p["rd"], 4.0)
 
     def test_missing_is_none_not_zero(self):
         p = point(snap("h", 0.0, nfs=[], resp=False))
-        self.assertEqual(p[0:3], (None, None, None))
-        self.assertEqual(p[7:10], (None, None, None))
-        rec = snap("h", 0.0)
-        del rec["d_state_procs"]
-        self.assertIsNone(point(rec)[6])
+        self.assertEqual(p[0:2], (None, None))
+        self.assertIsNone(p[3])
 
 
 class NodeHistoryTest(unittest.TestCase):

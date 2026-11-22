@@ -58,6 +58,12 @@ def rec(event, t, pid, ppid, command, args, *, agent_pid, tree_root,
 
 def reduce(recs, minutes=1440):
     """Normalise and dispatch exactly as `WindowRegistry._build` does."""
+    return reduced(recs, minutes).payload
+
+
+def reduced(recs, minutes=1440):
+    """`reduce`'s view, its panels materialised: its reducers keep counts the
+    panels do not serve."""
     c = cfg()
     classes = list(c.get("filters.classes")) + [c.get("filters.unlabeled_class")]
     view = PanelView(c, classes, minutes)
@@ -71,7 +77,8 @@ def reduce(recs, minutes=1440):
         for red in dispatch.get(r.get("event"), ()):
             red.feed(r)
     view.reducers = reducers
-    return view.materialize()
+    view.materialize()
+    return view
 
 
 def ranked(payload, rank="events"):
@@ -410,10 +417,9 @@ class SessionizeTest(unittest.TestCase):
         self.assertEqual(sorted(r["agent_pid"] for r in rows), ["200"])
         self.assertEqual(rows[0]["owner_via"], "unknown")
 
-    def test_the_fold_is_reported(self):
-        t = reduce(claude_session(self.t0))["trajectories"]
-        self.assertEqual(t["fold"]["raw_sessions"], 3)
-        self.assertEqual(t["fold"]["sessions"], 1)
+    def test_the_row_says_how_many_keys_it_folds(self):
+        rows = ranked(reduce(claude_session(self.t0)))
+        self.assertEqual([r["fragments"] for r in rows], [3])
 
     def test_sandbox_session_counts_do_not_count_tool_calls_as_sessions(self):
         sb = reduce(claude_session(self.t0))["sandbox"]

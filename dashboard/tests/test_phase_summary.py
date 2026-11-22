@@ -440,12 +440,27 @@ class RowTest(unittest.TestCase):
         self.assertEqual(first["phases"]["category"], "explore")
         self.assertIn("61 tool calls", first["phases"]["summary"])
 
-    def test_a_person_or_an_unrecognized_agent_has_no_category(self):
+    def test_an_agent_with_no_rules_of_its_own_has_a_category_too(self):
+        # read by the general rule, Aider's shell call is a call as Codex's would be
         recs = [root8(T1, command="aider", args="aider", agent_type="aider"),
                 bash8(T1 + 10, 201, "ls", agent_type="aider")]
         rows = [r for r in fed(recs).result()["rows"].values() if r["agent_pid"] == "100"]
+        self.assertTrue(rows)
         for r in rows:
-            self.assertNotIn("category", r["phases"])
+            self.assertEqual(r["phases"]["category"], "explore")
+            self.assertIn("1 tool call", r["phases"]["summary"])
+
+    def test_a_session_no_agent_ran_says_commands(self):
+        b = {"n_calls": 3, "list": [], "tasks": [], "driver": "terminal", "housekeeping": {"n": 0}}
+        self.assertEqual(PS._counts("explore", [], b, [], [[(), None]]), "3 commands.")
+        self.assertEqual(PS._counts("explore", [], dict(b, driver="agent"), [], [[(), None]]),
+                         "3 tool calls.")
+        empty = dict(b, n_calls=0, housekeeping={"n": 4})
+        self.assertEqual(kind(empty)["summary"],
+                         "No commands run from a terminal, and 4 commands the shells and editors "
+                         "ran themselves.")
+        self.assertEqual(kind(dict(empty, housekeeping={"n": 0}))["summary"],
+                         "No commands run from a terminal.")
 
 
 if __name__ == "__main__":

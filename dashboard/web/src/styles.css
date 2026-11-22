@@ -1158,34 +1158,6 @@ details.more > summary:hover {
   }
 }
 
-/* Overview: one measure per row, each class's value named, then the split */
-.unit-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 16px;
-  margin: 10px 0 4px;
-  font-size: 13.5px;
-}
-.unit-row .unit-k {
-  min-width: 110px;
-  font-weight: 600;
-  color: var(--ink);
-}
-.unit-row .unit-v {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--ink-2);
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 12.5px;
-}
-.unit-row .unit-v i {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-}
-
 /* the tool-mix table: an inline bar per share, the value beside it */
 table.mix th,
 table.mix td {
@@ -1404,8 +1376,7 @@ table.faults tr.section td {
 }
 /* Only a scroll box's own header sticks. A table opened inside one of its rows
  * keeps its header in place; pinned, it sat on top of the outer one. */
-.scroller.vscroll td thead th,
-.stream td thead th {
+.scroller.vscroll td thead th {
   position: static;
   box-shadow: none;
   border-bottom: 1px solid var(--rule);
@@ -1683,37 +1654,12 @@ tbody tr:last-child td {
   background: var(--crimson-wash);
 }
 
-.stream {
-  max-height: 460px;
-  overflow-y: auto;
-  overflow-x: auto;
-  overscroll-behavior: contain;
-}
-.stream table {
-  font-size: 13px;
-}
-.stream td {
-  padding: 4px 9px 4px 0;
-  white-space: nowrap;
-}
 /* a command line in a table: one line, cut, the whole of it on hover (Cmd.tsx) */
 td.cmd-cut {
   max-width: 560px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.stream td.arg {
-  white-space: nowrap;
-  max-width: 430px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.stream thead th {
-  position: sticky;
-  top: 0;
-  background: var(--surface);
-  z-index: 1;
 }
 .dot {
   width: 7px;
@@ -1836,47 +1782,6 @@ td.cmd-cut {
   border-top: 1px solid var(--rule);
 }
 
-/* basis / notes: a collapsible affordance, never body text */
-details.basis {
-  font-size: 12.5px;
-  color: var(--muted);
-  border-top: 1px solid var(--rule);
-  padding-top: 7px;
-  margin-top: auto;
-}
-details.basis > summary {
-  cursor: pointer;
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 11.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  list-style: none;
-}
-details.basis > summary::-webkit-details-marker {
-  display: none;
-}
-details.basis > summary::before {
-  content: '\203a\00a0';
-}
-details.basis[open] > summary::before {
-  content: '\2039\00a0';
-}
-details.basis .body {
-  margin-top: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  color: var(--ink-2);
-  line-height: 1.5;
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 12px;
-}
-details.basis .body b {
-  color: var(--muted);
-  font-weight: 500;
-}
-
 /* coverage badge: coverage is part of the number */
 .cov {
   font-size: 11px;
@@ -1896,66 +1801,6 @@ details.basis .body b {
   font-size: 12.5px;
   color: var(--muted);
   font-style: normal;
-}
-
-/* ------------------------------------------------------------- filter bar */
-.fbar {
-  background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  padding: 11px 13px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.fgrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 8px 10px;
-}
-.fld {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-.fld label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  font-family: 'IBM Plex Mono', monospace;
-}
-.fld input,
-.fld select {
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 13px;
-  padding: 4px 6px;
-  border: 1px solid var(--edge);
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--ink);
-  min-width: 0;
-  width: 100%;
-}
-.fld input:focus,
-.fld select:focus {
-  border-color: var(--crimson);
-}
-.fbar .row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-.fbar .count {
-  font-size: 12.5px;
-  font-family: 'IBM Plex Mono', monospace;
-  color: var(--ink-2);
-}
-.fbar .count b {
-  color: var(--ink);
 }
 
 /* ------------------------------------------------------------- ribbon cell */
@@ -2208,11 +2053,6 @@ table.users tr.u-open > td {
 .u-detail table {
   width: auto;
 }
-.u-cols {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-  gap: 12px 32px;
-}
 .u-cmd {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 12.5px;
@@ -2338,6 +2178,10 @@ table.shares tr.grp td .nm {
   height: 100%;
   border-radius: 2px;
 }
+/* no share -- not known, which is not 0% -- is a hatched track, not an empty one */
+.share-track.none {
+  background: repeating-linear-gradient(135deg, var(--rule) 0 2px, transparent 2px 5px);
+}
 .share-cell b {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 13.5px;
@@ -2352,6 +2196,167 @@ table.shares tr.grp td .nm {
   font-family: 'IBM Plex Mono', monospace;
   margin-top: 2px;
 }
+/* Who uses what: each unit's whole as one stacked bar (SplitBar.tsx), and each
+   class's share and amount in its own column beside it (OverviewTab.tsx) */
+table.shares.who td {
+  vertical-align: middle;
+}
+table.shares.who th.split,
+table.shares.who td.split {
+  width: auto;
+  min-width: 220px;
+  padding-right: 28px;
+}
+table.shares.who th.cls,
+table.shares.who td.clsv {
+  width: 1%;
+  padding-right: 22px;
+}
+.split-bar {
+  display: flex;
+  gap: 2px;
+  height: 16px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.split-bar .seg {
+  display: block;
+  flex: 1 1 0;
+  /* a part above zero is never thinner than this: there to see and hover */
+  min-width: 3px;
+}
+/* a counted class the chips hide: part of the whole, drawn as no class */
+.split-bar .seg.muted {
+  background: repeating-linear-gradient(135deg, var(--edge) 0 2px, var(--surface-2) 2px 5px);
+}
+/* no known whole, no split: the reason where the bar would be */
+.split-bar.none {
+  align-items: center;
+  padding: 0 8px;
+  background: repeating-linear-gradient(135deg, var(--rule) 0 2px, transparent 2px 5px);
+}
+.split-bar.none span {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--surface);
+  padding: 0 4px;
+}
+/* the class columns hold the numbers alone: the share, its amount under it */
+table.shares.who .share-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+table.shares.who .share-cell b {
+  text-align: left;
+}
+table.shares.who .share-sub {
+  margin-top: 1px;
+  white-space: nowrap;
+}
+table.shares.who td.lead .share-cell b {
+  font-weight: 700;
+}
+/* a byte count opens the commands behind it: its button takes the whole cell,
+   and only the amount is underlined, so the share above it reads plainly */
+table.shares.who .ionum {
+  display: block;
+  width: 100%;
+  text-align: inherit;
+  text-decoration: none;
+}
+table.shares.who .ionum .share-sub {
+  text-decoration: underline dotted var(--edge);
+  text-underline-offset: 3px;
+}
+table.shares.who .ionum:hover .share-sub {
+  color: var(--crimson-ink);
+  text-decoration-color: currentColor;
+}
+/* a class's name over its numbers: a phone's alone (below) */
+table.shares.who .clsv-k {
+  display: none;
+}
+/* on a phone a unit takes three lines: its name, its bar across the width, and
+   its classes' numbers side by side under the bar */
+@media (max-width: 600px) {
+  table.shares.who,
+  table.shares.who thead,
+  table.shares.who tbody {
+    display: block;
+  }
+  table.shares.who tr {
+    display: grid;
+    grid-template-columns: repeat(var(--ncls, 3), minmax(0, 1fr));
+    column-gap: 10px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  table.shares.who tr > * {
+    display: block;
+    width: auto;
+    min-width: 0;
+    padding: 0;
+    border-bottom: 0;
+    box-shadow: none;
+    /* the row-hover shade lights each cell on its own, which in this grid
+       paints patches, and on a touch screen sticks after a tap */
+    background: none;
+  }
+  /* the class cells' own width (1%) and padding are more specific than the
+     line above: without this each cell is ~22px wide, its numbers spill out
+     of it, and a tap on a byte count only lands on that sliver */
+  table.shares.who th.cls,
+  table.shares.who td.clsv {
+    width: auto;
+    padding-right: 0;
+  }
+  /* each number under its class's name and swatch, so it reads without the
+     header row, which is scrolled away by the second unit */
+  table.shares.who .clsv-k {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 3px;
+    font-size: 11.5px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  table.shares.who .clsv-k i {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+  }
+  table.shares.who .share-cell b {
+    font-size: 15px;
+  }
+  table.shares.who tr > :first-child,
+  table.shares.who td.split {
+    grid-column: 1 / -1;
+  }
+  table.shares.who th.split {
+    display: none;
+  }
+  table.shares.who td.split {
+    padding: 6px 0 10px;
+  }
+  table.shares.who .split-bar {
+    height: 12px;
+  }
+  table.shares.who thead th:first-child {
+    padding-bottom: 6px;
+  }
+  table.shares.who tr.grp {
+    padding-top: 16px;
+  }
+}
+
 /* the label column holds still, so one class column sits beside it rather
    than across the panel */
 table.shares th:first-child,
@@ -2466,8 +2471,8 @@ th.sorted .sort-arrow {
   }
 }
 
-/* Live's row of plates says which span it counts: the same word ("sessions",
- * "users") means a different span elsewhere on the page. */
+/* A labeled row of plates. Live's says which span it counts: the same word
+ * ("sessions", "users") means a different span elsewhere on the page. */
 .rowlabel {
   font-size: 11.5px;
   text-transform: uppercase;
@@ -2898,22 +2903,7 @@ td.host-by {
   padding-left: 4px;
 }
 
-/* Network bytes: each class's bytes and the endpoint list side by side, the
-   list under them when the panel is too narrow for both (NetEndpoints.tsx) */
-.net-split {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px 32px;
-  align-items: flex-start;
-}
-.net-class {
-  flex: 0 1 540px;
-  min-width: 0;
-}
-.net-ends {
-  flex: 1 1 520px;
-  min-width: 0;
-}
+/* Network bytes: the endpoint list (NetEndpoints.tsx) */
 .net-ends-ctl {
   display: flex;
   flex-wrap: wrap;
@@ -3219,8 +3209,7 @@ th.sortable:focus-visible {
   .linkbtn {
     padding: 6px 0;
   }
-  details.more > summary,
-  details.basis > summary {
+  details.more > summary {
     padding: 6px 0;
   }
   .wininput {
@@ -3292,6 +3281,45 @@ th.sortable:focus-visible {
   margin-top: 6px;
   color: var(--muted);
   font-size: 12px;
+}
+
+/* Security checks (tabs/SecurityTab.tsx): the same list with every check on
+   it, a label over each axis's lines, and a dot for each result -- filled,
+   something found; a ring, the check was made and found none; a dashed ring,
+   not checked, as everything unread is drawn dashed. */
+.attn-dot.clear {
+  background: transparent;
+  border: 1.5px solid var(--muted);
+}
+.attn-dot.unchecked {
+  background: transparent;
+  border: 1.5px dashed var(--muted);
+}
+.attn li.sec-axis {
+  display: block;
+  padding: 12px 0 0;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+}
+.attn li.sec-axis:first-child {
+  padding-top: 0;
+}
+.attn li.sec-axis + li {
+  border-top: 0;
+  padding-top: 4px;
+}
+
+/* Abnormal Slurm activity (tabs/SlurmTab.tsx): a session's broken rules, one a
+   line, each with what the session did. */
+.slurm-abn {
+  white-space: normal;
+  min-width: 280px;
+}
+.slurm-abn + .slurm-abn {
+  margin-top: 4px;
 }
 
 /* Commands that failed (tabs/ExitsPanel.tsx): the codes and signals of a row,

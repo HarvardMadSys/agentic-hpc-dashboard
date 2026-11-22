@@ -4,10 +4,11 @@
  * It opens on who ran the session and what it came to (`Facts`), the session's headline, and the gist: what
  * kind of session it was and the session in a few sentences. Then two parts, each under a heading:
  *
- * - WHAT IT DID, for an agent whose commands are read: the list of its tasks and their phases (TaskList.tsx,
- *   or PhaseList.tsx where the block has no tasks). They are the row's block, which is the whole session's, so
- *   they are listed as soon as the row is here, before any process is read; the session's row in the list
- *   draws them whole as its band, and the navigator below draws them over the processes the read reached. An agent of a type whose commands are not read says so
+ * - WHAT IT DID, for every session (an agent's tool calls, or the commands a session no agent ran ran from its terminals):
+ *   the list of its tasks and their phases (TaskList.tsx, or PhaseList.tsx where the block has no tasks). They are the
+ *   row's block, which is the whole session's, so they are listed as soon as the row is here, before any process is
+ *   read; the session's row in the list draws them whole as its band, and the navigator below draws them over the
+ *   processes the read reached. An agent of a type whose commands are not read says so
  *   in their place; a person or an IDE has neither, as their row has none.
  * - PROCESSES: what the processes were for, run by run, and the tools they ran (`ProcessMix`, the row's
  *   purpose ribbon and tool tokens: they count processes, so a poll loop is most of the ribbon however
@@ -43,7 +44,7 @@
  *
  * An agent that ran past midnight is a row to a day, each serving the one block, and a task or
  * phase says which row holds it. A pick of one the other day's row holds is a jump to that row
- * (`onJump`) whenever the window holds that row: the tab opens it, as a new inspector, and hands
+ * (`onJump`) whenever the window holds that row: its host (OpenSession.tsx) opens it, as a new inspector, and hands
  * it the jump (`pendingJump`), which it goes to as any pick once it has read itself. Where the
  * window does not hold it, the pick is made on this row.
  *
@@ -67,7 +68,7 @@ import { useDeferredValue, useEffect, useId, useMemo, useRef, useState } from 'r
 import { sessionName } from '../lib/sessions';
 import type { CSSProperties, ReactNode } from 'react';
 import { useTrajectory } from '../api/hooks';
-import type { OwnerVia, Phase, PhaseDay, ProcNode, Task, TrajOrder, TrajRow, TrajectoryDetail } from '../api/types';
+import type { OwnerVia, Phase, PhaseDay, PhaseDriver, ProcNode, Task, TrajOrder, TrajRow, TrajectoryDetail } from '../api/types';
 import { PROC_LINKS } from '../api/types';
 import { Ribbon } from '../charts/primitives';
 import {
@@ -86,19 +87,17 @@ import type { Found, JumpReq } from '../components/ProcTree';
 import { DEFAULT_ROUTINE, ProcDiagram, findIds, findIndex, hiddenCount, reveal, unhidNote } from '../components/ProcDiagram';
 import type { Hide } from '../components/ProcDiagram';
 import { SurfaceChip } from '../components/SurfaceChip';
-import { AnnotateControl, useAnnotate } from '../components/Annotate';
-import { LlmPurposes } from '../lib/annotate';
 import { CategoryChip } from '../components/CategoryChip';
 import { treePopHref } from '../lib/popout';
 import { Segmented } from '../components/ClassFilter';
-import { Basis, Legend, Panel } from '../components/Panel';
+import { Legend, Panel } from '../components/Panel';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { GLOSS } from '../lib/glossary';
 import { serverNow } from '../lib/clock';
 import { useNow } from '../lib/useNow';
 import { registerJumper } from '../lib/cites';
 import { DASH, bytes, clock, dur, fint, fmt } from '../lib/format';
-import { categoryOf, isBlock, phaseLbl, phasesUnread } from '../lib/phases';
+import { callWord, categoryOf, driverOf, isBlock, phaseLbl, phasesUnread, runningUnread, runningUnreadText } from '../lib/phases';
 import { pcol, plbl, purposeLegend } from '../lib/purposes';
 import { AP_LABEL, SB_LABEL, label } from '../lib/sandbox';
 import { otherDay, taskLabel } from '../lib/tasks';
@@ -131,7 +130,7 @@ export type RunJump = Omit<Pending, 't' | 'by'> & { t: number | null; n: number 
 
 /** A task or phase picked on one day's row of a session that ran past midnight, though another day's row holds it: that row, and
  *  the stretch to go to in it, which is the zoom a pick on the same row would make. `what` is what the picked stretch is, for the
- *  line that says where the jump landed. The tab opens the row (TrajectoriesTab.tsx), and the row goes to the stretch once it
+ *  line that says where the jump landed. Its host opens the row (OpenSession.tsx), and the row goes to the stretch once it
  *  has read itself. */
 export interface DayJump {
   sid: string;
@@ -279,7 +278,7 @@ function Facts({ row, d }: { row: TrajRow | null; d: TrajectoryDetail | null }) 
           </span>
         )}
         {days.length > 1 && nth >= 0 && (
-          <span data-tip="it worked past midnight, so it is a row to a day: these figures are this day's, and its summary and what it did, below, are the whole session's">
+          <span data-tip="it worked past midnight: these figures are this day's; its summary and what it did, below, are the whole session's">
             day <b>{fint(nth + 1)}</b> of <b>{fint(days.length)}</b>
           </span>
         )}
@@ -287,8 +286,14 @@ function Facts({ row, d }: { row: TrajRow | null; d: TrajectoryDetail | null }) 
           length <b>{dur(r.wall_s)}</b>
         </span>
         {calls != null && (
-          <span data-tip="commands the agent issued itself; what they started counts as processes">
-            tool calls <b>{fint(calls)}</b>
+          <span
+            data-tip={
+              driverOf(isBlock(r.phases) ? r.phases : null) === 'terminal'
+                ? "commands run from its terminals, each with what it started: the rest is the shells' and the editor's own"
+                : 'commands the agent issued itself; what they started counts as processes'
+            }
+          >
+            {callWord(driverOf(isBlock(r.phases) ? r.phases : null), 2)} <b>{fint(calls)}</b>
           </span>
         )}
         <span>
@@ -435,16 +440,13 @@ function ReadLine({
       <div>
         <b>{fint(s.records)}</b>
         {` processes read, ${clock(s.first)} → ${clock(s.last)}`}
-        <span className="ins-scan">
-          {` · re-read ${bytes(s.bytes)} of ${fint(s.files)} day-file${s.files === 1 ? '' : 's'} in ${s.elapsed_s.toFixed(1)} s`}
-        </span>
         {b.stubs > 0 && (
-          <span data-tip="parents the records name that left no exit record in this read: the agent still running, or a shell that exited outside the span">
+          <span data-tip="named as parents, with no exit in this read: still running, or exited outside it">
             {` · ${fint(b.stubs)} parent${b.stubs === 1 ? '' : 's'} with no exit in the read`}
           </span>
         )}
         {d.cached && (
-          <span data-tip="the service keeps the trees it read recently, so going back to a session is instant; a session still running may have done more since">
+          <span data-tip="a session still running may have done more since">
             {` · kept from a read ${dur(Math.max(0, now / 1000 - s.computed_at))} ago · `}
             <button className="linkish" onClick={reread}>
               read again
@@ -461,19 +463,15 @@ function ReadLine({
           <div className="ins-limits-body">
             {b.counted > 0 && (
               <div>
-                {newest
-                  ? `${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): the oldest, past the newest ${fint(
-                      b.hold,
-                    )} in all or the newest ${fint(b.per_parent)} childless processes of one command under one parent`
-                  : `${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): past ${fint(
-                      b.per_parent,
-                    )} childless processes of one command under one parent, or ${fint(b.hold)} in all`}
+                {`${fint(b.counted)} processes are counted under their parent rather than drawn (⋯ rows): the ${
+                  newest ? 'oldest' : 'latest'
+                } past the budget`}
               </div>
             )}
             {b.elided > 0 && (
               <div>
-                {`${fint(b.elided)} processes are past the ${fint(b.nodes)}-row budget, allotted breadth first${
-                  newest ? ' and newest first: counted in ⋯ rows at the deepest levels of the oldest' : ': counted in ⋯ rows at the deepest levels'
+                {`${fint(b.elided)} processes are past the ${fint(b.nodes)}-row budget: counted in ⋯ rows at the deepest levels${
+                  newest ? ' of the oldest' : ''
                 }`}
               </div>
             )}
@@ -514,8 +512,8 @@ function Figures({ text }: { text: string }) {
 }
 
 /** The colour of the gist's rule: its category's, and the plain edge for one with no colour of its own. */
-const gistColour = (c: string | null | undefined) => {
-  const col = c ? categoryOf(c)[2] : 'none';
+const gistColour = (c: string | null | undefined, driver?: PhaseDriver) => {
+  const col = c ? categoryOf(c, driver)[2] : 'none';
   return col === 'none' ? 'var(--edge)' : col;
 };
 
@@ -545,6 +543,7 @@ export function TrajectoryInspector({
   onJump,
   pendingJump,
   routine,
+  scrollOnOpen = true,
 }: {
   sid: string;
   /** the ranked row, when the ranking holds it: shown while the tree is read */
@@ -568,6 +567,10 @@ export function TrajectoryInspector({
   pendingJump?: DayJump | null;
   /** the site's routine commands, hidden from either view on request (`ui.routine_commands`) */
   routine?: string[] | null;
+  /** it scrolls itself into view as it opens; not when the page is about to go to it itself (App.tsx `land`), which
+   *  waits until what is drawn above it has come: a smooth scroll of its own, still running then, would carry the
+   *  page past it */
+  scrollOnOpen?: boolean;
 }) {
   // "read again": a bound of now is a different read from the one the service
   // kept, and is that read's own key there. Cleared by paging, which reads anew.
@@ -616,8 +619,6 @@ export function TrajectoryInspector({
   const [goTo, setGoTo] = useState<{ id: string; n: number } | null>(null);
   const [findNote, setFindNote] = useState('');
   const stampKey = `${sid}|${d?.scan?.computed_at ?? ''}`;
-  // a model's purpose for each tool call, asked for on the button (components/Annotate.tsx)
-  const annot = useAnnotate(sid, win, from, to, order, tree ? stampKey : null);
   useEffect(() => {
     if (tree) setOpen(defaultOpen(tree));
     setDopen(new Set(['r']));
@@ -639,7 +640,8 @@ export function TrajectoryInspector({
 
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (scrollOnOpen) ref.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid]);
 
   // A run picked in the ranked table.
@@ -992,6 +994,8 @@ export function TrajectoryInspector({
   // reached. So it is drawn, and listed, as soon as the row is here, before the tree is read; a pick made from it waits for
   // the read, as every jump does. An agent of a type whose commands are not read says so in its place, as its row does.
   const unread = r ? phasesUnread(r) : null;
+  // running now, and no call of it has ended yet: its live edge is all there is to draw (`runningUnread`)
+  const waiting = runningUnread(block, edge);
 
   return (
     <div ref={ref} className="span2" style={{ scrollMarginTop: 12 }}>
@@ -1010,20 +1014,6 @@ export function TrajectoryInspector({
             </button>
           </div>
         }
-        basis={
-          d?.found ? (
-            <Basis
-              items={[
-                ...Object.entries(d.basis ?? {}),
-                ['scan', d.scan],
-                ['bounds', d.bounds],
-                ['links', d.links],
-                ['timeline', 'bars span start to exit on the read’s own time axis, or on the range zoomed to on the strip above; a dashed bar has no exit in the read, a bar with a left rule started before the axis, one with a right rule ran past it'],
-                ['jumps', 'a moment on the strip opens the first process started at or after it; a ribbon run or a tool token opens the process its first record came from, matched by exit time and purpose or tool. A process that is counted rather than drawn opens at the row that counts it'],
-              ]}
-            />
-          ) : undefined
-        }
       >
         <Facts row={row} d={d} />
         {block?.headline && (
@@ -1031,30 +1021,34 @@ export function TrajectoryInspector({
             {block.headline}
           </div>
         )}
-        {block?.summary && (
-          <p
-            className="ins-gist"
-            style={{ '--cat': gistColour(block.category) } as CSSProperties}
-          >
-            <CategoryChip of={block} />
-            <span data-tip="the session in a few sentences, from its own phases, calls, and tasks: no model writes it">
-              <Figures text={block.summary} />
-            </span>
+        {block && waiting ? (
+          // running now, and no call has ended: what runs, in the summary's place, and no `no tool calls` chip
+          <p className="ins-gist" style={{ '--cat': 'var(--edge)' } as CSSProperties}>
+            <span>{runningUnreadText(edge, driverOf(block))}</span>
           </p>
+        ) : (
+          block?.summary && (
+            <p
+              className="ins-gist"
+              style={{ '--cat': gistColour(block.category, driverOf(block)) } as CSSProperties}
+            >
+              <CategoryChip of={block} />
+              <span data-tip="built from its own phases, calls and tasks: no model writes it">
+                <Figures text={block.summary} />
+              </span>
+            </p>
+          )
         )}
-        {block && block.list.length > 0 && (
+        {block && (block.list.length > 0 || waiting) && (
           <section className="ins-sec" aria-labelledby={`${uid}-did`}>
             <div className="ins-sec-h">
               <h4 id={`${uid}-did`}>What it did</h4>
-              <p>
-                {block.tasks?.length ? 'its tasks and the phases of each' : 'its phases'}, over the whole session · click one to
-                open its processes below
-              </p>
+              <p>{block.tasks?.length ? 'its tasks and the phases of each' : 'its phases'}, over the whole session</p>
             </div>
             {block.tasks?.length ? (
               <TaskList block={block} now={edge} view={view ?? aim} onTask={onTask} onPhase={onPhase} />
             ) : (
-              <PhaseList block={block} now={edge} onPick={onPhase} />
+              <PhaseList block={block} now={edge} first={r?.first} onPick={onPhase} />
             )}
           </section>
         )}
@@ -1066,7 +1060,6 @@ export function TrajectoryInspector({
         <section className="ins-sec" aria-labelledby={`${uid}-procs`}>
           <div className="ins-sec-h">
             <h4 id={`${uid}-procs`}>Processes</h4>
-            <p>every program the session ran, each under the one that started it</p>
           </div>
           <ProcessMix row={row} d={d} onRun={onRun} />
           {q.error && <div className="err">{`/api/trajectory: ${q.error}`}</div>}
@@ -1114,7 +1107,7 @@ export function TrajectoryInspector({
                 onChange={setMode}
                 options={[
                   { k: 'tree', lbl: 'tree', tip: 'boxes joined by lines, opened a level at a time' },
-                  { k: 'table', lbl: 'table', tip: 'every process as a row, with its timeline; landmarks and the strip jump here' },
+                  { k: 'table', lbl: 'table', tip: 'every process as a row, with its timeline' },
                 ]}
               />
               {setOrder && (
@@ -1125,16 +1118,12 @@ export function TrajectoryInspector({
                     {
                       k: 'oldest',
                       lbl: 'oldest first',
-                      tip:
-                        "each process's children by when they started, the first at the top. In a busy session " +
-                        'the newest are the ones counted in ⋯ rows rather than drawn',
+                      tip: 'in a busy session, the newest are counted in ⋯ rows, not drawn',
                     },
                     {
                       k: 'newest',
                       lbl: 'newest first',
-                      tip:
-                        "each process's children by when they started, the latest at the top. The service reads " +
-                        'on to the session’s end and draws the newest in full; the oldest are the ones counted in ⋯ rows',
+                      tip: 'the newest are drawn in full; the oldest are counted in ⋯ rows',
                     },
                   ]}
                 />
@@ -1151,7 +1140,7 @@ export function TrajectoryInspector({
                 href={treePopHref(sid, win, from, hide, order, typos)}
                 target="_blank"
                 rel="noopener"
-                data-tip={'the tree in a tab of its own: pan, zoom, find, a minimap, details beside each box, and export\nshift-click for a new window'}
+                data-tip={'the tree in a tab of its own\nshift-click for a new window'}
               >
                 pop out ↗
               </a>
@@ -1164,11 +1153,8 @@ export function TrajectoryInspector({
                 <span
                   className="q-mark"
                   data-tip={
-                    'looks through every process the read served: its command, its command line, and the folder it ran in ' +
-                    '(its own, or its parent’s). Files and folders it only opened are not recorded, so they are found only where its command line names them. ' +
-                    'Every word must be in one process: `pytest myproj` finds pytest run in a folder named myproj. ' +
-                    'Processes counted rather than drawn are found by their command name only\n' +
-                    'Enter: the next match · Shift+Enter: the one before · Esc: clear'
+                    'looks through each process’s command, command line and folder; every word must be in one process, ' +
+                    'and a file it only opened is not found\nEnter: the next match · Shift+Enter: the one before · Esc: clear'
                   }
                 >
                   find
@@ -1212,17 +1198,16 @@ export function TrajectoryInspector({
                   </span>
                 )}
               </span>
-              <label data-tip="take out runs of the same command, the site's routine commands (ui.routine_commands), and the shells that ran nothing else, so the unusual processes stand out">
+              <label data-tip="take out runs of the same command, the site's routine commands, and shells that ran nothing else">
                 <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
                 hide routine
               </label>
               {hide && hid && <span className="nm">{`${fint(hid.routine)} hidden`}</span>}
-              <label data-tip="take out what a person mistyped at a terminal: a name the shell could not find, and a line that failed and was then typed again, corrected (the line that worked says so). An agent's failed calls stay">
+              <label data-tip="take out a person's typos at a terminal: a name the shell could not find, or a failed line typed again corrected; an agent's failed calls stay">
                 <input type="checkbox" checked={typos} onChange={(e) => setTypos(e.target.checked)} />
                 hide typos
               </label>
               {typos && hid && <span className="nm">{`${fint(hid.typos)} hidden`}</span>}
-              <AnnotateControl a={annot} />
               <span className="nm pd-hint">
                 {mode === 'tree'
                   ? 'click a box to open what it started · hover for its command'
@@ -1230,7 +1215,6 @@ export function TrajectoryInspector({
               </span>
             </div>
           )}
-          <LlmPurposes.Provider value={annot.set}>
           {tree && mode === 'tree' && (
             // keyed on what is hidden: hiding moves every parent, so start again over the root
             <ProcDiagram
@@ -1260,7 +1244,6 @@ export function TrajectoryInspector({
               hits={hits}
             />
           )}
-          </LlmPurposes.Provider>
           {tree && (
             <div className="pt-legend">
               <span>

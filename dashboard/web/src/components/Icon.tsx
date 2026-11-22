@@ -63,6 +63,23 @@ const PATHS = {
       {dot(10, 13.4, 0.95)}
     </>
   ),
+  // Security: a padlock, so it is not read as the Risks shield
+  security: (
+    <>
+      <rect x="4.2" y="8.8" width="11.6" height="8.4" rx="1.8" />
+      <path d="M6.8 8.8V6.4a3.2 3.2 0 0 1 6.4 0v2.4" />
+      {dot(10, 12.4, 1.05)}
+      <path d="M10 12.9v1.7" />
+    </>
+  ),
+  // HPC: a compute chip, for the cluster the scheduler hands out
+  hpc: (
+    <>
+      <rect x="5" y="5" width="10" height="10" rx="1.6" />
+      <rect x="8" y="8" width="4" height="4" rx="0.6" />
+      <path d="M7.6 2.6v2.4M12.4 2.6v2.4M7.6 15v2.4M12.4 15v2.4M2.6 7.6h2.4M2.6 12.4h2.4M15 7.6h2.4M15 12.4h2.4" />
+    </>
+  ),
   // the login nodes: a rack of two hosts
   nodes: (
     <>
@@ -88,12 +105,6 @@ const PATHS = {
       {dot(7, 9.2, 0.95)}
       {dot(10, 9.2, 0.95)}
       {dot(13, 9.2, 0.95)}
-    </>
-  ),
-  events: (
-    <>
-      <circle cx="8.8" cy="8.8" r="5.2" />
-      <path d="M12.6 12.6L17 17" />
     </>
   ),
   internal: (

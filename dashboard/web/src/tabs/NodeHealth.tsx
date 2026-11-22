@@ -46,11 +46,11 @@ const NODE_COLS: { k: string; lbl: string; tip?: string; get: (h: NodeHost) => n
   { k: 'mem_used_pct', lbl: 'memory used', tip: 'memory in use, of the node’s total', get: (h) => h.mem_used_pct,
     show: (h) => (h.mem_used_pct == null ? DASH : `${pc(h.mem_used_pct)} of ${fmt(h.mem_total_gb)} GB`) },
   { k: 'fork_exec_ms', lbl: 'answers in', get: (h) => h.fork_exec_ms ?? h.getent_ms,
-    tip: `the collector’s own probes, in ms: start a process · stat a local file · look up an account; sorts by the first\n\n${GLOSS.forkexec}\n${GLOSS.statlocal}\n${GLOSS.getent}`,
+    tip: 'start a process · stat a local file · look up an account, in ms; sorts by the first',
     show: (h) => (h.fork_exec_ms == null && h.stat_local_ms == null && h.getent_ms == null ? DASH
       : `${fmt(h.fork_exec_ms)} · ${fmt(h.stat_local_ms)} · ${fmt(h.getent_ms)} ms`) },
   { k: 'd_state_procs', lbl: 'D-state', tip: `${GLOSS.dstate}; hover a count for what they wait in`, get: (h) => h.d_state_procs, show: (h) => fint(h.d_state_procs) },
-  { k: 'logged_in_users', lbl: 'logged in', tip: 'accounts with a terminal login on the node (the w table)',
+  { k: 'logged_in_users', lbl: 'logged in', tip: 'accounts with a terminal login on the node',
     get: (h) => h.logged_in_users, show: (h) => fint(h.logged_in_users) },
   { k: 'throttled_users', lbl: 'held back', tip: 'accounts the kernel held back at their CPU limit between the two newest snapshots',
     get: (h) => h.throttled_users ?? null, show: (h) => fint(h.throttled_users) },
@@ -185,8 +185,8 @@ export function NodeHealth({ P, live }: { P: Panels; live: LiveResponse | null }
                 <SortTh s={s} k="host" first="asc">{nodes.one}</SortTh>
                 <SortTh s={s} k="mountpoint" first="asc">filesystem</SortTh>
                 <SortTh s={s} k="total_gb" num>size</SortTh>
-                <SortTh s={s} k="used_pct" tip={th ? `flagged full at ${th.disk_full_pct}% (node.disk_full_pct)` : undefined}>space used</SortTh>
-                <SortTh s={s} k="inode_used_pct" tip={`${GLOSS.inodes}${th ? `; flagged full at ${th.inode_full_pct}% (node.inode_full_pct)` : ''}`}>file slots used</SortTh>
+                <SortTh s={s} k="used_pct" tip={th ? `flagged full at ${th.disk_full_pct}%` : undefined}>space used</SortTh>
+                <SortTh s={s} k="inode_used_pct" tip={`${GLOSS.inodes}${th ? `; flagged full at ${th.inode_full_pct}%` : ''}`}>file slots used</SortTh>
               </tr>
             </thead>
             <tbody>
@@ -302,7 +302,7 @@ export function NodeHealth({ P, live }: { P: Panels; live: LiveResponse | null }
       emptyWhat={n._error ? `the node snapshot could not be read: ${n._error}` : `no ${nodes.one} has written a snapshot yet`}
       header={
         <span className="wrapctl" style={{ gap: 6 }}>
-          <Term tip={`the node tier’s newest snapshot of each ${nodes.one}: what is true now, not over the window`}>
+          <Term tip={`each ${nodes.one}’s newest snapshot: now, not over the window`}>
             <span className="nm">now</span>
           </Term>
           <Segmented value={view} onChange={(v) => { setView(v); setAll(false); }} options={options} wrap />

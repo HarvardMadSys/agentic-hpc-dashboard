@@ -18,6 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from rc_dashboard import __main__ as cli            # noqa: E402
 from rc_dashboard import config as configmod        # noqa: E402
 
 DASH = str(Path(__file__).resolve().parents[1])
@@ -155,6 +156,20 @@ class WhoMayConnect(Case):
                 self.assertIn("server.%s" % key, self.refused({"server": {key: [1]}}))
 
 
+class SlurmAbnormal(Case):
+    def test_each_threshold_is_a_count_and_the_reducer_s_defaults_are_the_config_s(self):
+        from rc_dashboard.reducers.slurm import ABNORMAL
+        self.assertEqual(configmod.defaults()["reducers"]["slurm"]["abnormal"], ABNORMAL)
+        cfg, _ = self.load({"reducers": {"slurm": {"abnormal": {"refused": 1}}}})
+        # one changed, the rest kept: objects merge key by key
+        self.assertEqual(cfg.get("reducers.slurm.abnormal"), dict(ABNORMAL, refused=1))
+        for key in ("cancels", "poll_gap_s"):
+            for bad in (0, -3, "5", 2.5, True, None):
+                with self.subTest(key=key, bad=bad):
+                    self.assertIn("reducers.slurm.abnormal." + key, self.refused(
+                        {"reducers": {"slurm": {"abnormal": {key: bad}}}}))
+
+
 class Passthrough(Case):
     def test_names_and_prefixes_for_the_agents_environment(self):
         self.assertEqual(configmod.defaults()["ask"]["env_passthrough"], [])
@@ -241,6 +256,101 @@ class UnknownKeys(Case):
         with mock.patch.object(configmod, "HERE", DASH):
             _, err = self.load(path=os.path.join(DASH, "dashboard.config.example.json"))
         self.assertEqual(err, "")
+
+
+class Retired(Case):
+    """The feeds removed once nothing read them (sacct, sacctmgr, the domain and
+    user CSVs): every way there was to set one is named and ignored, never
+    refused, so a unit, a wrapper or a file written for them still starts."""
+
+    def test_a_file_that_sets_one_starts_without_it(self):
+        cfg, err = self.load({"feeds": {"sacct": {"dir": "/n/sacct", "jobs_csv": None},
+                                        "user_actor": {"path": "user.csv"},
+                                        "ebpf": {"days": 3}}})
+        for feed in ("sacct", "user_actor"):
+            self.assertIn("feeds.%s is retired" % feed, err)
+        self.assertNotIn("is not a setting", err)
+        # dropped, so neither /api/config nor a saved build's fingerprint holds it
+        self.assertEqual(sorted(cfg.as_dict()["feeds"]), ["ebpf", "ebpf_node"])
+        self.assertEqual(cfg.get("feeds.ebpf.days"), 3)
+
+    def test_a_variable_that_set_one_is_named_and_ignored(self):
+        env = {"RC_DASH_SACCT_DIR": "/n/sacct", "RC_DASH_DOMAINS_CSV": "map_user.csv",
+               "RC_USER_CSV": "user.csv"}
+        with mock.patch.dict(os.environ, env):
+            cfg, err = self.load({})
+        for var in env:
+            self.assertIn("%s is retired" % var, err)
+        self.assertEqual(sorted(cfg.as_dict()["feeds"]), ["ebpf", "ebpf_node"])
+
+    def test_every_variable_there_was_is_named(self):
+        self.assertEqual(len(configmod.RETIRED_ENV), 9)
+        for var in configmod.RETIRED_ENV:
+            with self.subTest(var=var), mock.patch.dict(os.environ, {var: "x"}):
+                _, err = self.load({})
+                self.assertIn("%s is retired" % var, err)
+
+    def test_a_flag_that_set_one_is_taken_named_and_ignored(self):
+        ap = cli.build_parser()
+        self.assertNotIn("--sacct-dir", ap.format_help())
+        self.assertNotIn("--jobs-csv", ap.format_help())
+        args = ap.parse_args(["--sacct-dir", "/n/sacct", "--jobs-csv", "jobs.csv"])
+        err = io.StringIO()
+        with redirect_stderr(err):
+            cfg = configmod.load(args, self.write({}))
+        self.assertIn("--sacct-dir is retired", err.getvalue())
+        self.assertIn("--jobs-csv is retired", err.getvalue())
+        self.assertEqual(sorted(cfg.as_dict()["feeds"]), ["ebpf", "ebpf_node"])
+
+
+class RetiredSections(Case):
+    """The sections of features since removed (`annotate`, the tool-call purposes
+    a model wrote; `export`, the Search & export tab's download): a file or a
+    variable written for one is named and ignored, never refused, and nothing of
+    it is served -- a key it held included."""
+
+    KEY = "sk-ant-api03-EXAMPLEEXAMPLEEXAMPLE0123"
+    # each section as a site's file may still hold it
+    FILE = {"annotate": {"enabled": True, "provider": "command", "api_key": KEY,
+                         "command": ["env", "ANTHROPIC_API_KEY=" + KEY, "claude", "-p"],
+                         "system_prompt": "token " + KEY, "batch_size": 40},
+            "export": {"max_rows": 100}}
+    # every variable there was to set one, and its section
+    VARS = {"RC_DASH_ANNOTATE": "annotate", "RC_DASH_ANNOTATE_PROVIDER": "annotate",
+            "RC_DASH_ANNOTATE_MODEL": "annotate", "RC_DASH_ANNOTATE_BASE_URL": "annotate",
+            "RC_DASH_ANNOTATE_KEY_ENV": "annotate", "RC_DASH_ANNOTATE_KEY_FILE": "annotate",
+            "RC_DASH_ANNOTATE_CMD": "annotate", "RC_DASH_EXPORT_MAX_ROWS": "export"}
+
+    def test_every_one_is_retired(self):
+        self.assertEqual(sorted(configmod.RETIRED_SECTIONS), sorted(self.FILE))
+        self.assertEqual(configmod.RETIRED_SECTION_ENV, self.VARS)
+        for name in self.FILE:
+            self.assertNotIn(name, configmod.defaults())
+            self.assertFalse([k for k in configmod.ENV_MAP if k.startswith(name + ".")])
+
+    def test_a_file_that_sets_one_starts_without_it(self):
+        cfg, err = self.load(dict(self.FILE, ask={"enabled": False}))
+        for name in self.FILE:
+            self.assertIn("config file %s: %s is retired" % (os.path.join(self.tmp, "c.json"),
+                                                            name), err)
+            self.assertIsNone(cfg.get(name))
+        self.assertNotIn("is not a setting", err)
+        self.assertIs(cfg.get("ask.enabled"), False)
+        # dropped, so neither /api/config nor a saved build's fingerprint holds
+        # it, nor the key it held, which /api/config no longer hides
+        served = cfg.as_dict(with_origins=True)
+        for name in self.FILE:
+            self.assertNotIn(name, served)
+            self.assertNotIn(name, cfg.as_dict())
+        self.assertNotIn(self.KEY, json.dumps(served))
+
+    def test_a_variable_that_set_one_is_named_and_ignored(self):
+        for var, name in sorted(self.VARS.items()):
+            # `maybe`, which a yes/no or a number setting refused: retired, it stops nothing
+            with self.subTest(var=var), mock.patch.dict(os.environ, {var: "maybe"}):
+                cfg, err = self.load({})
+                self.assertIn("warning: %s is retired" % var, err)
+                self.assertIsNone(cfg.get(name))
 
 
 if __name__ == "__main__":

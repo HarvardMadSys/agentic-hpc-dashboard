@@ -27,7 +27,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -43,7 +42,7 @@ from rc_dashboard import app as appmod              # noqa: E402
 from rc_dashboard import anonymize, gz, jsonout     # noqa: E402
 from rc_dashboard import tail                       # noqa: E402
 from rc_dashboard.aggregator import Aggregator      # noqa: E402
-from test_ingest import DAY, NONE, FeedCase, exit_rec, line, totals_rec   # noqa: E402
+from test_ingest import NONE, FeedCase, counted, exit_rec, line, totals_rec   # noqa: E402
 
 
 def old_json(obj):
@@ -204,8 +203,11 @@ class PollTest(FeedCase):
         self.assertEqual(n, m)
         self.assertEqual(n, 1001)
         pa, pb = a.live_payload(1440), b.live_payload(1440)
-        for k in ("now", "events", "rate", "users", "hosts"):
+        for k in ("events", "rate", "users", "hosts"):
             self.assertEqual(pa[k], pb[k], k)
+        # the bins' CPU, which the rate does not carry
+        self.assertEqual(a.live.buckets.series(a.live.classes, "cpu_s", self.now, 86400),
+                         b.live.buckets.series(b.live.classes, "cpu_s", self.now, 86400))
         self.assertEqual(a.norm.stats["schema_versions"], b.norm.stats["schema_versions"])
 
     def test_an_unchanged_file_is_not_opened_again(self):
@@ -308,7 +310,7 @@ class BackfillTest(FeedCase):
         rep = agg.refresh_feeds()["ebpf"]
         self.assertEqual(rep["schema_versions"], {6: 29, 5: 1})
         self.assertEqual(agg.backfill["records"], 30)
-        self.assertEqual(agg.live_payload(1440)["now"]["events"], dict(NONE, agent=20, human=10))
+        self.assertEqual(counted(agg.live_payload(1440)), dict(NONE, agent=20, human=10))
 
 
 class LiveFrameTest(FeedCase):
@@ -319,13 +321,11 @@ class LiveFrameTest(FeedCase):
         agg.backfill_now()
         f1 = agg.live_frame(1440)
         self.assertIs(agg.live_frame(1440), f1)
-        self.assertEqual(json.loads(f1)["payload"]["now"]["events"],
-                         dict(NONE, agent=20, human=10))
+        self.assertEqual(counted(json.loads(f1)["payload"]), dict(NONE, agent=20, human=10))
         self.append("h1.exits.jsonl", [exit_rec(self.now - 1, pid=9)])
         agg.poll_once()
         f2 = agg.live_frame(1440)
-        self.assertEqual(json.loads(f2)["payload"]["now"]["events"],
-                         dict(NONE, agent=21, human=10))
+        self.assertEqual(counted(json.loads(f2)["payload"]), dict(NONE, agent=21, human=10))
         self.assertIsNot(agg.live_frame(1440, max_age_s=0), f2)
 
     def test_only_frames_that_can_be_reused_are_kept(self):

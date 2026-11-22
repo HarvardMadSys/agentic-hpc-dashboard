@@ -56,7 +56,7 @@ export const WindowPlates = memo(function WindowPlates({
   const callIso = shareOfKnown(sb.tool_calls?.agent, 'isolated', sb.states?.tool_call_known ?? CALL_KNOWN);
   const agentSum = cls.includes('agent') ? traj?.summary?.agent : undefined;
   const launch = sb.approval_by_class_sessions?.agent;
-  // a session whose tool calls ran and none was isolated (the Internal tab's sandbox
+  // a session whose tool calls ran and none was isolated (the Security tab's sandbox
   // session verdict); one with no tool call seen is neither
   const sessSb = sb.by_class_sessions?.agent;
   const classSum = (rows: { classes?: Partial<Record<string, number>> }[] | undefined, c: string) =>
@@ -91,11 +91,8 @@ export const WindowPlates = memo(function WindowPlates({
         total={agentSum?.sessions ?? null}
         by={Object.fromEntries(cls.filter((c) => traj?.summary?.[c]).map((c) => [c, traj!.summary![c].sessions]))}
         tip={[
-          GLOSS.session + '; scripts that only probe `codex --version` are not counted',
-          GLOSS.bypass,
-          GLOSS.automode,
-          'not sandboxed: the session ran tool calls and not one ran in a sandbox. ' +
-            'a session with no tool call seen is not counted as either',
+          GLOSS.session,
+          'not sandboxed: none of its tool calls ran in a sandbox; a session with no tool call is neither',
         ].join('\n\n')}
         note={riskLine(launch, sessSb ? sessSb.unsandboxed ?? 0 : null)}
       />
@@ -104,7 +101,7 @@ export const WindowPlates = memo(function WindowPlates({
         total={cls.includes('agent') && risk._present ? riskyAgent : null}
         alarm={(riskyAgent ?? 0) > 0}
         by={riskyBy}
-        tip="commands this site's rules flag (rm -rf on a shared path, builds where they should not run, bulk downloads, …), plus credentials written into a command line"
+        tip="commands this site's rules flag, and credentials typed into a command line"
         note={
           ([hasDg ? `${fint(dgAgent)} commands that should not run here` : null,
             hasSec ? `${fint(secAgent)} credentials on a command line` : null]

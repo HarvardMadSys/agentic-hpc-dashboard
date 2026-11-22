@@ -25,8 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rc_dashboard import feedparquet as fp         # noqa: E402
 from rc_dashboard import history, replica, snapshots, windows   # noqa: E402
 from rc_dashboard.aggregator import Aggregator     # noqa: E402
-from rc_dashboard.export import (make_predicate, parse_filters, scan,   # noqa: E402
-                                 window_plan, window_scan)
+from rc_dashboard.export import window_plan, window_scan   # noqa: E402
 from rc_dashboard.normalize import Normalizer      # noqa: E402
 from rc_dashboard.windows import EVENTS, ViewFilter, WindowRegistry    # noqa: E402
 from test_ingest import FeedCase, exit_rec, line, stamp    # noqa: E402
@@ -115,10 +114,9 @@ class ScanTest(CacheCase):
         # The saved offset stops before the fragment, so a resume reads it whole.
         self.assertEqual(plan[0]["end"], os.path.getsize(self.path("h1.exits.jsonl")) - 25)
 
-    def test_lines_and_records_no_reader_can_read_fail_no_build_or_query(self):
+    def test_lines_and_records_no_reader_can_read_fail_no_build(self):
         # `null`, `[]` and `0` lines and an exit whose `args` is a list: a
-        # window's build raised at each, on every retry, and so did an events
-        # query that met one.
+        # window's build raised at each, on every retry.
         recs = [varied_exit(self.now - 3600 + 60 * i, i) for i in range(12)]
         bad = varied_exit(self.now - 3600 + 60 * 6, 90)
         bad["args"] = ["make", "all"]
@@ -129,11 +127,6 @@ class ScanTest(CacheCase):
             self.write_raw("h1.exits.jsonl", b"".join(map(line, recs[:6])) + b"null\n[]\n0\n"
                            + line(bad) + b"".join(map(line, recs[6:])))
             self.assertEqual(self.build(self.registry()).payload["tool_mix"], want)
-        pred = make_predicate(parse_filters({"event": ["exit"]}))
-        for newest_first in (True, False):
-            got = [r["pid"] for r, _s, _m in scan([self.root], Normalizer(self.cfg()), pred,
-                                                  newest_first=newest_first)]
-            self.assertEqual(sorted(got), sorted(r["pid"] for r in recs))
 
     def test_on_a_pinned_clock_a_build_is_still_timed(self):
         # `clock.as_of` freezes time.time: a build's elapsed runs on a clock that moves
@@ -869,7 +862,9 @@ def _reducers():
 class FingerprintTest(unittest.TestCase):
 
     def test_every_module_a_saved_build_counts_with_is_in_its_fingerprint(self):
-        # Out on purpose: the hours, which a saved build never holds, feeds.py,
+        # The hours are in: a filtered build's exits take the own figures they
+        # worked out (`hours.OwnFigures`). Out on purpose: clock.py, which says
+        # which hours are closed, feeds.py,
         # which finds the day-files whose roots the fingerprint holds,
         # anonymize.py, whose home patterns the trajectories read only to name
         # a task's project when a read builds a phase block (`_phase_cache`,
@@ -877,7 +872,7 @@ class FingerprintTest(unittest.TestCase):
         # panels a build served and nothing a build reads, and keysearch.py, the
         # session inspector's read fanned out over worker processes, which reads
         # what proctree's own read does and nothing any saved state holds.
-        out = {"hours.py", "feeds.py", "anonymize.py", "payloads.py", "keysearch.py"}
+        out = {"clock.py", "feeds.py", "anonymize.py", "payloads.py", "keysearch.py"}
         got = _reached(["normalize.py", "export.py", "windows.py", "snapshots.py",
                         "redact.py"] + sorted(_reducers()), out)
         self.assertEqual(got - set(snapshots.CODE_FILES) - _reducers() - out, set())
@@ -914,9 +909,10 @@ class FingerprintTest(unittest.TestCase):
     def test_what_decides_an_hour_decides_a_saved_build(self):
         # A saved build and a saved hour hold the state of the same normaliser
         # and reducers, so a module that changes what an hour means changes
-        # what a saved build means. hours.py itself decides only the hours.
+        # what a saved build means. hours.py too: a filtered build's exits
+        # took the own figures the hours worked out (`hours.OwnFigures`).
         from rc_dashboard import hours
-        self.assertEqual(set(hours.CODE_FILES) - set(snapshots.CODE_FILES), {"hours.py"})
+        self.assertEqual(set(hours.CODE_FILES) - set(snapshots.CODE_FILES), set())
 
 
 if __name__ == "__main__":
