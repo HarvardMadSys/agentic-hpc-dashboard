@@ -381,14 +381,6 @@ class ToolCallTest(unittest.TestCase):
         self.assertEqual(self.sessions(recs), [("auto", {}), ("bypassed", {"not_isolated": 1}),
                                                ("supervised", {})])
 
-    def test_the_wrapper_reading_is_not_called_a_probe(self):
-        recs = [root_tick(self.t0, 100)] + bwrap_call(self.t0, 100, 300)
-        rows = reduce(recs)["sandbox"]["ancestry_matrix"]
-        wr = [r for r in rows if r["kind"] == "wrapper"]
-        self.assertTrue(wr)
-        for r in rows:
-            self.assertNotIn("probe", r["reading"] or "")
-
     def test_session_state_rules(self):
         self.assertEqual(session_state({}), "no_calls")
         self.assertEqual(session_state({"unknown": 2}), "unknown")

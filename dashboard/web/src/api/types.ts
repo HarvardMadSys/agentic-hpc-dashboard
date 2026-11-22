@@ -545,7 +545,6 @@ export interface ResClassBlock {
   cpu_s: number | null;
   sched_run_s: Accum;
   sched_wait_s: Accum;
-  schedstat_ratio: number | null;
   quants: Record<string, Quant>;
   /** metric -> the process behind its max */
   top?: Record<string, MaxProcess>;
@@ -630,16 +629,6 @@ export type ApprovalState = 'bypassed' | 'auto' | 'supervised' | 'unobservable' 
  *  app: `desktop`, `extension`, `web`. */
 export type Surface = 'terminal' | 'script' | 'desktop' | 'extension' | 'web' | 'unknown';
 
-export interface AncestryRow {
-  ancestry: string;
-  /** `wrapper` (bwrap / codex-linux-sandbox, read before it unshares) or `process` */
-  kind: 'wrapper' | 'process';
-  sandbox: SandboxState;
-  n: number;
-  dstate_wait_s: number | null;
-  dstate_coverage_pct: number | null;
-  reading: string | null;
-}
 export interface SandboxSessionRow {
   host: string;
   pid: number | null;
@@ -680,10 +669,6 @@ export interface Sandbox extends PanelEnvelope {
   sessions: SandboxSessionRow[];
   sessions_total: number;
   launch_modes: LaunchModeRow[];
-  ancestry_matrix: AncestryRow[];
-  sandbox_src: Record<string, number>;
-  sandbox_detail: Record<string, unknown>;
-  agent_only: Record<string, unknown>;
   below_capped?: number;
   states: {
     sandbox: string[];

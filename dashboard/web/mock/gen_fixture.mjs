@@ -465,23 +465,20 @@ function resourceSeries(nowEpoch) {
 
 function resources(nowEpoch) {
   const by_class = {};
-  /* events, cpu_s, sched_run_s, sched_wait_s, and schedstat_ratio: as the service
-     computes it (reducers/resources.py), the median over processes with more than
-     1 s of CPU of cpu_s / sched_run_s -- two clocks of the same time, so near 1. */
+  /* events, cpu_s, sched_run_s, sched_wait_s */
   const shape = {
-    agent: [4_812_446, 91_244.8, 62_118.4, 188_442.6, 1.004],
-    'ide': [1_964_118, 48_611.2, 31_884.2, 44_118.8, 0.998],
-    human: [384_902, 26_408.4, 18_442.6, 9_884.2, 1.001],
+    agent: [4_812_446, 91_244.8, 62_118.4, 188_442.6],
+    'ide': [1_964_118, 48_611.2, 31_884.2, 44_118.8],
+    human: [384_902, 26_408.4, 18_442.6, 9_884.2],
   };
   for (const c of CLASSES) {
-    const [events, cpu, run, wait, ratio] = shape[c];
+    const [events, cpu, run, wait] = shape[c];
     const cov = c === 'agent' ? 58.4 : c === 'ide' ? 31.2 : 12.6;
     by_class[c] = {
       events,
       cpu_s: cpu,
       sched_run_s: accum(run, Math.round((events * cov) / 100), cov),
       sched_wait_s: accum(wait, Math.round((events * cov) / 100), cov),
-      schedstat_ratio: ratio,
       quants: {
         cpu_s: quant(events, [0.001, 0.002, 0.006, 0.028, 0.184, 4.82, 3_118.4, 0.019], 100, events > 2_000_000),
         peak_rss_mb: quant(events, [1.8, 2.9, 5.4, 18.2, 84.6, 1_218.4, 41_882.6, 42.1], 96.8),
@@ -564,18 +561,6 @@ function sandbox() {
       { agent_type: 'codex', approval: 'unobservable', detail: 'app-server', n: 2 },
       { agent_type: 'claude_code', approval: 'supervised', detail: 'permission-mode=default', n: 1 },
     ],
-    ancestry_matrix: [
-      { ancestry: 'none', kind: 'process', sandbox: 'unsandboxed', n: 1_793_263, dstate_wait_s: 434.2, dstate_coverage_pct: 100, reading: null },
-      { ancestry: 'none', kind: 'process', sandbox: 'unknown', n: 18_704, dstate_wait_s: 4.0, dstate_coverage_pct: 100, reading: null },
-      { ancestry: 'bwrap', kind: 'process', sandbox: 'sandboxed', n: 4_118, dstate_wait_s: 12.4, dstate_coverage_pct: 100, reading: 'under a sandbox wrapper, sandboxed' },
-      { ancestry: 'bwrap', kind: 'wrapper', sandbox: 'unsandboxed', n: 125, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'the wrapper itself: says nothing about the call it wraps; see the tool-call outcomes' },
-      { ancestry: 'codex-linux-sandbox', kind: 'wrapper', sandbox: 'unsandboxed', n: 51, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'the wrapper itself: says nothing about the call it wraps; see the tool-call outcomes' },
-      { ancestry: 'none', kind: 'process', sandbox: 'sandboxed', n: 16, dstate_wait_s: 0, dstate_coverage_pct: 100, reading: 'in its own namespaces with no sandbox wrapper above it (a container, apptainer, a systemd unit, or a reused pid inheriting one): not an agent sandbox' },
-      { ancestry: 'none', kind: 'process', sandbox: 'denied', n: 417, dstate_wait_s: null, dstate_coverage_pct: 0, reading: null },
-    ],
-    sandbox_src: { inherit: 1_791_285, 'none:tick': 1_938, 'userns:exec': 41, 'none:exec': 161, denied: 417 },
-    sandbox_detail: { nnp: 22, 'seccomp=2': 16, mnt: 41, net: 41, user: 41 },
-    agent_only: { agent: [{ sandbox: 'unsandboxed', approval: 'na', n: 20_412 }] },
     below_capped: 0,
     states: {
       sandbox: ['sandboxed', 'unsandboxed', 'denied', 'unknown'],

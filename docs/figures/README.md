@@ -365,7 +365,7 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
 | LV-8 | chart: CPU seconds per minute | BUILD | `resources.series.by_class[c].cpu_s` | `ResourceReducer._series_add`, `series` · `tabs/LiveCharts.tsx:WindowCharts`, `charts/TimeChart.tsx:TimeChart` |
 | LV-9 | chart: memory; table: peak and average | BUILD | `resources.series.resident[c].rss_mb` | `ResourceReducer._tick`, `series` · `tabs/LiveCharts.tsx:WindowCharts` |
 | LV-10 | charts: login node response | NODEHIST | `node.series` | `nodehist.py:NodeHistory.series` · `tabs/NodeResponse.tsx:NodeResponse` |
-| LV-11 | chart: runqueue wait; table: run and wait | BUILD | `series.by_class[c].sched_wait_s`; `by_class[c].sched_run_s`, `sched_wait_s`, `schedstat_ratio` | `ResourceReducer.feed`, `series`, `result` · `tabs/LiveCharts.tsx:WindowCharts` |
+| LV-11 | chart: runqueue wait; table: run and wait | BUILD | `series.by_class[c].sched_wait_s`; `by_class[c].sched_run_s`, `sched_wait_s` | `ResourceReducer.feed`, `series`, `result` · `tabs/LiveCharts.tsx:WindowCharts` |
 | LV-12 | chart: D-state by tool; table: every tool that stalled | BUILD | `series.stall_by_tool`, `series.stall_other`; `stall_by_tool` | `ResourceReducer._series_add`, `result` · `tabs/LiveCharts.tsx:WindowCharts` |
 | LV-13 | chart: major page faults | BUILD | `series.by_class[c].maj_flt` | `ResourceReducer.series` · `tabs/LiveCharts.tsx:WindowCharts` |
 | LV-14 | charts: disk read, disk written | BUILD; a point opens IOCMDS | `series.by_class[c]`: `rd_mb`, `rchar_mb`, `wr_mb`, `wchar_mb` | `ResourceReducer.series` · `tabs/LiveCharts.tsx:WindowCharts` |
@@ -507,12 +507,11 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
 
 #### LV-11 runqueue wait, and run and wait
 
-- **Shows:** runqueue wait per minute by class; run and wait time, CPU-to-run ratio.
-- **Records:** `exit`: `sched_wait_s`, `sched_run_s`, `cpu_s`.
+- **Shows:** runqueue wait per minute by class; run and wait time.
+- **Records:** `exit`: `sched_wait_s`, `sched_run_s`.
 - **Computation:** the series as LV-8; the table is an accumulator per class
-  (`reducers/__init__.py:Acc`: sum, present count, coverage) of `sched_run_s` and `sched_wait_s`, and
-  `schedstat_ratio`, the median of `cpu_s / sched_run_s` over the processes with more than 1 s of CPU.
-- **Cost:** the ratio keeps one float per such process per class, unbounded, sorted at each read.
+  (`reducers/__init__.py:Acc`: sum, present count, coverage) of `sched_run_s` and `sched_wait_s`.
+- **Cost:** two accumulator adds a record beside the series' (LV-8); nothing is kept per process.
 
 #### LV-12 D-state by tool, and every tool that stalled
 
@@ -1030,8 +1029,8 @@ and for how the page draws them
 
 ## Security
 
-The checks (SC-1, `tabs/SecurityTab.tsx`), the sandbox panels (SC-2 to SC-7, `tabs/SandboxTab.tsx`)
-and the writes outside the start folder (SC-8); credentials on command lines are checked here and
+The checks (SC-1, `tabs/SecurityTab.tsx`), the sandbox panels (SC-2 to SC-5, `tabs/SandboxTab.tsx`)
+and the writes outside the start folder (SC-6); credentials on command lines are checked here and
 listed on Risks (RI-4). What `sandboxed` and `approval` mean, and why a session is judged by its
 tool calls: [Conventions the panels obey](../../dashboard/README.md#conventions-the-panels-obey).
 
@@ -1042,16 +1041,13 @@ tool calls: [Conventions the panels obey](../../dashboard/README.md#conventions-
 | SC-3 | sandboxed, per process and per session | BUILD | `sandbox.by_class_events`, `by_class_sessions` | `SandboxReducer.feed`, `result` · `tabs/SandboxTab.tsx:AxisBlock` |
 | SC-4 | approval at launch, per session and per process; launch flags as written | BUILD | `sandbox.approval_by_class_sessions`, `approval_by_class_events`, `launch_modes` | `SandboxReducer.feed`, `result` · `tabs/SandboxTab.tsx:AxisBlock`, `SandboxTab` |
 | SC-5 | sandbox wrapper calls, by outcome | BUILD | `sandbox.attempts` | `SandboxReducer._sessions` · `tabs/SandboxTab.tsx:SandboxTab` |
-| SC-6 | processes by sandbox wrapper, kind and sandbox state | BUILD | `sandbox.ancestry_matrix` | `SandboxReducer.feed`, `result`; `sandbox.py:_reading` · `tabs/SandboxTab.tsx:SandboxTab` |
-| SC-7 | when each process was checked | BUILD | `sandbox.sandbox_src` | `SandboxReducer.feed` · `tabs/SandboxTab.tsx:SandboxTab` |
-| SC-8 | writes outside the start folder: by kind of place; by user | BUILD | `cascades.workspace.agents[].self`: `summary.outside`, `summary.roots`, `flags` | `reducers/workspace.py:WorkspaceReducer.view`; `CascadeReducer._workspace` · `tabs/SecurityTab.tsx:OutsideWrites`, `writersOf`, `placesOf` |
+| SC-6 | writes outside the start folder: by kind of place; by user | BUILD | `cascades.workspace.agents[].self`: `summary.outside`, `summary.roots`, `flags` | `reducers/workspace.py:WorkspaceReducer.view`; `CascadeReducer._workspace` · `tabs/SecurityTab.tsx:OutsideWrites`, `writersOf`, `placesOf` |
 
-Records for the sandbox panels, SC-2 to SC-7: `exit` (each counted once): `_sandbox` (four states),
-`_sandbox_src`, `sandbox_detail`, `_sandbox_ancestry`, `_approval`, `_command` (a wrapper is `bwrap`
-or `codex-linux-san…`), `_role`, `pid`, `ppid`, `host`, `_ts_epoch`, `duration_s`, `exit_code`,
-`signal`, `dstate_wait_s`, `is_agent`, `agent_pid`, `tree_root_pid`, `agent_type`, `user`; and each
-agent root's own record of any kind, `truncated`, `residency`, `conn` and `netio` among them, for its
-launch (`_approval`, `_approval_detail`).
+Records for the sandbox panels, SC-2 to SC-5: `exit` (each counted once): `_sandbox` (four states),
+`_approval`, `_command` (a wrapper is `bwrap` or `codex-linux-san…`), `_role`, `pid`, `ppid`,
+`host`, `_ts_epoch`, `duration_s`, `exit_code`, `signal`, `agent_pid`, `tree_root_pid`,
+`agent_type`, `user`; and each agent root's own record of any kind, `truncated`, `residency`, `conn`
+and `netio` among them, for its launch (`_approval`, `_approval_detail`).
 
 #### SC-1 security checks
 
@@ -1063,7 +1059,7 @@ launch (`_approval`, `_approval_detail`).
   whose launch flags are readable; confinement is SC-2's agent tool calls not sandboxed, with the
   share sandboxed of those whose outcome is known, and the sandboxes that failed to start, of
   SC-5's wrapper calls; exposure is RI-4's matches summed over each credentials section, per class;
-  reach is `cascades.workspace.summary`'s `with_outside_writes` and `other_homes`, with SC-8's kinds
+  reach is `cascades.workspace.summary`'s `with_outside_writes` and `other_homes`, with SC-6's kinds
   of place.
   A check whose panel has no body (waited for, still being read, not reduced, not returned), whose
   site counts no credential rule, or with the agent class hidden is *not checked*, and says why:
@@ -1106,18 +1102,7 @@ launch (`_approval`, `_approval_detail`).
 - **Shows:** per wrapper (`bwrap`, `codex-linux-sandbox`), agent type and outcome, the calls.
 - **Computation:** `_sessions` counts the wrapper calls not absorbed by another, by those three.
 
-#### SC-6 processes by sandbox wrapper, kind and sandbox state
-
-- **Shows:** per wrapper above, process kind and sandbox state: processes and D-state wait.
-- **Computation:** a counter per key with summed `dstate_wait_s` and a present count; `_reading`
-  words each row.
-
-#### SC-7 when each process was checked
-
-- **Shows:** each process's namespace answer by when it was read.
-- **Computation:** a counter of `_sandbox_src`.
-
-#### SC-8 writes outside the start folder
+#### SC-6 writes outside the start folder
 
 - **Shows:** the agents that wrote or deleted outside their start folder, by place and by user.
 - **Records:** AG-4's and AG-5's: the paths an agent's commands name, read from the text of its
@@ -1504,7 +1489,6 @@ reach Ask LLM's snapshot or a panel's basis note.
   every classifier-tagged process counted by agent type and role.
 - **`trajectories`' `drift`** (cwd drift and the purpose mix's Jensen-Shannon divergence, per row),
   `dominant_user_share_pct`, `by_key_type`, `by_class_counts`, `fold` and `buffer`.
-- **`sandbox.agent_only` and `sandbox_detail`**: only in SC-6's basis note.
 - **The live frame's `now` block, and the roster's counts** (`users.total`, `users.by_class`,
   `users.with_live_agent`): the last full minute's exits by class, the sessions and processes running
   now, the live agent sessions by launch approval, and the accounts active in the window; in Ask
@@ -1534,8 +1518,8 @@ with the read paths and figures above) and, where nothing was measured, by the w
    tool call of the window, and a portrait makes up to 80 phase blocks; not measured on a real feed.
 7. **Memory, and feeding every view**: every live record is reduced once per held view (at most
    `panels.max_windows`, 5, filtered ones included). Unbounded within the window: the sandbox's tool
-   calls, the tool mix's and I/O's per-tool and per-user maps, the resources' CPU-to-run ratios, the
-   endpoints' addresses, the live tier's submissions.
+   calls, the tool mix's and I/O's per-tool and per-user maps, the endpoints' addresses, the live
+   tier's submissions.
 8. **Making and serving the panels**: every held view's payload is made again each rebuild tick, a
    reducer per lock hold; each `/api/panels` read copies the payload and names and ranks the
    endpoints for every class mix (RE-4). Not measured.

@@ -1900,7 +1900,6 @@
        "coverage_pct": 58.4,
        "mean": 0.0671
       },
-      "schedstat_ratio": 1.004,
       "quants": {
        "cpu_s": {
         "n": 4812446,
@@ -2026,7 +2025,6 @@
        "coverage_pct": 12.6,
        "mean": 0.2038
       },
-      "schedstat_ratio": 1.001,
       "quants": {
        "cpu_s": {
         "n": 384902,
@@ -2152,7 +2150,6 @@
        "coverage_pct": 31.2,
        "mean": 0.072
       },
-      "schedstat_ratio": 0.998,
       "quants": {
        "cpu_s": {
         "n": 1964118,
@@ -7430,94 +7427,6 @@
       "n": 1
      }
     ],
-    "ancestry_matrix": [
-     {
-      "ancestry": "none",
-      "kind": "process",
-      "sandbox": "unsandboxed",
-      "n": 1793263,
-      "dstate_wait_s": 434.2,
-      "dstate_coverage_pct": 100,
-      "reading": null
-     },
-     {
-      "ancestry": "none",
-      "kind": "process",
-      "sandbox": "unknown",
-      "n": 18704,
-      "dstate_wait_s": 4,
-      "dstate_coverage_pct": 100,
-      "reading": null
-     },
-     {
-      "ancestry": "bwrap",
-      "kind": "process",
-      "sandbox": "sandboxed",
-      "n": 4118,
-      "dstate_wait_s": 12.4,
-      "dstate_coverage_pct": 100,
-      "reading": "under a sandbox wrapper, sandboxed"
-     },
-     {
-      "ancestry": "bwrap",
-      "kind": "wrapper",
-      "sandbox": "unsandboxed",
-      "n": 125,
-      "dstate_wait_s": 0,
-      "dstate_coverage_pct": 100,
-      "reading": "the wrapper itself: says nothing about the call it wraps; see the tool-call outcomes"
-     },
-     {
-      "ancestry": "codex-linux-sandbox",
-      "kind": "wrapper",
-      "sandbox": "unsandboxed",
-      "n": 51,
-      "dstate_wait_s": 0,
-      "dstate_coverage_pct": 100,
-      "reading": "the wrapper itself: says nothing about the call it wraps; see the tool-call outcomes"
-     },
-     {
-      "ancestry": "none",
-      "kind": "process",
-      "sandbox": "sandboxed",
-      "n": 16,
-      "dstate_wait_s": 0,
-      "dstate_coverage_pct": 100,
-      "reading": "in its own namespaces with no sandbox wrapper above it (a container, apptainer, a systemd unit, or a reused pid inheriting one): not an agent sandbox"
-     },
-     {
-      "ancestry": "none",
-      "kind": "process",
-      "sandbox": "denied",
-      "n": 417,
-      "dstate_wait_s": null,
-      "dstate_coverage_pct": 0,
-      "reading": null
-     }
-    ],
-    "sandbox_src": {
-     "inherit": 1791285,
-     "none:tick": 1938,
-     "userns:exec": 41,
-     "none:exec": 161,
-     "denied": 417
-    },
-    "sandbox_detail": {
-     "nnp": 22,
-     "seccomp=2": 16,
-     "mnt": 41,
-     "net": 41,
-     "user": 41
-    },
-    "agent_only": {
-     "agent": [
-      {
-       "sandbox": "unsandboxed",
-       "approval": "na",
-       "n": 20412
-      }
-     ]
-    },
     "below_capped": 0,
     "states": {
      "sandbox": [

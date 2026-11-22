@@ -148,23 +148,18 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
                       <SortTh s={sortOf('wait')} k="cls" first="asc">class</SortTh>
                       <SortTh s={sortOf('wait')} k="run" num tip="time on a CPU, summed">run</SortTh>
                       <SortTh s={sortOf('wait')} k="wait" num gloss="runqueue">wait</SortTh>
-                      <SortTh s={sortOf('wait')} k="ratio" num tip="the median of CPU time over run time; far from 1, CPU is counted on another basis">ratio</SortTh>
                     </tr>
                   </thead>
                   <tbody>
                     {sortOf('wait').sort(have, (c, k) =>
                       k === 'cls' ? CLS_LBL[c] ?? c
                       : k === 'run' ? (byClass[c]?.sched_run_s as Accum | undefined)?.total ?? null
-                      : k === 'wait' ? (byClass[c]?.sched_wait_s as Accum | undefined)?.total ?? null
-                      : byClass[c]?.schedstat_ratio ?? null,
+                      : (byClass[c]?.sched_wait_s as Accum | undefined)?.total ?? null,
                     ).map((c) => (
                       <tr key={c}>
                         <td>{CLS_LBL[c] ?? c}</td>
                         <td className="num"><AccumCell a={byClass[c]?.sched_run_s as Accum | undefined} unit="s" /></td>
                         <td className="num"><AccumCell a={byClass[c]?.sched_wait_s as Accum | undefined} unit="s" /></td>
-                        <td className="num">
-                          {byClass[c]?.schedstat_ratio == null ? <span className="nm">not measured</span> : fmt(byClass[c]!.schedstat_ratio, 2)}
-                        </td>
                       </tr>
                     ))}
                   </tbody>

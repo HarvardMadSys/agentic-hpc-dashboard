@@ -9,8 +9,6 @@ cumulative reaped-descendant CPU and is therefore re-counted at every ancestor
 level; analyze/common.py:364 measures the naive `cpu_s + child_cpu_s` sum
 inflating login CPU 1.83x pooled and UNEVENLY by class (agent 1.57x, human
 2.03x, human-vscode 2.38x), which would invert an agent-vs-human comparison.
-`schedstat_ratio` (cpu_s / sched_run_s, median) is emitted so any future
-regression in that basis is visible on the dashboard itself.
 
 `series` puts the same quantities on a time axis, in fixed-width wall-clock
 bins sized to the window (`bin_for`). Two kinds, kept apart because they mean
@@ -108,7 +106,6 @@ class ResourceReducer:
             "delays": {k: Acc() for k in DELAY_FIELDS},
             "dstate": {"events": 0, "wait": Acc(), "episodes": Acc(), "max_s": 0.0,
                        "src": collections.Counter(), "n_with": 0},
-            "ratio": [],
         })
         self.stall_by_tool = collections.defaultdict(
             lambda: {"n": 0, "wait_s": 0.0, "episodes": 0, "max_s": 0.0})
@@ -227,8 +224,6 @@ class ResourceReducer:
                 c["oncpu_aside"] += 1
             else:
                 c["q_oncpu"].add(min(1.0, run / dur))
-        if cpu and cpu > 1.0 and run:
-            c["ratio"].append(cpu / run)
         faults = c["faults"]
         for k in FAULT_FIELDS:
             faults[k].add(rec.get(k))
@@ -369,7 +364,6 @@ class ResourceReducer:
             d["episodes"].merge(od["episodes"])
             d["max_s"] = max(d["max_s"], od["max_s"])
             add_counts(d["src"], od["src"])
-            m["ratio"].extend(c["ratio"])
         for tool, v in o.stall_by_tool.items():
             m = self.stall_by_tool[tool]
             m["n"] += v["n"]
@@ -387,13 +381,11 @@ class ResourceReducer:
     def result(self):
         by_class = {}
         for cls, c in self.cls.items():
-            ratios = sorted(c["ratio"])
             by_class[cls] = {
                 "events": c["events"],
                 "cpu_s": round(c["cpu_s"], 2),
                 "sched_run_s": c["sched_run"].as_dict(),
                 "sched_wait_s": c["sched_wait"].as_dict(),
-                "schedstat_ratio": (round(ratios[len(ratios) // 2], 3) if ratios else None),
                 "quants": {"cpu_s": c["q_cpu"].as_dict(),
                            "peak_rss_mb": c["q_rss"].as_dict(),
                            "sched_wait_s": c["q_wait"].as_dict(),

@@ -551,8 +551,7 @@ mistake once.
   are driven from.
 - **CPU is `sum(cpu_s)`, self time only, counted once per process.** `child_cpu_s` is never added:
   upstream (`analyze/common.py`) the naive sum inflates login CPU 1.83×, *unevenly by class*, which
-  would invert an agent-vs-human comparison. `schedstat_ratio` is emitted so that a regression in
-  that basis shows on the page.
+  would invert an agent-vs-human comparison.
 - **A process is counted once, at its exit.** At each stop the collector writes a `truncated` record
   for every tracked process still running, with its CPU and I/O so far, and the process's exit after
   the restart carries all of it again. So every count and sum uses `exit` records only; a
