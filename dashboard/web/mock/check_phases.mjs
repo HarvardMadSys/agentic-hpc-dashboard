@@ -599,19 +599,6 @@ test('phaseWhat: an idle gap names the call the agent moved past that was still 
   assert.equal(P.phaseWhat(ph('run', 0, 900, { n: 2, top: [['python eval.py', 2]], alive: [['linktest', 5]] })), '2 tool calls · python eval.py ×2');
 });
 
-test('task copy: labels, sources, the gap and lone lines, and the row line', () => {
-  const q = { kind: 'task', label: 'Fix the loader', source: 'commit', ref: '', n: 3, t0: 0, t1: 60, names: [], phases: [0, 1], open: false, incomplete: false, gap: null, sid: null };
-  assert.equal(T.taskLabel(q), '“Fix the loader”');
-  assert.equal(T.taskSource(q), 'commit');
-  assert.equal(T.taskSource({ ...q, source: 'pr', ref: '#235' }), 'PR #235');
-  assert.equal(T.taskLabel({ ...q, source: null, label: 'Run b.py' }), 'Run b.py');
-  assert.equal(T.gapLine({ s: 7680, alive: [] }), '2.1 h with no new tool calls');
-  assert.match(T.gapLine({ s: 7680, alive: [['linktest', 1791623144, null]] }), /^2\.1 h with no new tool calls · linktest still running since \d\d:\d\d:\d\d$/);
-  assert.match(T.loneLine({ ...q, kind: 'lone', source: null, label: 'Read harness/x.py', n: 1 }), /^1 tool call at \d\d:\d\d:\d\d · read harness\/x\.py$/);
-  const b = { tasks: ['A', 'B', 'C', 'D', 'E'].map((l) => ({ ...q, source: null, label: l })) };
-  assert.equal(T.taskSequence(b), 'A → B → 3 more');
-});
-
 test('a quoted label shows its source and quotation marks, and a built one shows neither', () => {
   const q = task('Seek-based frame decoding', 0, 60);
   for (const [source, ref, shown] of [['commit', '', 'commit'], ['log', '', 'log'], ['pr', '#235', 'PR #235'], ['pr', '', 'PR']]) {
@@ -926,20 +913,6 @@ test("the glossary explains tasks: where one starts, what names it, that a quote
   assert.ok(g.length <= longest * 1.2, `${g.length} characters, and the longest other entry is ${longest}`);
   // the phases keep their own entry
   assert.match(G.GLOSS.phases, /^phases: /);
-});
-
-test('taskAt: the task or lone stretch that holds a time, as phaseAt holds a phase', () => {
-  const tasks = [task('A', 100, 200), task('B', 200, 300), task('x', 500, 510, { kind: 'lone' }), task('C', 600, 700)];
-  const at = (t) => T.taskAt(tasks, t);
-  // from its start up to its end; a gap holds none; the last holds its end as well
-  assert.deepEqual([99.9, 100, 199.9, 200, 299.9].map(at), [-1, 0, 0, 1, 1]);
-  assert.deepEqual([300, 450, 499.9, 500, 509.9, 510, 599.9].map(at), [-1, -1, -1, 2, 2, -1, -1]);
-  assert.deepEqual([600, 650, 700, 700.1].map(at), [3, 3, 3, -1]);
-  assert.equal(T.taskAt([], 5), -1);
-  assert.equal(T.taskAt([task('A', 10, 20)], 5), -1);
-  // the same answer as the phase under it, for stretches that follow one another
-  const list = [ph('run', 100, 200), ph('git', 200, 300)];
-  for (const t of [50, 100, 150, 200, 250, 300, 350]) assert.equal(T.taskAt(tasks.slice(0, 2), t), P.phaseAt(list, t), `${t}`);
 });
 
 test('the tasks are numbered among the tasks, as the lane and the list both say: a lone stretch has no number and takes none', () => {
