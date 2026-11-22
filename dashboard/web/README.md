@@ -94,8 +94,7 @@ Research-integrity constraints: breaking one is a reporting error, not a styling
 
 1. **Three classes, never two**: `agent` / `human` / `ide` (+ `unlabeled`), a closed list in
    `src/lib/classes.ts`, labelled `agent` / `human` / `IDE` in full. `<Plate>` prints its
-   per-class row from `by`; only a plate about agents alone (on Users, and on Security's sandbox
-   panels) leaves it out.
+   per-class row from `by`; only a plate about agents alone (on Users) leaves it out.
 2. **Count and cost side by side**: every categorical panel goes through `<CountCost>`, an
    event-weighted and a CPU-weighted chart, each on its own single axis. `GroupBars` and `Lines`
    take one `ylabel`, so a dual axis is not expressible.

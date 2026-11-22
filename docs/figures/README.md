@@ -410,22 +410,24 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
 
 - **Shows:** agent sessions (probes left out), and how they were launched and confined.
 - **Records:** for sessions, `exit` (`_sid`, `_kt`, `_kv`, `_a3`, `_ts_epoch`) and each root's own
-  record (role `agent`, `pid == agent_pid`); for the launch line, as SC-3 and SC-5.
+  record (role `agent`, `pid == agent_pid`); for the launch line, as SC-2 and SC-4.
 - **Computation:** `TrajectoryReducer.summary` counts each folded session whose last record is in
   the window and, for agents, whose root was seen (`rooted`; an agent-class key with no root is a
   probe, counted apart). The launch line is `SandboxReducer.result`'s sessions by approval at launch
   and by their tool calls' verdict (`session_state`).
 - **Cost:** the summary walks every session of the window each time `trajectories` is made (SE-2);
-  the sandbox walks every tool call of the window each time its payload is made (SC-3).
+  the sandbox walks every tool call of the window each time its payload is made (SC-2).
 
 #### LV-4 risky agent actions
 
-- **Shows:** dangerous-command and credential matches by class; SC-2's sandbox line.
+- **Shows:** dangerous-command and credential matches by class; agent tool calls sandboxed, and
+  sandboxes that failed to start.
 - **Records:** `exit`: `_eff` or `_command`, `args`, `_a3`, `user`, `host`, `agent_type`, `cpu_s`,
   `exit_code`, `signal`.
 - **Computation:** `RiskReducer.feed` tests `"<tool> <args>"` against every rule a section shows
   (`_matches`: a literal gate, then the regex; the verdict cached per tool and argv); the plate sums
-  the rule rows' `classes` over the commands and credentials sections. The sandbox line is SC-2's.
+  the rule rows' `classes` over the commands and credentials sections. The sandbox line is SC-1's
+  confinement checks, from SC-2's agent tool calls.
 - **Cost:** a cache lookup a record and, on a miss, one regex search per rule whose gate passes. The
   cache holds 50,000 command lines and is cleared when full; uncached, matching was half of a window
   build (`risk.py`).
@@ -1028,24 +1030,23 @@ and for how the page draws them
 
 ## Security
 
-The checks (SC-1, `tabs/SecurityTab.tsx`), the sandbox panels (SC-2 to SC-8, `tabs/SandboxTab.tsx`)
-and the writes outside the start folder (SC-9); credentials on command lines are checked here and
+The checks (SC-1, `tabs/SecurityTab.tsx`), the sandbox panels (SC-2 to SC-7, `tabs/SandboxTab.tsx`)
+and the writes outside the start folder (SC-8); credentials on command lines are checked here and
 listed on Risks (RI-4). What `sandboxed` and `approval` mean, and why a session is judged by its
 tool calls: [Conventions the panels obey](../../dashboard/README.md#conventions-the-panels-obey).
 
 | | figure | path | payload | code (service · page) |
 |---|---|---|---|---|
 | SC-1 | list: security checks | BUILD | `sandbox`, `risk.sections`, `risk.secrets`, `cascades.workspace` | (no reducer of its own) · `tabs/SecurityTab.tsx:securityChecks`, `SecurityChecks` |
-| SC-2 | plates: agent tool calls sandboxed, sandboxes failed to start, sessions launched with a bypass flag | BUILD | `sandbox.tool_calls`, `attempts`, `approval_by_class_sessions` | `reducers/sandbox.py:SandboxReducer.result` · `tabs/SandboxTab.tsx:SandboxTab` |
-| SC-3 | tool calls: did they run sandboxed? (outcomes; sessions by user) | BUILD | `sandbox.tool_calls`, `sessions`, `sessions_total` | `SandboxReducer._calls`, `_sessions`, `result`; `sandbox.py:session_state` · `tabs/SandboxTab.tsx:AxisBlock`, `SessionTable` |
-| SC-4 | sandboxed, per process and per session | BUILD | `sandbox.by_class_events`, `by_class_sessions` | `SandboxReducer.feed`, `result` · `tabs/SandboxTab.tsx:AxisBlock` |
-| SC-5 | approval at launch, per session and per process; launch flags as written | BUILD | `sandbox.approval_by_class_sessions`, `approval_by_class_events`, `launch_modes` | `SandboxReducer.feed`, `result` · `tabs/SandboxTab.tsx:AxisBlock`, `SandboxTab` |
-| SC-6 | sandbox wrapper calls, by outcome | BUILD | `sandbox.attempts` | `SandboxReducer._sessions` · `tabs/SandboxTab.tsx:SandboxTab` |
-| SC-7 | processes by sandbox wrapper, kind and sandbox state | BUILD | `sandbox.ancestry_matrix` | `SandboxReducer.feed`, `result`; `sandbox.py:_reading` · `tabs/SandboxTab.tsx:SandboxTab` |
-| SC-8 | when each process was checked | BUILD | `sandbox.sandbox_src` | `SandboxReducer.feed` · `tabs/SandboxTab.tsx:SandboxTab` |
-| SC-9 | writes outside the start folder: by kind of place; by user | BUILD | `cascades.workspace.agents[].self`: `summary.outside`, `summary.roots`, `flags` | `reducers/workspace.py:WorkspaceReducer.view`; `CascadeReducer._workspace` · `tabs/SecurityTab.tsx:OutsideWrites`, `writersOf`, `placesOf` |
+| SC-2 | tool calls: did they run sandboxed? (outcomes; sessions by user) | BUILD | `sandbox.tool_calls`, `sessions`, `sessions_total` | `SandboxReducer._calls`, `_sessions`, `result`; `sandbox.py:session_state` · `tabs/SandboxTab.tsx:AxisBlock`, `SessionTable` |
+| SC-3 | sandboxed, per process and per session | BUILD | `sandbox.by_class_events`, `by_class_sessions` | `SandboxReducer.feed`, `result` · `tabs/SandboxTab.tsx:AxisBlock` |
+| SC-4 | approval at launch, per session and per process; launch flags as written | BUILD | `sandbox.approval_by_class_sessions`, `approval_by_class_events`, `launch_modes` | `SandboxReducer.feed`, `result` · `tabs/SandboxTab.tsx:AxisBlock`, `SandboxTab` |
+| SC-5 | sandbox wrapper calls, by outcome | BUILD | `sandbox.attempts` | `SandboxReducer._sessions` · `tabs/SandboxTab.tsx:SandboxTab` |
+| SC-6 | processes by sandbox wrapper, kind and sandbox state | BUILD | `sandbox.ancestry_matrix` | `SandboxReducer.feed`, `result`; `sandbox.py:_reading` · `tabs/SandboxTab.tsx:SandboxTab` |
+| SC-7 | when each process was checked | BUILD | `sandbox.sandbox_src` | `SandboxReducer.feed` · `tabs/SandboxTab.tsx:SandboxTab` |
+| SC-8 | writes outside the start folder: by kind of place; by user | BUILD | `cascades.workspace.agents[].self`: `summary.outside`, `summary.roots`, `flags` | `reducers/workspace.py:WorkspaceReducer.view`; `CascadeReducer._workspace` · `tabs/SecurityTab.tsx:OutsideWrites`, `writersOf`, `placesOf` |
 
-Records for the sandbox panels, SC-2 to SC-8: `exit` (each counted once): `_sandbox` (four states),
+Records for the sandbox panels, SC-2 to SC-7: `exit` (each counted once): `_sandbox` (four states),
 `_sandbox_src`, `sandbox_detail`, `_sandbox_ancestry`, `_approval`, `_command` (a wrapper is `bwrap`
 or `codex-linux-san…`), `_role`, `pid`, `ppid`, `host`, `_ts_epoch`, `duration_s`, `exit_code`,
 `signal`, `dstate_wait_s`, `is_agent`, `agent_pid`, `tree_root_pid`, `agent_type`, `user`; and each
@@ -1058,22 +1059,18 @@ launch (`_approval`, `_approval_detail`).
 - **Records:** none of its own: the window's `sandbox`, `risk` and `cascades` panels (BUILD).
 - **Computation:** in the page (`securityChecks`), with no threshold of its own: each line is a state
   the service assigns or a rule it applies, so the list and its panels cannot disagree. Launch is
-  SC-5's agent sessions by approval at launch, a bypass flag and auto mode each a share of those
-  whose launch flags are readable; confinement is SC-3's agent tool calls not sandboxed, with the
-  share sandboxed as SC-2 prints it, and the sandboxes that failed to start, of SC-6's wrapper calls;
-  exposure is RI-4's matches summed over each credentials section, per class; reach is
-  `cascades.workspace.summary`'s `with_outside_writes` and `other_homes`, with SC-9's kinds of place.
+  SC-4's agent sessions by approval at launch, a bypass flag and auto mode each a share of those
+  whose launch flags are readable; confinement is SC-2's agent tool calls not sandboxed, with the
+  share sandboxed of those whose outcome is known, and the sandboxes that failed to start, of
+  SC-5's wrapper calls; exposure is RI-4's matches summed over each credentials section, per class;
+  reach is `cascades.workspace.summary`'s `with_outside_writes` and `other_homes`, with SC-8's kinds
+  of place.
   A check whose panel has no body (waited for, still being read, not reduced, not returned), whose
   site counts no credential rule, or with the agent class hidden is *not checked*, and says why:
   never none, never 0.
 - **Cost:** none past its payloads'.
 
-#### SC-2 plates
-
-- **Shows:** agent tool calls sandboxed, sandboxes failed, sessions with a bypass flag, as shares.
-- **Computation:** SC-3's, SC-6's and SC-5's counts, divided in the page over the known states.
-
-#### SC-3 tool calls: did they run sandboxed?
+#### SC-2 tool calls: did they run sandboxed?
 
 - **Shows:** agent tool calls by outcome, by class; the sessions that made them, by user.
 - **Computation:** `SandboxReducer._calls` reads an agent's exits bottom up: a child reports to its
@@ -1089,38 +1086,38 @@ launch (`_approval`, `_approval_detail`).
   (`portraits.inputs`) walk them again (`agent_calls`). The slots and their calls are carried from
   hour to hour when merging.
 
-#### SC-4 sandboxed, per process and per session
+#### SC-3 sandboxed, per process and per session
 
 - **Shows:** per class, processes by namespace state and sessions by verdict.
 - **Computation:** a counter per class of each counted record's `_sandbox`; the session verdicts of
-  SC-3. As in SC-3 and SC-5, a state the axis can judge is a share of the class's judged ones, and the
+  SC-2. As in SC-2 and SC-4, a state the axis can judge is a share of the class's judged ones, and the
   rest (exited before it was checked, unknown, no calls, not an agent session, can't tell) are
   counts, with the coverage under the class (`AxisBlock`, `lib/sandbox.ts:shareOfKnown`).
 
-#### SC-5 approval at launch
+#### SC-4 approval at launch
 
 - **Shows:** per class, sessions and processes by approval at launch; launch flags as written.
 - **Computation:** each root's verdict is its own record's (`roots`, the newest kept); sessions are
-  SC-3's; per process, a counter of each counted record's `_approval`; `launch_modes` counts the
+  SC-2's; per process, a counter of each counted record's `_approval`; `launch_modes` counts the
   rooted sessions by (agent type, approval, flags).
 
-#### SC-6 sandbox wrapper calls, by outcome
+#### SC-5 sandbox wrapper calls, by outcome
 
 - **Shows:** per wrapper (`bwrap`, `codex-linux-sandbox`), agent type and outcome, the calls.
 - **Computation:** `_sessions` counts the wrapper calls not absorbed by another, by those three.
 
-#### SC-7 processes by sandbox wrapper, kind and sandbox state
+#### SC-6 processes by sandbox wrapper, kind and sandbox state
 
 - **Shows:** per wrapper above, process kind and sandbox state: processes and D-state wait.
 - **Computation:** a counter per key with summed `dstate_wait_s` and a present count; `_reading`
   words each row.
 
-#### SC-8 when each process was checked
+#### SC-7 when each process was checked
 
 - **Shows:** each process's namespace answer by when it was read.
 - **Computation:** a counter of `_sandbox_src`.
 
-#### SC-9 writes outside the start folder
+#### SC-8 writes outside the start folder
 
 - **Shows:** the agents that wrote or deleted outside their start folder, by place and by user.
 - **Records:** AG-4's and AG-5's: the paths an agent's commands name, read from the text of its
@@ -1514,7 +1511,7 @@ reach Ask LLM's snapshot or a panel's basis note.
   every classifier-tagged process counted by agent type and role.
 - **`trajectories`' `drift`** (cwd drift and the purpose mix's Jensen-Shannon divergence, per row),
   `dominant_user_share_pct`, `by_key_type`, `by_class_counts`, `fold` and `buffer`.
-- **`sandbox.agent_only` and `sandbox_detail`**: only in SC-7's basis note.
+- **`sandbox.agent_only` and `sandbox_detail`**: only in SC-6's basis note.
 - **The live frame's `now` block, and the roster's counts** (`users.total`, `users.by_class`,
   `users.with_live_agent`): the last full minute's exits by class, the sessions and processes running
   now, the live agent sessions by launch approval, and the accounts active in the window; in Ask

@@ -24,7 +24,6 @@ import { GLOSS } from '../lib/glossary';
 import type { Cls, Sandbox, SandboxSessionRow } from '../api/types';
 import { Basis, Panel, More } from '../components/Panel';
 import { Coverage } from '../components/Coverage';
-import { Plate } from '../components/Plate';
 import { ShareCell } from '../components/ShareCell';
 import { ByUser, distinct } from '../components/ByUser';
 import { SortTh } from '../components/SortTh';
@@ -53,7 +52,6 @@ import {
   legendCol,
   shareOfKnown,
 } from '../lib/sandbox';
-import type { Share } from '../lib/sandbox';
 import { table } from '../lib/lookup';
 
 /** When the collector read a process's namespaces, in the page's words; the
@@ -71,7 +69,8 @@ type ByClass = Record<string, Record<string, number>> | undefined;
 /** One axis's states by class. A state the axis can judge (`known`) is a share of the class's
  *  judged ones; the others -- unknown, no tool calls, exited before it was checked, not an agent --
  *  are counts, and the coverage under each class says how many were judged at all (lib/sandbox.ts).
- *  Dividing by every state made the bypass share 10.0% (2 of 20) under a plate of 11.8% (2 of 17). */
+ *  Dividing by every state made the bypass share 10.0% (2 of 20) against the 11.8% (2 of 17) the
+ *  security checks give. */
 function AxisBlock({ by, have, order, col, lbl, grain, known }: {
   by: ByClass;
   have: string[];
@@ -139,18 +138,6 @@ function AxisBlock({ by, have, order, col, lbl, grain, known }: {
       </table>
     </div>
   );
-}
-
-/** "coverage agent 99% · IDE 64%" -- what share of each class has a known sandbox state. */
-/** "of 1,351 agent tool calls": the denominator, in words. When some could not
- * be judged, it says the share is of the ones that could, not of all of them. */
-function agentOf(s: Share | undefined, what: string, knownWhat: string) {
-  if (!s?.total) return undefined;
-  return s.known < s.total ? `of ${fint(s.known)} ${what} ${knownWhat}` : `of ${fint(s.total)} ${what}`;
-}
-
-function sharesOf(by: ByClass, have: string[], state: string | string[], known: string[]) {
-  return Object.fromEntries(have.map((c) => [c, shareOfKnown(by?.[c], state, known)]));
 }
 
 const callsOf = (r: SandboxSessionRow) =>
@@ -281,41 +268,10 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
   const attempts = sb.attempts ?? [];
   const modes = sb.launch_modes ?? [];
 
-  const callIso = sharesOf(sb.tool_calls, tcHave, 'isolated', callKnown);
-  const sessBypass = sharesOf(sb.approval_by_class_sessions, apSeHave, 'bypassed', apKnown);
-  const failedAgent = tcHave.includes('agent') ? sb.tool_calls?.agent?.failed ?? 0 : null;
-  const wrapperCalls = attempts.reduce((a, r) => a + (r.outcome === 'no_payload' ? 0 : r.n), 0);
-
+  // The shares sandboxed and bypassed, and the sandboxes that failed to start, are the
+  // security checks above these panels (SecurityTab.tsx); the panels hold what is behind them.
   return (
     <>
-      <div className="plates three">
-        <Plate
-          k="agent tool calls sandboxed"
-          total={callIso.agent?.pct ?? null}
-          fmtFn={(n) => (n == null ? DASH : pc(n))}
-          tip="a sandbox that failed to start counts as not sandboxed; an unreadable wrapped command is left out"
-          note={agentOf(callIso.agent, 'agent tool calls', 'whose outcome is known')}
-        />
-        <Plate
-          k="agent sandboxes failed to start"
-          total={failedAgent}
-          tip="a sandbox wrapper call that exited non-zero and ran no command: the sandbox did not come up"
-          note={
-            wrapperCalls
-              ? `of ${fint(wrapperCalls)} sandbox wrapper calls`
-              : 'no sandbox wrapper ran in the window'
-          }
-        />
-        <Plate
-          k="agent sessions launched with a bypass flag"
-          total={sessBypass.agent?.pct ?? null}
-          alarm={(sessBypass.agent?.pct ?? 0) > 0}
-          fmtFn={(n) => (n == null ? DASH : pc(n))}
-          tip="settings files and a mid-session switch are not seen; a `codex app-server` session, whose flags can’t be read, is left out of the share"
-          note={agentOf(sessBypass.agent, 'agent sessions', 'whose launch flags are readable')}
-        />
-      </div>
-
       <div className="grid wider">
         <Panel
           id="sec-tool-calls-did-they-run-namespace-isolated"
