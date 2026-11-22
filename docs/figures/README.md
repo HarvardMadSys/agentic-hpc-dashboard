@@ -1013,8 +1013,7 @@ and for how the page draws them
   `resolve` attaches what is left by the index, the collector's depth or the fold, and draws parents
   that have no record (at most 2,000). `render` folds runs of siblings (motifs of up to 4) and
   serves `inspect_nodes` entries, breadth first. `_typos` marks what a person mistyped at a
-  terminal, for the page's "hide typos"; "annotate purposes" (off unless `annotate.enabled`) labels
-  each tool call with a model's purpose from `/api/annotate` (`annotate.py`).
+  terminal, for the page's "hide typos".
 - **Cost:** INSPECT's: one read at a time, up to 150,000 records or 6 GiB. Building a record costs
   about 44 µs on FAS, in the `inspect_workers` processes, and feeding it to the tree about 6 µs, in
   the service's own process. Trees are cached for 600 s.

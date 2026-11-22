@@ -191,8 +191,8 @@ The records name real users and show what they ran, so both halves keep them clo
 - **The dashboard** will not start without a password unless told to (`--open`), and masks
   credentials again on every way out. `RC_DASH_ANONYMIZE=1` replaces every name with an alias.
   It names network endpoints by reverse DNS from its own host (`RC_DASH_RDNS=0` turns that
-  off). **Ask LLM** and tool-call annotation, both off by default, send masked data to a
-  model's provider when a site turns them on.
+  off). **Ask LLM**, off by default, sends masked data to a model's provider when a site turns
+  it on.
 - **The fleet stream** carries the files over ssh, with a key that can run the sender and
   nothing else, and only from the dashboard's host.
 - **The fleet's copy** ([`deploy/fleet`](deploy/fleet/README.md)) is pulled by an account in

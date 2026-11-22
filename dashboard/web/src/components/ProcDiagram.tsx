@@ -37,7 +37,6 @@ import { ioBrief, ioTip } from '../lib/procio';
 import { groupEndWords } from '../lib/procexit';
 import { DASH, clock, dur, fint } from '../lib/format';
 import { pcol } from '../lib/purposes';
-import { llmPurpose, useLlmPurposes } from '../lib/annotate';
 import { AGENT_TYPE_LBL } from '../lib/classes';
 import { TreeDiagram } from './TreeDiagram';
 import type { TreeNode } from './TreeDiagram';
@@ -460,11 +459,6 @@ export function Box({
   onCaret?: () => void;
 }) {
   const t = boxText(e, open, kids, root, dir);
-  // a model's purpose for the tool call, when one was asked for: on hover, and
-  // marked beside the name, never in the box's measured lines
-  const llm = useLlmPurposes();
-  const lp = llmPurpose(llm, e.k === 'p' ? e.cmdline : e.k === 'g' ? e.samples[0]?.cmdline : null);
-  const tip = lp && llm ? `${t.tip ?? ''}\nwhy: ${lp[0]}\n(${lp[1]}; written by ${llm.model}, not measured)` : t.tip;
   const caret = !t.caret ? null : onCaret ? (
     <button
       className="pd-caret pd-tog"
@@ -483,13 +477,12 @@ export function Box({
   return (
     <div
       className={`pd-box${t.kind === 'g' ? ' group' : t.kind === 'more' ? ' more' : t.bad ? ' bad' : ''}`}
-      data-tip={tip}
+      data-tip={t.tip}
       style={t.color ? { borderLeftColor: t.color } : undefined}
     >
       <div className="pd-h">
         <b className={t.kind === 'more' ? undefined : 'mono'}>{t.title}</b>
         {t.type && <span className="pt-tag type">{t.type}</span>}
-        {lp && <span className="pd-llm" aria-label={`purpose: ${lp[0]}`}>✦</span>}
         {caret}
       </div>
       {t.where && <div className={`pd-w mono${t.whereOwn ? ' own' : ''}`}>{t.where}</div>}

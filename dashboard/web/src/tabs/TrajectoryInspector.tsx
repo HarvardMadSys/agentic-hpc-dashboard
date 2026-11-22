@@ -86,8 +86,6 @@ import type { Found, JumpReq } from '../components/ProcTree';
 import { DEFAULT_ROUTINE, ProcDiagram, findIds, findIndex, hiddenCount, reveal, unhidNote } from '../components/ProcDiagram';
 import type { Hide } from '../components/ProcDiagram';
 import { SurfaceChip } from '../components/SurfaceChip';
-import { AnnotateControl, useAnnotate } from '../components/Annotate';
-import { LlmPurposes } from '../lib/annotate';
 import { CategoryChip } from '../components/CategoryChip';
 import { treePopHref } from '../lib/popout';
 import { Segmented } from '../components/ClassFilter';
@@ -621,8 +619,6 @@ export function TrajectoryInspector({
   const [goTo, setGoTo] = useState<{ id: string; n: number } | null>(null);
   const [findNote, setFindNote] = useState('');
   const stampKey = `${sid}|${d?.scan?.computed_at ?? ''}`;
-  // a model's purpose for each tool call, asked for on the button (components/Annotate.tsx)
-  const annot = useAnnotate(sid, win, from, to, order, tree ? stampKey : null);
   useEffect(() => {
     if (tree) setOpen(defaultOpen(tree));
     setDopen(new Set(['r']));
@@ -1227,7 +1223,6 @@ export function TrajectoryInspector({
                 hide typos
               </label>
               {typos && hid && <span className="nm">{`${fint(hid.typos)} hidden`}</span>}
-              <AnnotateControl a={annot} />
               <span className="nm pd-hint">
                 {mode === 'tree'
                   ? 'click a box to open what it started · hover for its command'
@@ -1235,7 +1230,6 @@ export function TrajectoryInspector({
               </span>
             </div>
           )}
-          <LlmPurposes.Provider value={annot.set}>
           {tree && mode === 'tree' && (
             // keyed on what is hidden: hiding moves every parent, so start again over the root
             <ProcDiagram
@@ -1265,7 +1259,6 @@ export function TrajectoryInspector({
               hits={hits}
             />
           )}
-          </LlmPurposes.Provider>
           {tree && (
             <div className="pt-legend">
               <span>

@@ -221,7 +221,7 @@ def defaults():
             # a family's prefix -- three characters or more, then _* -- for a
             # provider reached through a cloud: ["AWS_*",
             # "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION"]. Never an
-            # RC_DASH_* one. Annotate's CLI providers get the same.
+            # RC_DASH_* one.
             "env_passthrough": [],
             "timeout_s": 240,
             "max_concurrent": 1,       # a second question waits, not a second agent
@@ -244,41 +244,6 @@ def defaults():
             # as its alias), and the agent can read what the service's account
             # can, the raw feeds included.
             "unmasked_answers": False,
-        },
-        # What each tool call in a session was for, in a model's words (annotate.py):
-        # the session inspector's "annotate purposes". Off by default: it sends
-        # the session's tool-call command lines -- masked, as the page shows
-        # them -- and the folders they ran in to the provider below. A CLI
-        # provider runs an agent on this host, as Ask does: only behind a
-        # password, with ask.env_passthrough's part of the environment.
-        "annotate": {
-            "enabled": False,
-            # anthropic | openai (any OpenAI-compatible endpoint) | codex | claude
-            # (the CLIs, with this user's own login) | ask (the chat's agent) | command
-            "provider": "anthropic",
-            "model": "",               # empty: the provider's default (anthropic: claude-opus-5-5)
-            "base_url": "",            # empty: the provider's own API; set for a proxy, vLLM, Ollama, ...
-            # The key: the variable named here (empty: ANTHROPIC_API_KEY or
-            # OPENAI_API_KEY), else a file, else `api_key` (never shown by /api/config).
-            "api_key_env": "",
-            "api_key_file": "",
-            "api_key": "",
-            "effort": "low",           # anthropic only: output_config.effort; empty leaves it out
-            "max_tokens": 8000,
-            # `command`: argv or one shell-style string; prompt on stdin, answer on
-            # stdout or in {answer_file}; {workdir} {answer_file} {model} filled in
-            "command": None,
-            "timeout_s": 120,
-            "batch_size": 40,          # calls per request
-            "max_calls": 400,          # distinct calls asked about per session, oldest first
-            "max_concurrent": 1,
-            # annotate a session as soon as it opens, rather than on the button
-            "auto": False,
-            "system_prompt": "",
-            "system_prompt_file": "",
-            # answers kept in <cache.dir>/annotate/purposes.jsonl, so a command is asked about once
-            "cache": True,
-            "cache_max": 200000,
         },
         # Which deployment this is, on every page: two dashboards side by side
         # -- a frozen capture from one cluster, the live feed of another -- must
@@ -570,13 +535,6 @@ ENV_MAP = {
     "ask.command": ("RC_DASH_ASK_CMD", str),
     "ask.env_passthrough": ("RC_DASH_ASK_ENV_PASSTHROUGH", _csv),
     "ask.system_prompt_file": ("RC_DASH_ASK_PROMPT_FILE", str),
-    "annotate.enabled": ("RC_DASH_ANNOTATE", _flag),
-    "annotate.provider": ("RC_DASH_ANNOTATE_PROVIDER", str),
-    "annotate.model": ("RC_DASH_ANNOTATE_MODEL", str),
-    "annotate.base_url": ("RC_DASH_ANNOTATE_BASE_URL", str),
-    "annotate.api_key_env": ("RC_DASH_ANNOTATE_KEY_ENV", str),
-    "annotate.api_key_file": ("RC_DASH_ANNOTATE_KEY_FILE", str),
-    "annotate.command": ("RC_DASH_ANNOTATE_CMD", str),
     "site.name": ("RC_DASH_SITE_NAME", str),
     "ui.node_noun": ("RC_DASH_NODE_NOUN", str),
     "site.description": ("RC_DASH_SITE_DESC", str),
@@ -596,8 +554,7 @@ ENV_MAP = {
 # Secrets: /api/config and --print-config say whether each is set, never what it is.
 # An agent's command and its instructions can carry a provider's key
 # (`env ANTHROPIC_API_KEY=... claude -p`, the shape tests/test_ask.py pins).
-HIDDEN = ("anonymize.salt", "server.auth.password_hash", "ask.command", "ask.system_prompt",
-          "annotate.api_key", "annotate.command", "annotate.system_prompt")
+HIDDEN = ("anonymize.salt", "server.auth.password_hash", "ask.command", "ask.system_prompt")
 
 # The feeds removed once nothing read them -- the scheduler's accounting (sacct,
 # sacctmgr) and the domain and user CSVs -- and every way there was to set one.
@@ -609,6 +566,20 @@ RETIRED_ENV = ("RC_DASH_SACCT_DIR", "RC_DASH_SACCT_PATTERN", "RC_DASH_SACCT_MAX_
                "RC_DASH_USER_CSV", "RC_JOBS_CSV", "RC_USER_CSV")
 RETIRED_CLI = ("sacct_dir", "jobs_csv")
 RETIRED_WHY = "is retired, with the feed it set, which nothing read; it is ignored"
+# The sections of features since removed, each with why it is ignored, and every
+# variable there was to set one. Each is named in a warning and dropped, never
+# refused, as a retired feed is: a unit, a wrapper or a config file written for
+# one still starts, and nothing of it reaches /api/config -- where a key under
+# `annotate` was hidden -- or a saved build's fingerprint (`load`).
+RETIRED_SECTIONS = {
+    "annotate": "is retired, with the tool-call purposes a model wrote; it is ignored",
+}
+RETIRED_SECTION_ENV = {
+    "RC_DASH_ANNOTATE": "annotate", "RC_DASH_ANNOTATE_PROVIDER": "annotate",
+    "RC_DASH_ANNOTATE_MODEL": "annotate", "RC_DASH_ANNOTATE_BASE_URL": "annotate",
+    "RC_DASH_ANNOTATE_KEY_ENV": "annotate", "RC_DASH_ANNOTATE_KEY_FILE": "annotate",
+    "RC_DASH_ANNOTATE_CMD": "annotate",
+}
 
 # CLI dest -> leaf path
 CLI_MAP = {
@@ -816,14 +787,19 @@ def load(args=None, config_path=None):
             raise SystemExit("config file %s: %s" % (path, e))
         if not isinstance(filetree, dict):
             raise SystemExit("config file %s: not a JSON object" % path)
-        # dropped, not merged: a retired feed's block would show in /api/config
-        # and in every saved build's fingerprint, while nothing reads it
+        # dropped, not merged: a retired feed's block, or a removed feature's
+        # section, would show in /api/config and in every saved build's
+        # fingerprint, while nothing reads it
         file_feeds = filetree.get("feeds")
         for name in RETIRED_FEEDS:
             if isinstance(file_feeds, dict) and name in file_feeds:
                 del file_feeds[name]
                 sys.stderr.write("warning: config file %s: feeds.%s %s\n"
                                  % (path, name, RETIRED_WHY))
+        for name, why in RETIRED_SECTIONS.items():
+            if name in filetree:
+                del filetree[name]
+                sys.stderr.write("warning: config file %s: %s %s\n" % (path, name, why))
         for w in check_file(filetree, path):
             sys.stderr.write("warning: config file %s: %s; it is ignored\n" % (path, w))
         # relative paths in the file resolve against the repo, absolute stand
@@ -844,6 +820,9 @@ def load(args=None, config_path=None):
     for var in RETIRED_ENV:
         if os.environ.get(var):
             sys.stderr.write("warning: %s %s\n" % (var, RETIRED_WHY))
+    for var, name in RETIRED_SECTION_ENV.items():
+        if os.environ.get(var):
+            sys.stderr.write("warning: %s %s\n" % (var, RETIRED_SECTIONS[name]))
 
     for dotted, (var, coerce) in ENV_MAP.items():
         raw = os.environ.get(var)

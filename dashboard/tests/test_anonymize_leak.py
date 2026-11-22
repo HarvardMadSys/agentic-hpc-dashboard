@@ -69,11 +69,6 @@ def exit_rec(epoch, pid, user, args, actor3="agent", cwd=None):
                    "scope": "process"}}
 
 
-# How long before `now` alice's agent ran the tool call the annotator is asked
-# about (`feed`, `Served.called_sid`).
-CALL_AGO = 90
-
-
 def feed(now):
     recs = []
     cmds = [("alice", "python /home/alice/proj/train.py", "agent"),
@@ -112,24 +107,12 @@ def feed(now):
                  "by_actor3": {"agent": {"n_procs": 3, "threads": 5, "rss_mb": 120.0,
                                          "d_state": 0, "users": 1}},
                  "by_agent_type": {}, "trees": 1, "tracked_live": 3})
-    # a Bash tool call of alice's agent: the command it ran is what the
-    # annotator is asked about (proctree.ran)
-    recs.append(exit_rec(now - CALL_AGO, 5100, "alice",
+    # a Bash tool call of alice's agent, wrapped as its shell runs one: the
+    # inspector serves the command it ran (proctree.ran)
+    recs.append(exit_rec(now - 90, 5100, "alice",
                          "/bin/zsh -c -l source /home/alice/.claude/shell-snapshots/snapshot-zsh-1.sh"
                          " && eval 'python train.py --data /n/home03/carol/data' < /dev/null"))
     return recs
-
-
-# A stand-in for the annotator's model: it keeps each prompt it is sent, and
-# labels every call with real names, as an answer kept from a run without
-# masking may, or an agent on this host that read the raw feeds.
-ANNOTATOR = r'''
-import json, os, re, sys, uuid
-d, t = sys.argv[1], sys.stdin.read()
-open(os.path.join(d, uuid.uuid4().hex), "w").write(t)
-print(json.dumps({i: {"purpose": "reads /n/home03/carol/notes for alice and bob.smith",
-                      "kind": "explore"} for i in re.findall(r'"id": "(\d+)"', t)}))
-'''
 
 
 class Served(unittest.TestCase):
@@ -176,10 +159,6 @@ class Served(unittest.TestCase):
         tree["server"]["auth"]["password_hash"] = auth.hash_password(PASSWORD, n=16, r=1, p=1)
         # these questions are asked with names masked: answers as the agent wrote them
         tree["ask"]["unmasked_answers"] = True
-        cls.annotated = os.path.join(cls.tmp, "annotated")
-        os.makedirs(cls.annotated)
-        tree["annotate"].update(enabled=True, provider="command",
-                                command=[sys.executable, "-c", ANNOTATOR, cls.annotated])
         cls.configure(tree)
         cfg = configmod.Config(tree, {}, None)
         with warnings.catch_warnings():
@@ -256,30 +235,6 @@ class Served(unittest.TestCase):
     def assertClean(self, where, body):
         for s in SECRETS:
             self.assertNotIn(s, body, "%s leaks %r" % (where, s))
-
-    def called_sid(self, ranks):
-        """The agent's row of the day its annotated tool call ran in (CALL_AGO):
-        a session's rows are split by day, and in the first forty minutes after
-        midnight the busiest is the day before's, which holds none of the calls."""
-        day = time.strftime("%Y-%m-%d", time.localtime(self.now - CALL_AGO))
-        sid = next((s for s in ranks.get("events") or [] if "|%s|agent|" % day in s), None)
-        self.assertIsNotNone(sid, "no agent row of %s among %r" % (day, ranks.get("events")))
-        return sid
-
-    def annotated_job(self, sid):
-        """`(POST answer, finished job's answer)`: one session annotated."""
-        status, first = self.post("/api/annotate", {"sid": sid, "run": True})
-        self.assertEqual(status, 200, first)
-        job = json.loads(first)["job"]
-        self.assertTrue(job, first)
-        deadline = time.time() + 60
-        while job["state"] not in ("done", "error"):
-            self.assertLess(time.time(), deadline, job)
-            time.sleep(0.05)
-            text = self.get("/api/annotate/%s" % job["id"])[1]
-            job = json.loads(text)
-        self.assertEqual(job["state"], "done", job)
-        return first, text
 
 
 class LeakTest(Served):
@@ -468,27 +423,6 @@ class LeakTest(Served):
         finally:
             send("DELETE", "/api/suggestions/done/kept")
 
-    def test_annotations_go_to_the_model_and_come_back_masked(self):
-        # The model is given the calls as the page shows them, and what it
-        # answers -- names, here -- comes back masked too: /api/annotate sent
-        # its answers out past the anonymizer.
-        alice = self.anon.user_alias("alice")
-        sid = self.called_sid(json.loads(self.get("/api/trajectories")[1])["ranks"])
-        before = set(os.listdir(self.annotated))
-        first, done = self.annotated_job(sid)
-        self.assertIn(alice, json.loads(done)["results"][self.anon.text(
-            "python train.py --data /n/home03/carol/data")][0])
-        again = self.post("/api/annotate", {"sid": sid})[1]     # the kept answers, now known
-        self.assertTrue(json.loads(again)["known"])
-        for where, body in (("POST", first), ("GET job", done), ("POST known", again)):
-            self.assertClean("/api/annotate " + where, body)
-        sent = [open(os.path.join(self.annotated, n)).read()
-                for n in set(os.listdir(self.annotated)) - before]
-        self.assertTrue(sent)
-        for prompt in sent:
-            self.assertClean("the annotator's prompt", prompt)
-            self.assertIn(alice, prompt)             # the call's folder, her home
-
     def test_health_says_it_is_on_without_naming_anyone(self):
         h = json.loads(self.get("/api/health")[1])["anonymize"]
         self.assertTrue(h["enabled"])
@@ -656,11 +590,6 @@ class ReaderTextTest(Served):
             {"question": "q", "context": {"session": SENT, "title": SENT}},
         ],
         "/api/suggestions/done": [{"job": SENT, "index": 0}],
-        # a session's tool calls for the annotator: its sid is the reader's text
-        "/api/annotate": [
-            {"sid": SENT},
-            {"sid": SENT, "window_min": 1440, "order": SENT, "run": False},
-        ],
     }
 
     @classmethod
@@ -703,9 +632,9 @@ class ReaderTextTest(Served):
         holds MARK). His records are older than the live roster and past the
         first page of anything unfiltered, so only a filter or a search could
         reach them, and only a translation of his name could produce his alias.
-        Nor may any carry the feed's other names (SECRETS), which its records --
-        alice's tool call among them, read by the annotator -- hold everywhere.
-        The routes are the app's own; a POST route needs its body in BODIES."""
+        Nor may any carry the feed's other names (SECRETS), which its records
+        hold everywhere. The routes are the app's own; a POST route needs its
+        body in BODIES."""
         dave, quote = self.alias("dave"), urllib.parse.quote
         # A reader with his alias finds him, and the service has learned his
         # name: a bare `dave` echoed through the rewrite would be translated.
@@ -719,9 +648,7 @@ class ReaderTextTest(Served):
         # a lookup and a question to name, made when their route is reached:
         # the walk's own lookups push older ones out
         made = {"/api/io/commands/{jid}": lambda: self.lookup("")["id"],
-                "/api/ask/{jid}": lambda: self.answered({"question": "q"})["id"],
-                "/api/annotate/{jid}": lambda: json.loads(
-                    self.annotated_job(self.called_sid(ranks))[1])["id"]}
+                "/api/ask/{jid}": lambda: self.answered({"question": "q"})["id"]}
         fill = {"name": self.alias("alice"), "sid": sid}
         filters = list(export.LIST_FIELDS + export.SCALARS)
 

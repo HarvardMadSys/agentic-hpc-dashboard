@@ -58,7 +58,9 @@ key's `_origin`.
   anywhere else is a warning.
 - Retired feeds' settings (`feeds.sacct`, `feeds.sacctmgr`, `feeds.domains`, `feeds.user_actor`,
   `RC_DASH_SACCT_DIR` and the other `config.RETIRED_ENV` variables, `--sacct-dir`, `--jobs-csv`)
-  are named in a warning and ignored, never refused.
+  are named in a warning and ignored, never refused. So are the sections of removed features
+  (`config.RETIRED_SECTIONS`: `annotate`, the tool-call purposes a model wrote) and every variable
+  that set one (`RC_DASH_ANNOTATE` and `RC_DASH_ANNOTATE_*`), which `/api/config` never shows.
 - `history` and `ingest` are under [History in Parquet](#history-in-parquet) and
   [Hourly merge-reduce](#hourly-merge-reduce).
 - `filters.drop_global` (`RC_DASH_DROP_USERS`, comma-separated) drops every record of the accounts
@@ -436,9 +438,6 @@ window on a busy node can take ~1 GB.
 | `GET /api/live/user?name=&window_min=&n=` | one account: the sessions it has running and its last `n` (25) exited processes |
 | `GET /api/trajectories?rank=&window_min=&user=&agent_type=` | ranked sessions in that window, narrowed the same way; an agent's row carries its tasks and phases ([below](#sessions-tasks-phases-and-processes)) |
 | `GET /api/trajectory?sid=&window_min=&from=&to=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
-| `GET /api/annotate` | the model that labels tool calls with their purpose: provider, model, endpoint, whether it can run here ([below](#tool-call-purposes-from-a-model)) |
-| `POST /api/annotate` `{sid, window_min, from, to, order, run}` | one session's tool calls and the purposes already known; `run` starts a job asking the model about the rest |
-| `GET /api/annotate/{job}` | that job's progress and its answers so far |
 | `GET /api/users?window_min=&user=&agent_type=` | every user with an agent session in the window, the window's totals (`fleet`), the agent sessions of no named user (`unattributed`), and the traits' rules ([below](#users-a-portrait-of-each-user)) |
 | `GET /api/user?name=&window_min=` | one user's portrait; `name` takes the alias when names are anonymized |
 | `GET /api/events?<filters>` | paged event query |
@@ -981,53 +980,6 @@ state holds a task or a category.
 | `cap` | 10 | the number of tasks a local day is merged down toward |
 | `headline_names` | 3 | the names the headline lists after the project |
 
-## Tool-call purposes from a model
-
-The rule-based `purpose` (git, build, compute, ...) says what kind of program a call ran, not why it
-ran. The session inspector's **✦ annotate purposes** asks a language model what each of the session's
-tool calls was for, in a few words ("check which CUDA version the node has"), and for one of a fixed
-set of kinds (explore, edit, build, test, run, debug, hpc, git, data, env, monitor, other). This is
-the only place a model writes onto a row, so its answer is kept visibly apart from everything
-measured (a dashed, purple ✦ tag, and the model named in every hover) and never counted anywhere.
-
-It is **off by default**, because it sends command lines off the host: each distinct tool call's
-command line as the page shows it (masked by `redact.py` and, with [anonymized
-names](#anonymized-names) on, by the anonymizer), and the folder it ran in, from the service's own
-read of the session. The page posts only the session's name, so the endpoint cannot be used to send
-a model anything else, and the answers also come back through the anonymizer. The model is asked
-about the first `annotate.max_calls` (400) distinct calls, `annotate.batch_size` (40) per request.
-Each answer is kept in `<cache.dir>/annotate/purposes.jsonl`, keyed by provider and model, prompt and
-command line, so a command is asked about once for every session that runs it; a different model or
-prompt asks again. A call the answer leaves out stays unlabelled, and nothing is filled in for it.
-
-Set it up under `annotate` (`dashboard.config.example.json` lists every key):
-
-| `provider` | what it calls | the key |
-|---|---|---|
-| `anthropic` (default) | the Claude Messages API; `model` defaults to `claude-opus-5-5`, `effort` (`low`) is sent as `output_config.effort`; `base_url` for a gateway | `ANTHROPIC_API_KEY` |
-| `openai` | any OpenAI-compatible `/chat/completions`: OpenAI, or with `base_url` vLLM, Ollama, LiteLLM, OpenRouter, ...; `model` is required | `OPENAI_API_KEY`; none for a local `base_url` |
-| `codex`, `claude` | the Codex or Claude Code CLI on this host, as the service's user, with that user's login | the CLI's own |
-| `ask` | whatever agent the chat (`ask`) runs | the agent's own |
-| `command` | any command: the prompt on stdin, a JSON answer on stdout or in `{answer_file}` | -- |
-
-A CLI provider (`codex`, `claude`, `ask`, `command`) runs an agent on this host over other users'
-command lines, so it follows [Ask LLM](#ask-llm)'s rules: refused while the service has no password,
-and run with only part of the service's environment (`ask.env_passthrough` adds more) in its own
-temporary directory. An HTTP provider runs nothing here: the model gets the masked text with no
-tools, and its answer is read only as a label and a kind, so it works without a password.
-
-The key is read from the variable `api_key_env` names (if empty, the table's), else from
-`api_key_file`, else from `api_key`; `/api/config` and `--print-config` only say whether `api_key`,
-`command` and `system_prompt` are set. The HTTP providers honour `HTTPS_PROXY`. `auto: true` asks as
-soon as a session opens. The environment
-can set `RC_DASH_ANNOTATE=1`, `RC_DASH_ANNOTATE_PROVIDER`, `_MODEL`, `_BASE_URL`, `_KEY_ENV`,
-`_KEY_FILE` and `_CMD`. For example, a local model:
-
-```json
-"annotate": { "enabled": true, "provider": "openai", "model": "qwen2.5-coder:7b",
-              "base_url": "http://127.0.0.1:11434/v1" }
-```
-
 ## Agents: subagents and blast radius
 
 The **Agents** tab (`?tab=agents`, or the old `?tab=cascades`) answers "which agents started which
@@ -1233,7 +1185,6 @@ GPU-hours count only jobs with GPUs and a time limit on the command line, as the
 | `rc_dashboard/snapshots.py` | saved window builds: fingerprint, capture/restore, the 0600 store |
 | `rc_dashboard/payloads.py` | each window's panels as last served, saved so a new view can show them at once |
 | `rc_dashboard/proctree.py` | one session as a process tree, read on demand: what the session inspector draws |
-| `rc_dashboard/annotate.py` | what each tool call was for, in a model's words ([Tool-call purposes from a model](#tool-call-purposes-from-a-model)) |
 | `rc_dashboard/iocmds.py` | every command behind an I/O figure, looked up when it is clicked |
 | `rc_dashboard/endpoints.py` | the far ends of the network bytes, named and ranked when the panel is read ([Network endpoints](#network-endpoints)) |
 | `rc_dashboard/export.py` | the shared filter grammar, streaming export, the windowed re-scan |

@@ -24,7 +24,7 @@ RC_BACKEND=http://127.0.0.1:8080 npm run dev:real   # /api, /ws, /login, /logout
 from (`/api/config`, `feeds`, `windows`, `panels`, `live`, `trajectories`, `trajectory`, `users`,
 `user`, `events`, `export`) out of `mock/api.json`, which it re-reads on every request. Any other
 route (the collectors' health, Active users' searches and accounts, the commands behind an I/O
-number, Ask, annotate) is a 404 there, so what reads it says it was not returned.
+number, Ask) is a 404 there, so what reads it says it was not returned.
 `src/api/client.ts` has no mock branch: dev runs the production code path.
 
 The backend refuses a websocket from any origin but its own (`rc_dashboard/guard.py`), and Vite
@@ -291,11 +291,6 @@ say one thing, in the driver's words (`tool calls` or `commands`: `callWord`, `d
 - **A session across midnight** is a row a day, each serving the one block. A task or phase the
   other day's row holds opens that row (`jumpTo`) when the window holds it; otherwise the pick is
   made on the open row.
-- **✦ annotate purposes** (`src/components/Annotate.tsx`), where the site turned `annotate` on: a
-  language model's reading of what each tool call was for, a dashed purple ✦ tag in the table and
-  a ✦ in the tree, every hover naming the model and saying it is not measured. Only those two
-  views read the answers (`LlmPurposes`, `src/lib/annotate.ts`)
-  ([the service's side](../README.md#tool-call-purposes-from-a-model)).
 
 ### Live transport
 
