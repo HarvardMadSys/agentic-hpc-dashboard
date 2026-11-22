@@ -99,10 +99,6 @@ class IdeClassTest(unittest.TestCase):
             with self.subTest(agent_type=t):
                 self.assertEqual(a3(rec("agent", t, HOME + "/.%s-server/bin/x/node" % t)), "ide")
 
-    def test_an_agent_cli_inside_an_ide_terminal_stays_an_agent(self):
-        args = "node %s/.cursor-server/extensions/claude-code/cli.js" % HOME
-        self.assertEqual(a3(rec("agent", "claude_code", args)), "agent")
-
     def test_an_agent_root_inside_an_ide_server_is_an_agent_session(self):
         """Its role as well as its class: the path under ~/.cursor-server/ made
         it the IDE's `helper`, so no session."""

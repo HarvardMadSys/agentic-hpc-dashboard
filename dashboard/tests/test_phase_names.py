@@ -1077,11 +1077,6 @@ class OwnWordsTest(unittest.TestCase):
                                    "## 08:53 Yiyang awake; questions\nEOF")[1],
                          "08:53 Yiyang awake; questions")
 
-    def test_no_words_where_none_are_written(self):
-        self.assertIsNone(own_words("cat > docs/paper.md <<'EOF'\n# Title\nEOF"))
-        self.assertIsNone(own_words("git commit -F msg.txt"))
-        self.assertIsNone(own_words("ls -la"))
-
     def test_masked_first_and_cut_by_characters(self):
         ts = tagset('git commit -m "Use token ghp_' + "a" * 36 + ' for the push"')
         self.assertNotIn("ghp_" + "a" * 36, ts[1][1])

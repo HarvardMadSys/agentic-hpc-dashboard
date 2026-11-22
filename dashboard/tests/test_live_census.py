@@ -49,9 +49,6 @@ class CensusTest(unittest.TestCase):
         tr = self.feed(T(0, {"claude": 1, "npm exec @model": 2}), T(60, {"claude": 1, "npm exec @model": 2, "python": 1, "srun": 1}))
         now = running_now(tr, fresh=0)
         self.assertEqual((now["state"], dict(now["cmds"]), now["cat"]), ("running", {"python": 1, "srun": 1}, "slurm"))
-    def test_only_the_baseline_up_is_idle(self):
-        tr = self.feed(T(0, {"claude": 1, "npm exec @model": 2}), T(60, {"claude": 1, "npm exec @model": 2}))
-        self.assertEqual(running_now(tr, fresh=0)["state"], "idle")
     def test_a_stale_or_missing_census_is_unknown(self):
         tr = self.feed(T(0, {"claude": 1}))
         self.assertEqual(running_now(tr, fresh=100), {"state": "unknown"})

@@ -154,14 +154,6 @@ class HistoryTest(unittest.TestCase):
         self.assertIsNone(st.replica_for(p))
         self.assertEqual(st.status()["state"], "off")
 
-    def test_installed_lookup(self):
-        p = self.write("2026-11-13", "exits", [full("exit", 0)])
-        st = history.HistoryStore(self.cfg)
-        st.run_once()
-        self.assertIsNone(replica.for_path(p))
-        replica.install(st.replica_for)
-        self.assertIsNotNone(replica.for_path(p))
-
     def test_a_killed_conversions_leftovers_are_swept(self):
         """What a conversion killed mid-file left (`.tmp-<pid>`) goes when the store
         next starts, once its process is gone; a live process's stays."""

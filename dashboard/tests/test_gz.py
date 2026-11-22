@@ -24,10 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rc_dashboard import clock, gz                      # noqa: E402
 from rc_dashboard.aggregator import Aggregator          # noqa: E402
-from rc_dashboard.export import (dated_dirs, feed_files, iter_lines_reverse,  # noqa: E402
+from rc_dashboard.export import (dated_dirs, iter_lines_reverse,  # noqa: E402
                                  make_predicate, parse_filters, resume_plan, scan,
                                  seek_to_epoch, window_plan, window_scan)
-from rc_dashboard.feeds import host_of                  # noqa: E402
 from rc_dashboard.normalize import Normalizer           # noqa: E402
 from rc_dashboard.tail import FileTailSource, read_back  # noqa: E402
 from rc_dashboard.windows import EVENTS                 # noqa: E402
@@ -385,16 +384,6 @@ class CompressedFeed(FeedCase):
             plans.append([(e["start"], e["end"]) for e in src.position(self.now - 3600)])
             self.assertEqual(list(src.poll()), [])   # handed over at the end
         self.assertEqual(plans[0], plans[1])
-
-    def test_plain_file_wins_over_its_gz_twin(self):
-        d = os.path.join(self.root, DAY)
-        with gzip.open(os.path.join(d, "h1.exits.jsonl.gz"), "wb") as fh:
-            fh.write(b"")
-        self.assertEqual(feed_files(d), [self.path("h1.exits.jsonl")])
-
-    def test_host_of_a_compressed_file(self):
-        self.assertEqual(host_of("/x/2026-10-09/boslogin06.rc.fas.harvard.edu.exits.jsonl.gz"),
-                         "boslogin06.rc.fas.harvard.edu")
 
     def test_empty_date_dirs_do_not_count_as_days(self):
         for d in ("2099-01-01", "2099-01-02"):

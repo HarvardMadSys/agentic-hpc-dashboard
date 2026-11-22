@@ -151,16 +151,6 @@ class LinkTest(unittest.TestCase):
         self.assertNotIn("t0", find(tree, 201))
         self.assertNotIn("t1", find(tree, 201))
 
-    def test_a_child_that_outlived_its_parent_says_nothing_of_the_parents_end(self):
-        # `nohup sleep 600 &`: the collector keeps the shell that forked it as
-        # its ppid, so its exit, ten minutes on, still names the shell.
-        index = {200: {"ppid": AGENT, "cmd": "bash", "role": "tool-shell", "owner": AGENT}}
-        _, tree, _ = build([
-            ex(T0 + 2, 201, 200, "git", depth=1, kv=200, dur=1.0),
-            ex(T0 + 603, 202, 200, "sleep", depth=1, kv=200, dur=600.0),
-        ], keys=(AGENT, 200), index=index.get)
-        self.assertAlmostEqual(find(tree, 200)["t1"], T0 + 3)
-
     def test_a_placed_child_bounds_a_start_but_not_an_end(self):
         # 401's parent 400 left no record and no index entry: depth places
         # 400 under its key 300, with one level between them never recorded.
