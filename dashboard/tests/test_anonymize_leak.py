@@ -2,9 +2,8 @@
 
 Starts the real app on a free local port over a scratch feed full of names --
 two accounts, a person who never ran anything here and appears only inside a
-home path, two labs, an email address and a uid -- then reads every GET route,
-the export stream, the event search and the first websocket frames, and looks
-for any of those names in any byte. It also checks the aliases DO arrive, so
+home path, two labs, an email address and a uid -- then reads every GET route
+and the first websocket frames, and looks for any of those names in any byte. It also checks the aliases DO arrive, so
 the test cannot pass by serving nothing.
 
 Behind a password, as Ask runs nowhere else; every request sends it.
@@ -258,8 +257,7 @@ class LeakTest(Served):
             self.assertClean(url, body)
             seen.append(path)
         for must in ("/api/panels", "/api/live", "/api/trajectories", "/api/trajectory",
-                     "/api/events", "/api/export", "/api/live/users", "/api/live/user",
-                     "/api/users", "/api/user",
+                     "/api/live/users", "/api/live/user", "/api/users", "/api/user",
                      "/api/config", "/api/feeds", "/api/health", "/api/windows"):
             self.assertIn(must, seen)
 
@@ -278,7 +276,7 @@ class LeakTest(Served):
         body = self.get("/api/live")[1] + self.get("/api/panels")[1]
         self.assertIn(alice, body)
         self.assertIn(bob, body)
-        self.assertIn(self.anon.labs["tambe_lab"], self.get("/api/export")[1])
+        self.assertIn(self.anon.labs["tambe_lab"], body)
 
     def test_the_websocket_frames_are_clean(self):
         with connect("ws://127.0.0.1:%d/ws" % self.port, open_timeout=20,
@@ -292,15 +290,9 @@ class LeakTest(Served):
         self.assertIsNotNone(got["row"])
         self.assertEqual(got["user"], alice)
         self.assertIsNone(json.loads(self.get("/api/live/user?name=alice")[1])["row"])
-        rows = json.loads(self.get("/api/events?user=%s" % alice)[1])["rows"]
-        self.assertTrue(rows)
-        self.assertEqual({r["user"] for r in rows}, {alice})
-        self.assertEqual(json.loads(self.get("/api/events?user=alice")[1])["rows"], [])
 
     def test_search_matches_what_the_reader_sees(self):
         alice = self.anon.user_alias("alice")
-        self.assertEqual(json.loads(self.get("/api/events?q=alice")[1])["rows"], [])
-        self.assertTrue(json.loads(self.get("/api/events?q=%s" % alice)[1])["rows"])
         found = json.loads(self.get("/api/live/users?q=%s" % alice[:9])[1])["rows"]
         self.assertEqual([r["user"] for r in found], [alice])
         self.assertEqual(json.loads(self.get("/api/live/users?q=ali")[1])["rows"], [])
@@ -437,10 +429,10 @@ MARK = "zq7mark"        # in dave's command lines only: his rows wherever they a
 def named_later(now):
     """`feed`, and accounts no response has named: `dave` and `erin` ran things
     three hours ago, past the hour the live roster holds here but in the
-    day-file a search or a filter reads. `frank`'s tool and directory carry
+    day-file a filter reads. `frank`'s tool and directory carry
     his name, and his processes are keyed by his account alone (`usr:`). Enough
-    newer exits that the old ones are past /api/events' first page and the
-    export's cap (`ReaderTextTest.configure`)."""
+    newer exits that the old ones are past the first page of anything
+    unfiltered."""
     recs = feed(now)
     for i in range(3):
         recs.append(exit_rec(now - 3 * 3600 + i, 9000 + i, "dave",
@@ -471,21 +463,12 @@ class ReaderTextTest(Served):
     def configure(cls, tree):
         tree["live"].update(retention_min=60, window_min=60, backfill_hours=1,
                             window_presets_min=[60])
-        tree["export"]["max_rows"] = 100
         tree["anonymize"]["salt"] = SALT
 
     @staticmethod
     def alias(name):
         """`name`'s alias, worked out without teaching the service the name."""
         return Anonymizer(SALT).user_alias(name)
-
-    def rows(self, query, route="/api/events"):
-        """The records a query returns: /api/events' rows, or the export's lines."""
-        status, body = self.get(route + "?" + query)
-        self.assertEqual(status, 200, body)
-        if route == "/api/export":
-            return [json.loads(x) for x in body.splitlines()[1:-1]]
-        return json.loads(body)["rows"]
 
     def lookup(self, query):
         """A finished /api/io/commands lookup."""
@@ -498,26 +481,9 @@ class ReaderTextTest(Served):
         self.assertEqual(job["state"], "done", job)
         return job
 
-    def test_a_first_search_finds_no_account_by_its_real_name(self):
-        # No response has named erin, so her name was still in her records'
-        # text when the first search masked it: `q=erin` found her rows, then
-        # served them under her alias.
-        self.assertNotIn("erin", self.anon.users)
-        for route in ("/api/events", "/api/export"):
-            for q in ("erin", "/scratch/erin"):
-                self.assertEqual(self.rows("q=" + urllib.parse.quote(q), route), [], (route, q))
-        erin = self.alias("erin")
-        for route in ("/api/events", "/api/export"):
-            got = self.rows("q=" + erin, route)
-            self.assertEqual(({r["user"] for r in got}, len(got)), ({erin}, 3), route)
-
     def test_a_real_name_in_a_tool_or_a_directory_finds_nothing(self):
         frank, alice = self.alias("frank"), self.alias("alice")
         real, shown = "/home/frank/bin/frank_sync", "/home/%s/bin/%s_sync" % (frank, frank)
-        for route in ("/api/events", "/api/export"):
-            self.assertEqual(self.rows("tool=" + urllib.parse.quote(real), route), [], route)
-            got = self.rows("tool=" + urllib.parse.quote(shown), route)
-            self.assertEqual(({r["user"] for r in got}, len(got)), ({frank}, 3), route)
         for query, n in (("tool=" + urllib.parse.quote(real), 0),
                          ("tool=" + urllib.parse.quote(shown), 3),
                          ("cwd=/scratch/frank", 0),
@@ -553,10 +519,6 @@ class ReaderTextTest(Served):
         # typed into its alias -- alice's here -- and left `zed9`, no account,
         # as it was: a table of names to aliases for anyone with a guess.
         alice, quote = self.alias("alice"), urllib.parse.quote
-        head = json.loads(self.get("/api/export?from=9999999999&host=alice,zed9,bob.smith&tool="
-                                   + quote("/home/mallory"))[1].splitlines()[0])
-        self.assertEqual({k: head["_meta"]["filters"][k] for k in ("host", "tool")},
-                         {"host": ["alice", "bob.smith", "zed9"], "tool": ["/home/mallory"]})
         self.assertEqual(json.loads(self.get("/api/panels?agent_type=alice")[1])["filter"]
                          ["agent_types"], ["alice"])
         # and the filtered view's status, which every reader's /api/windows lists
@@ -630,17 +592,16 @@ class ReaderTextTest(Served):
         one at a time (a POST route's query, which only its view filter reads,
         all at once): no answer may carry his alias, or any of his rows (each
         holds MARK). His records are older than the live roster and past the
-        first page of anything unfiltered, so only a filter or a search could
-        reach them, and only a translation of his name could produce his alias.
-        Nor may any carry the feed's other names (SECRETS), which its records
-        hold everywhere. The routes are the app's own; a POST route needs its
-        body in BODIES."""
+        first page of anything unfiltered, so only a filter could reach them,
+        and only a translation of his name could produce his alias. Nor may any
+        carry the feed's other names (SECRETS), which its records hold
+        everywhere. The routes are the app's own; a POST route needs its body
+        in BODIES."""
         dave, quote = self.alias("dave"), urllib.parse.quote
-        # A reader with his alias finds him, and the service has learned his
-        # name: a bare `dave` echoed through the rewrite would be translated.
-        got = self.rows("q=" + dave)
-        self.assertEqual(({r["user"] for r in got}, len(got)), ({dave}, 3))
-        self.assertIn("dave", self.anon.users)
+        # The service knows his name, as it does once it has masked a record of
+        # his: a bare `dave` echoed through the rewrite would be translated.
+        self.anon.learn_user("dave")
+        self.assertEqual(self.anon.users.get("dave"), dave)
         day = time.strftime("%Y-%m-%d", time.localtime(self.now - 3 * 3600))
         names = ("dave", "/home/dave", "h1|%s|human|usr:dave" % day)
         ranks = json.loads(self.get("/api/trajectories")[1])["ranks"]

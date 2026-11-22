@@ -59,8 +59,9 @@ key's `_origin`.
 - Retired feeds' settings (`feeds.sacct`, `feeds.sacctmgr`, `feeds.domains`, `feeds.user_actor`,
   `RC_DASH_SACCT_DIR` and the other `config.RETIRED_ENV` variables, `--sacct-dir`, `--jobs-csv`)
   are named in a warning and ignored, never refused. So are the sections of removed features
-  (`config.RETIRED_SECTIONS`: `annotate`, the tool-call purposes a model wrote) and every variable
-  that set one (`RC_DASH_ANNOTATE` and `RC_DASH_ANNOTATE_*`), which `/api/config` never shows.
+  (`config.RETIRED_SECTIONS`: `annotate`, the tool-call purposes a model wrote; `export`, the
+  Search & export tab's download) and every variable that set one (`RC_DASH_ANNOTATE`,
+  `RC_DASH_ANNOTATE_*`, `RC_DASH_EXPORT_MAX_ROWS`), which `/api/config` never shows.
 - `history` and `ingest` are under [History in Parquet](#history-in-parquet) and
   [Hourly merge-reduce](#hourly-merge-reduce).
 - `filters.drop_global` (`RC_DASH_DROP_USERS`, comma-separated) drops every record of the accounts
@@ -102,9 +103,9 @@ replica (`replica.py`) answers the readers' questions with the file's own offset
 
 | read of a sealed day-file | from its replica? |
 |---|---|
-| a filtered read: a view of some users or agent types, an events query or export by `user`, `host`, `agent_type`, `exit_code`, `signal` or `session_key`, the commands behind a clicked I/O figure, a session's process tree | yes: the filter, as a `where` (`where.py`), is tested on the columns, and only the records that pass are built |
+| a filtered read: a view of some users or agent types, the commands behind a clicked I/O figure, a session's process tree | yes: the filter, as a `where` (`where.py`), is tested on the columns, and only the records that pass are built |
 | a time search: where a window's read, a resumed read or a filtered read starts | yes, with nothing inflated (the backfill and an hour's read search the `.gz`, whose seek index the read that follows needs anyway) |
-| a read of everything in a range: the backfill, an hour's reduction, an unfiltered window or export | no: orjson builds a record from a line faster than Arrow does |
+| a read of everything in a range: the backfill, an hour's reduction, an unfiltered window | no: orjson builds a record from a line faster than Arrow does |
 
 A file is read as JSONL while it has no current replica: not converted yet, no longer the file its
 manifest names (by name, size, mtime and inode), holding a line a JSONL reader would read
@@ -143,12 +144,11 @@ read ran in a fresh process and gave the same answers both ways:
 
 | | from the `.gz` | from the replicas |
 |---|---:|---:|
-| one user's exits on one sealed day, 500 rows, either order (the week's 128 day-files planned, as `/api/events` plans them) | 222-444 s | 13.6-15.4 s |
 | a session's key search through the busiest day-file (17.4 GB inflated) | 30-43 s | 2.8 s |
 | a time search in that file: the first, then each after | 12.3 s, then 0.1 s | 0.17 s, then 0.06 ms |
 
-From the `.gz`, every file the plan places is inflated in full to build its seek index: 367 GB for
-the events query's week. A replica builds its own, about 30 bytes a line (250 MB for the busiest
+From the `.gz`, every file a read places is inflated in full to build its seek index. A replica
+builds its own, about 30 bytes a line (250 MB for the busiest
 file), and indexes are kept for the next read up to 1 GiB and 64 replicas in all.
 
 | setting | env | default | |
@@ -189,7 +189,7 @@ Costs are drawn from ranges that look like a login node's, and model nothing.
 it (`synthetic_hosts`); while any does, the header shows *fake data* and the Feeds tab marks each
 such host. The site is named *demo · fake data*, and its description, which the Ask LLM agent is
 given, says no record was measured. The mark travels with the records, so a service pointed at a
-demo feed by hand, or an export of one, still shows it. Use a demo to show the dashboard, never to
+demo feed by hand, or a copy of one, still shows it. Use a demo to show the dashboard, never to
 report on one.
 
 **What it overrides**, whatever the shell or the config file says (`run.sh` exports a cluster's
@@ -237,8 +237,7 @@ day-file is not counted as a day (a copied capture makes its dirs ahead of its f
 (`RC_DASH_AS_OF`, `--as-of`) pins the service's present: `auto` is one second after the newest
 record, or give a local time. The pinned clock is **frozen** (`clock.py` says why). Every live frame
 carries `clock`, the header reads *frozen capture · as of ...* instead of *live*, and the page takes
-"now" from the server, so the events query, the export bounds and every "ago" agree with the
-windows. Every restart builds the same windows over the same bytes, which makes a pinned capture a
+"now" from the server, so every "ago" agrees with the windows. Every restart builds the same windows over the same bytes, which makes a pinned capture a
 test of every tab on another cluster's data; with no capture at hand, the bench
 ([bench/README.md](bench/README.md)) writes a synthetic feed at fleet density, times the service
 over it, and compares every response the page reads before and after a change.
@@ -275,14 +274,13 @@ the view a fresh page opens on. Raising the view costs nothing; raising retentio
 a longer backfill.
 
 At ~1.5 KB per exit record a login fleet writes 10–20 GB a day, so raw events are never held in
-memory. A window change is served one of four ways:
+memory. A window change is served one of three ways:
 
 | path | how a window change is served | storage |
 |---|---|---|
 | rolling aggregates | **sliced**: exact, instant, no re-read | per-minute buckets, one slot per minute of retention (7 d ≈ 10 080 slots × a few counters) |
 | historical reducers | **rebuilt** from the rows | quantiles, CCDFs, Gini, the dedup index and the trajectory chains carry no time index |
 | event stream | cut to the window | a tail of `live.event_tail` (500), **not** an aggregate: a wider window does not lengthen it |
-| search / export | `from`/`to` pinned to the window | an on-demand re-scan, streamed, never buffered |
 
 Bins are fixed-width and aligned to the wall clock, so the 1 h view is exactly the last 60 rows of
 the 7 d view, and the headline under a chart is the sum of exactly the bins it drew. A window
@@ -440,8 +438,6 @@ window on a busy node can take ~1 GB.
 | `GET /api/trajectory?sid=&window_min=&from=&to=&order=` | one session as a **process tree**, re-read on demand, `oldest` or `newest` first (below) |
 | `GET /api/users?window_min=&user=&agent_type=` | every user with an agent session in the window, the window's totals (`fleet`), the agent sessions of no named user (`unattributed`), and the traits' rules ([below](#users-a-portrait-of-each-user)) |
 | `GET /api/user?name=&window_min=` | one user's portrait; `name` takes the alias when names are anonymized |
-| `GET /api/events?<filters>` | paged event query |
-| `GET /api/export?<filters>` | **streaming filtered raw JSONL** |
 | `GET /api/io/commands?<filters>&window_min=&apid=&host=&cwd=` | starts a lookup of every command behind an I/O figure, over the window's records (`iocmds.py`); `apid` and `host` name the agents as the page drew them, `cwd` a directory |
 | `GET /api/io/commands/{job}?offset=&limit=&sort=&dir=` | that lookup's state and, once done, a page of its rows (200, by `rd_mb`, largest first, unless asked otherwise) |
 | `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}`. Each reader has a sender of its own holding the newest frame of each kind, so a slow reader holds up neither the tail nor the other readers; one that takes no frame for 5 s is dropped (close 1008), and past 64 readers one is turned away (close 1013: the page retries, then polls) |
@@ -479,20 +475,16 @@ in file order with the one-process read's counters, so every bound stops a read 
 either way (`tests/test_keysearch.py`). What a read costs is in
 [INSPECT](../docs/figures/README.md#inspect-the-session-inspectors-re-read).
 
-Filters are shared by `/api/events` and `/api/export`, so **the download is exactly the view**:
-`from to event[] class[] agent_type[] user[] host[] tool[] purpose[] bucket[] session_key sandbox[]
-approval[] depth_min depth_max cpu_min duration_min rd_min wr_min exit_code[] signal[] outcome[] q`.
-`event` is `exit` unless one is given (an empty `event=` widens it to every kind, and `/api/events`
-says `event_filter_defaulted` when it applied the default); `rd_min` and `wr_min` are MB read and
-written, at least; `outcome` is how a process ended, in the words of [Commands that
-failed](#commands-that-failed): `ok`, `nonzero`, `answer`, `signal`, `pipe` or `none`. The export's
-first line is a `_meta` header (the filters, the feed paths and their status, schema versions) and
-its last a `_trailer` (row count, and whether `export.max_rows` truncated it). Body rows are the
-collector's own fields, unmodified except for credentials, plus `_`-prefixed derived keys.
+The `<filters>` of `/api/io/commands` are the one filter grammar (`export.parse_filters`):
+`from to class[] agent_type[] user[] host[] tool[] purpose[] bucket[] session_key sandbox[]
+approval[] depth_min depth_max cpu_min duration_min rd_min wr_min exit_code[] signal[] outcome[]`;
+`rd_min` and `wr_min` are MB read and written, at least; `outcome` is how a process ended, in the
+words of [Commands that failed](#commands-that-failed): `ok`, `nonzero`, `answer`, `signal`, `pipe`
+or `none`.
 
 **Credentials never leave the service.** Tokens, passwords, keys and signed URLs on a command line
-become `[REDACTED]` on every way out (built panels, the live frame, `/api/events`, `/api/export`, and
-the `q` search, which matches the masked text); the flag or variable name is kept, so a reader sees
+become `[REDACTED]` on every way out (built panels, the live frame, the session inspector, an I/O
+lookup's commands); the flag or variable name is kept, so a reader sees
 what was there. Records stay raw in memory, where the secrets, sandbox and approval detectors read
 them. The rules (`redact.py`, matching the collector's word for word) are a deny-list, so a secret in
 a shape they do not know is shown as it is (`collector/README.md` lists the shapes). Each reads a
@@ -606,8 +598,8 @@ the two shipped profiles, and [`example.json`](risk-profiles/example.json) uses 
 ## Anonymized names
 
 `anonymize.enabled` (`RC_DASH_ANONYMIZE=1`) replaces every username, lab or Slurm account name,
-email address and numeric user ID in everything the service sends out (every HTTP response,
-websocket frame and export line, and the Ask snapshot) with a stable alias: `user-7f3a9c1e`,
+email address and numeric user ID in everything the service sends out (every HTTP response and
+websocket frame, and the Ask snapshot) with a stable alias: `user-7f3a9c1e`,
 `lab-1b2c3d4e`, `[email]`, `[uid]`. It is off by default, so a deployment for the cluster's own staff
 shows real names. The header says *anonymized* while it is on.
 
@@ -633,9 +625,9 @@ shows real names. The header says *anonymized* while it is on.
 - **Requests.** A real name sent in place of an alias finds nothing, so the service cannot be asked
   whether someone is here, or which alias is theirs. A `user` filter, the user drill-down (`name`)
   and a session id (`sid`, whose `tty:` and `usr:` keys name an account) take an alias; anything else
-  maps to `user-unknown`, which matches no record. Both searches (`q`) and the `host`, `tool` and
-  `cwd` filters match the text as the reader sees it. What a response echoes from a request (the
-  export header's filters, a view's filter and status, an I/O lookup's query, a session id, an Ask
+  maps to `user-unknown`, which matches no record. The roster's search (`q`) and the `host`,
+  `tool` and `cwd` filters match the text as the reader sees it. What a response echoes from a request (a
+  view's filter and status, an I/O lookup's query, a session id, an Ask
   question and answer, the suggestions marked done) goes back exactly as sent (`anonymize.Verbatim`).
 - **Ask is refused while names are anonymized**, unless `ask.unmasked_answers` is set: its answer is
   shown as the agent writes it, and the agent can read whatever the service's account can, raw feeds
@@ -643,8 +635,7 @@ shows real names. The header says *anonymized* while it is on.
   included; to clear them, edit or remove `<cache.dir>/ask/done.json` by hand.
 - **Not covered.** A person's name in free text that no rule ties to an account (a commit message, a
   folder named after someone), hostnames, partitions and job ids; and an account named in another's
-  command line, outside a home path, before any response has named it (a search for that name finds
-  the line). In `/api/health`, `anonymize` counts the names it knows, the collisions (two names, one
+  command line, outside a home path, before any response has named it. In `/api/health`, `anonymize` counts the names it knows, the collisions (two names, one
   alias), and the accounts left visible because their name is a reserved word, never a name.
 
 `tests/test_anonymize_leak.py` reads every route and the websocket over a feed full of names and
@@ -1187,7 +1178,7 @@ GPU-hours count only jobs with GPUs and a time limit on the command line, as the
 | `rc_dashboard/proctree.py` | one session as a process tree, read on demand: what the session inspector draws |
 | `rc_dashboard/iocmds.py` | every command behind an I/O figure, looked up when it is clicked |
 | `rc_dashboard/endpoints.py` | the far ends of the network bytes, named and ranked when the panel is read ([Network endpoints](#network-endpoints)) |
-| `rc_dashboard/export.py` | the shared filter grammar, streaming export, the windowed re-scan |
+| `rc_dashboard/export.py` | the shared filter grammar, the windowed re-scan |
 | `rc_dashboard/app.py` | FastAPI: REST, WebSocket, static mount |
 | `rc_dashboard/auth.py` | sign-in: one password, kept as a salted scrypt hash ([Password](#password)) |
 | `rc_dashboard/guard.py` | who may talk to the service at all: a websocket's Origin, and every request's Host while it has no password |

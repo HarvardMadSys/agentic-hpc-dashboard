@@ -48,7 +48,6 @@ Scale: FAS RC's eight login nodes wrote 21.6 M eBPF records on 2026-11-15: 17.1 
 | LIVE | the live tier, `reducers/live.py:LiveReducer`, and the collectors' health, `health.py:CollectorHealth`, fed by the tail and the startup backfill | the tail every `ingest.poll_ms` (1 s); the backfill once per start | no |
 | BUILD | a window view's reducers, `windows.py:PanelView`: built once per window and filter, then fed live | built on first request, at start for the default and prewarm windows, and on drift; its payload made again every rebuild tick | merge: no. scan: only the time search that places the window's start. filtered: yes |
 | INSPECT | the session inspector's re-read of one session, `proctree.py:inspect` | on opening a session | yes for a session keyed on pids; no for a terminal's or a login scope's |
-| EVENTS | the events scan, `export.py:scan`, behind `/api/events` and `/api/export` | per request | yes when the filter names `user`, `host`, `agent_type`, `exit_code`, `signal` or `session_key` |
 | IOCMDS | the lookup of the commands behind a clicked I/O number, `iocmds.py:IoCommands` | per click, as a polled job | yes when the click names a user, a host, a directory or agent pids |
 | NODE | the node tier's newest snapshots, `aggregator.py:Aggregator.read_node_tier` | at start and every rebuild tick | no: the node tier is never sealed |
 | NODEHIST | the node tier over time, `nodehist.py:NodeHistory`, on a thread of its own | a pass every 60 s (`IDLE_S`), 4 MB a read (`CHUNK`); binned to the window on every `/api/panels` read | no: the node tier is never sealed |
@@ -197,25 +196,13 @@ inflated) it took 30-43 s from the `.gz` and 2.8 s from its replica
 window) takes 2.5-2.7 s against 9.9 s in one, and a newest-first read of 149,573 records
 (boslogin05) 5.3-5.5 s against 12.1 s, most of it the tree keeping the newest.
 
-### EVENTS: the events scan
-
-`export.py:scan` plans every day-file under the roots and reads each one from its near time bound
-(newest first reads backwards from `to`): it checks the event kind on the bytes, parses, normalizes
-and tests each record (`make_predicate`), and k-way merges the files' streams on time. Paging is by
-offset, so a deep page reads the earlier matches again. A `.gz` with no replica is inflated whole
-the first time it is read, to index it. Replicas: when the filter names one of the record's own
-fields (`where_of`: `user`, `host`, `agent_type`, `exit_code`, `signal`, `session_key`). Measured:
-finding one user's exits on one sealed day, with the week's 128 day-files planned, took 222-444 s
-from the `.gz` and 13.6-15.4 s from replicas
-([History in Parquet](../../dashboard/README.md#history-in-parquet)).
-
 ### IOCMDS: the commands behind an I/O number
 
 A click on an I/O number (`components/IoCmds.tsx:IoNum`) starts a job (`iocmds.py:IoCommands`) that
 reads the window's `exit` records again, one file after another (`export.py:window_plan`, then
 `_window_stream`), takes each process's reaped children off its bytes (`OwnIo`, over every record
-it parses), keeps the records that pass the click's filters (`/api/events`' own, plus agent pids, a
-host and a directory) and groups them by command line. A click carries its figure's filters, else
+it parses), keeps the records that pass the click's filters (the one filter grammar,
+`export.py:make_predicate`, plus agent pids, a host and a directory) and groups them by command line. A click carries its figure's filters, else
 the page's user and agent-type filter (`components/IoCmds.tsx:params`). Two jobs read at once; six
 finished ones are kept, each answering the same question again for 120 s on a live feed, or
 indefinitely on a pinned clock. Replicas: when the lookup names a user, a host, a directory or agent
@@ -1348,34 +1335,6 @@ Requests are read off argv: a `#SBATCH` line is not seen.
   the session's process tree, read by INSPECT (`Aggregator._ask_session`, `ask.py:session_digest`).
 - **Cost:** as AL-1.
 
-## Search & export
-
-Hidden (`App.tsx`, `HIDDEN_TABS`); its code is kept, and `/api/events` and `/api/export` are
-served.
-
-| | figure | path | payload | code (service · page) |
-|---|---|---|---|---|
-| EX-1 | records, filtered (table) | EVENTS | `/api/events` `rows`, `next_cursor`, `total_scanned`, `event_filter_defaulted` | `export.py:scan`, `make_predicate`; `app.py:api_events` · `components/EventsExplorer.tsx:EventsExplorer`, `tabs/LiveTab.tsx:EventTable` |
-| EX-2 | download | EVENTS | `/api/export`: JSONL with a `_meta` header and a `_trailer` | `export.py:scan`, `meta_header`; `app.py:api_export` · `components/EventsExplorer.tsx:EventsExplorer` |
-
-#### EX-1 records, filtered
-
-- **Shows:** the records matching the filters, newest first, 200 a page (5,000 at most), by user.
-- **Records:** any kind; `event` defaults to `exit`, and the response says when it did. The fields
-  the filters name: time, `_a3`, `agent_type`, `user`, `host`, `_eff`, `_purpose`, bucket,
-  `session_key`, `_sandbox`, `_approval`, `depth`, `cpu_s`, `duration_s`, `exit_code`, `signal`, and
-  `q`, a substring of the masked command line.
-- **Computation:** EVENTS. When names are anonymized, `q` is matched against the aliased text, at
-  the cost of rewriting each candidate (`app.py:search`).
-- **Cost:** per page, bounded by the matches it needs and the files' time ranges (EVENTS).
-
-#### EX-2 download
-
-- **Shows:** the same records as a JSONL file, with the derived `_` keys, credentials masked.
-- **Computation:** the same predicate, every match streamed, 500 lines a chunk, up to
-  `export.max_rows` (5,000,000); the trailer gives the row count and whether the cap cut it short.
-- **Cost:** a read of every planned file's range, bounded only by the cap.
-
 ## Internal
 
 The per-process tables of the resource and I/O reducers (IN-1 to IN-4), drawn through
@@ -1502,9 +1461,8 @@ with the read paths and figures above) and, where nothing was measured, by the w
    hours, parses every line but `meta` and `stop` and feeds it to about eleven reducers; merged
    windows pay it once per hour, but the first fill of the hours, the 1 h view, every filtered view
    and their drift rebuilds still read the window, and every BUILD figure waits on it.
-2. **Re-reading a window per click or query** (IOCMDS, EVENTS): from the JSONL unless a replica can
-   test the filter, a `.gz` with no replica inflated whole to index it; an export streams every match
-   in its range, up to 5,000,000 rows.
+2. **Re-reading a window per click** (IOCMDS): from the JSONL unless a replica can test the
+   filter, a `.gz` with no replica inflated whole to index it.
 3. **The backfill** (LIVE): placing the read inflates every sealed `.gz` to index it, window builds
    wait for it, and the indexes are rebuilt on every restart.
 4. **The session inspector's read** (INSPECT; SE-5, SE-7, SE-9): one at a time, so a second reader

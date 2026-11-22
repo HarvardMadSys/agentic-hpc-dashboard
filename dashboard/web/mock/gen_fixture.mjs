@@ -2289,7 +2289,6 @@ function build() {
     limits: {
       tail_events: { _value: 400, _origin: 'default' },
       trajectory_buffer: { _value: 4096, _origin: 'config file: dashboard/rc_dashboard.toml' },
-      export_max_rows: { _value: 5_000_000, _origin: 'default' },
     },
     server: {
       host: { _value: '127.0.0.1', _origin: 'cli --host' },

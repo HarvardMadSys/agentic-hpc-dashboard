@@ -35,59 +35,6 @@ function load(): Fixture {
   return JSON.parse(readFileSync(join(HERE, 'api.json'), 'utf8')) as Fixture;
 }
 
-/* ------------------------------------------------------- event filtering */
-
-const NUM_GE: Record<string, string> = {
-  depth_min: 'depth',
-  cpu_min: 'cpu_s',
-  duration_min: 'duration_s',
-};
-const NUM_LE: Record<string, string> = { depth_max: 'depth' };
-const EQ: Record<string, string> = {
-  agent_type: 'agent_type',
-  user: 'user',
-  host: 'host',
-  tool: 'tool',
-  purpose: 'purpose',
-  bucket: 'bucket',
-  session_key: 'session_key',
-  sandbox: 'sandbox',
-  approval: 'approval',
-  exit_code: 'exit_code',
-  signal: 'signal',
-};
-
-/** The same filter semantics for /api/events and /api/export, from one place --
- *  which is exactly the property the real backend has to have too. */
-function filterEvents(rows: Record<string, unknown>[], q: URLSearchParams) {
-  const classes = q.getAll('class');
-  const from = q.get('from');
-  const to = q.get('to');
-  const text = (q.get('q') || '').toLowerCase();
-  return rows.filter((r) => {
-    if (classes.length && !classes.includes(String(r.actor3))) return false;
-    for (const [k, f] of Object.entries(EQ)) {
-      const v = q.get(k);
-      if (v != null && v !== '' && String(r[f] ?? '') !== v) return false;
-    }
-    for (const [k, f] of Object.entries(NUM_GE)) {
-      const v = q.get(k);
-      if (v != null && v !== '' && !(Number(r[f]) >= Number(v))) return false;
-    }
-    for (const [k, f] of Object.entries(NUM_LE)) {
-      const v = q.get(k);
-      if (v != null && v !== '' && !(Number(r[f]) <= Number(v))) return false;
-    }
-    if (from && String(r.ts ?? '') < from) return false;
-    if (to && String(r.ts ?? '') > to) return false;
-    if (text) {
-      const hay = `${r.comm ?? ''} ${r.args ?? ''} ${r.user ?? ''} ${r.host ?? ''}`.toLowerCase();
-      if (!hay.includes(text)) return false;
-    }
-    return true;
-  });
-}
-
 /* ------------------------------------------------------------- windowing
  *
  * The mock slices the same way the service does -- the fixture holds one bin
@@ -464,26 +411,6 @@ export function mockApi(): Plugin {
             const from = asked != null && Number.isFinite(Number(asked)) ? Number(asked) : null;
             return send({ ...alignDetail(fx.trajectory_detail, rows[sid], from), sid, row: rows[sid],
                           _window: st, window: win });
-          }
-          case '/api/events': {
-            const all = filterEvents(freshenLive(fx, win.minutes).events, q);
-            const PAGE = 100;
-            const start = Number(q.get('cursor') || 0);
-            const rows = all.slice(start, start + PAGE);
-            return send({
-              rows,
-              next_cursor: start + PAGE < all.length ? String(start + PAGE) : null,
-              total_scanned: freshenLive(fx, win.minutes).events.length,
-              truncated: all.length > 380,
-            });
-          }
-          case '/api/export': {
-            const all = filterEvents(freshenLive(fx, win.minutes).events, q);
-            res.statusCode = 200;
-            res.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
-            res.setHeader('content-disposition', 'attachment; filename="events.jsonl"');
-            for (const r of all) res.write(JSON.stringify(r) + '\n');
-            return res.end();
           }
           default:
             return send({ error: `no mock route for ${u.pathname}` }, 404);

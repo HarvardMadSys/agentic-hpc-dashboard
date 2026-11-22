@@ -439,12 +439,11 @@ of the `.gz`, with the same answers both ways:
 
 | | from the `.gz` | from the replicas |
 |---|---:|---:|
-| one user's exits on one sealed day, 500 rows, either order (the week's 128 day-files planned, as `/api/events` plans them) | 222-444 s | 13.6-15.4 s |
 | a session's key search through the busiest day-file (17.4 GB inflated) | 30-43 s | 2.8 s |
 | a time search in that file: the first, then each after | 12.3 s, then 0.1 s | 0.17 s, then 0.06 ms |
 
 The `.gz` side inflates each file it places in full, to learn its size and build its
-seek index. For the events query, that is the whole week: 367 GB.
+seek index.
 
 ### Version 1
 

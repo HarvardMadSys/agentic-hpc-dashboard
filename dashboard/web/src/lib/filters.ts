@@ -1,42 +1,18 @@
 /* Filter state, and its one canonical serialisation.
  *
- * The filter bar, the `/api/events` request and the `/api/export` download all
- * read the SAME query string produced here, so the downloaded JSONL is exactly
- * the view on screen. `tab` and `rank` ride along in the URL too so a reload
- * restores what the user was looking at, but they are stripped before the
- * query reaches the API.
+ * The page-wide filters ride in the URL with the view -- the tab, the rank,
+ * the window, the open session -- so a reload restores what the user was
+ * looking at; the view's keys are stripped before a query reaches the API.
  *
  * The user and agent-type filter (`Who`) is page-wide like the class filter,
  * but it is not applied to numbers the page already has: the service builds a
  * filtered view the way it builds a window, so it travels with the panels and
- * trajectories requests as well as with the events query.
+ * trajectories requests.
  */
 import { CLS } from './classes';
-import { serverNow } from './clock';
 import type { Cls, TrajOrder, TrajRank } from '../api/types';
 import { TRAJ_RANKS } from '../api/types';
 import { table } from './lookup';
-
-/** Scalar filter params, in the order the backend documents them. */
-export const SCALAR_KEYS = [
-  'from',
-  'to',
-  'host',
-  'tool',
-  'purpose',
-  'bucket',
-  'session_key',
-  'sandbox',
-  'approval',
-  'depth_min',
-  'depth_max',
-  'cpu_min',
-  'duration_min',
-  'exit_code',
-  'signal',
-  'q',
-] as const;
-export type ScalarKey = (typeof SCALAR_KEYS)[number];
 
 /** UI-only keys: they live in the URL, never in an API query.
  *
@@ -60,7 +36,6 @@ export interface Who {
 export interface Filters extends Who {
   /** `class` is repeatable; at least one class is always selected. */
   cls: Cls[];
-  scalars: Partial<Record<ScalarKey, string>>;
 }
 
 export interface UrlState extends Filters {
@@ -145,11 +120,6 @@ export function parseUrl(search: string): UrlState {
     // a link saved before the IDE class was named says human-vscode
     .map((c) => (c === 'human-vscode' ? 'ide' : c))
     .filter((c): c is Cls => (CLS as string[]).includes(c));
-  const scalars: Partial<Record<ScalarKey, string>> = {};
-  for (const k of SCALAR_KEYS) {
-    const v = p.get(k);
-    if (v != null && v !== '') scalars[k] = v;
-  }
   const rank = p.get('rank');
   const win = Number(p.get('win'));
   const tfrom = Number(p.get('tfrom'));
@@ -157,7 +127,6 @@ export function parseUrl(search: string): UrlState {
     // At least one class is always selected: an empty selection would silently
     // render an all-zero dashboard, which reads as "no activity".
     cls: raw.length ? raw : [...CLS],
-    scalars,
     // `user` and `agent_type` were the search bar's own fields before they
     // became page-wide, so a saved search link still narrows to the same people.
     users: many(p, 'user'),
@@ -191,7 +160,8 @@ export function patched(s: UrlState, patch: Partial<UrlState>): UrlState {
   return next;
 }
 
-/** `user` and `agent_type` repeated, in `/api/events`' vocabulary, sorted so
+/** `user` and `agent_type` repeated, in the service's filter vocabulary
+ *  (`export.parse_filters`), sorted so
  *  one filter is one string whichever order its values were picked in. */
 export function whoQuery(w: Who): string {
   const p = new URLSearchParams();
@@ -208,23 +178,19 @@ export function whoMatch(w: Who, user: string | null | undefined, atype: string 
   return true;
 }
 
-/** The API query: `class` repeated, scalars in order, the user and agent-type
- *  filter, no UI keys. */
+/** The API query: `class` repeated, and the user and agent-type filter; no UI
+ *  keys. */
 export function apiQuery(f: Filters): string {
   const p = new URLSearchParams();
   for (const c of f.cls) p.append('class', c);
-  for (const k of SCALAR_KEYS) {
-    const v = f.scalars[k];
-    if (v != null && v !== '') p.append(k, v);
-  }
   const w = whoQuery(f);
   return [p.toString(), w].filter(Boolean).join('&');
 }
 
 /** The browser query: the API query plus the UI keys.
  *
- * `apiQuery` iterates SCALAR_KEYS and UI_KEYS is disjoint from it, which is how
- * a UI key is kept out of the request the backend sees.
+ * `apiQuery` writes no UI key, which is how a UI key is kept out of the
+ * request the backend sees.
  */
 export function urlQuery(s: UrlState): string {
   // The agent types go in as `atype`: `agent_type` is read too, for old links.
@@ -235,27 +201,4 @@ export function urlQuery(s: UrlState): string {
     if (v != null && v !== '' && v !== UI_OMIT_AT[k]) p.append(k, String(v));
   }
   return p.toString();
-}
-
-/** `from`/`to` for the events + export query, pinned to the selected window.
- *
- * The download has to be exactly the view, and the view is now window-bounded,
- * so a window that the user narrowed must reach `/api/export` too. An explicit
- * `from`/`to` typed into the filter bar still wins: it is the more specific
- * statement of intent.
- */
-export function windowBounds(s: UrlState, minutes: number | null): Filters {
-  if (minutes == null || s.scalars.from || s.scalars.to) return s;
-  const to = new Date(serverNow());
-  const from = new Date(to.getTime() - minutes * 60_000);
-  const stamp = (d: Date) =>
-    new Date(d.getTime() - d.getTimezoneOffset() * 60_000)
-      .toISOString()
-      .slice(0, 19)
-      .replace('T', ' ');
-  return { ...s, scalars: { ...s.scalars, from: stamp(from), to: stamp(to) } };
-}
-
-export function countActiveScalars(f: Pick<Filters, 'cls' | 'scalars'>): number {
-  return SCALAR_KEYS.reduce((a, k) => a + (f.scalars[k] ? 1 : 0), 0);
 }

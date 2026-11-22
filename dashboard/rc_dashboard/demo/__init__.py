@@ -16,7 +16,7 @@ The files are JSONL, as a collector writes them.
 Nothing in it was measured, and the page cannot be mistaken for a measurement:
 
 * every record carries `"synthetic": true`, so the label travels with the data:
-  an export of the demo says it on every row, and a service pointed at a demo
+  a copy of the demo's files says it on every row, and a service pointed at a demo
   feed by hand still finds it;
 * the header says "synthetic data" whenever a host's heartbeat does
   (`health.py`), and the Feeds tab marks each such host;

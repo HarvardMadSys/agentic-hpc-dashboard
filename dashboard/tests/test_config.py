@@ -305,19 +305,21 @@ class Retired(Case):
 
 class RetiredSections(Case):
     """The sections of features since removed (`annotate`, the tool-call purposes
-    a model wrote): a file or a variable written for one is named and ignored,
-    never refused, and nothing of it is served -- a key it held included."""
+    a model wrote; `export`, the Search & export tab's download): a file or a
+    variable written for one is named and ignored, never refused, and nothing of
+    it is served -- a key it held included."""
 
     KEY = "sk-ant-api03-EXAMPLEEXAMPLEEXAMPLE0123"
     # each section as a site's file may still hold it
     FILE = {"annotate": {"enabled": True, "provider": "command", "api_key": KEY,
                          "command": ["env", "ANTHROPIC_API_KEY=" + KEY, "claude", "-p"],
-                         "system_prompt": "token " + KEY, "batch_size": 40}}
+                         "system_prompt": "token " + KEY, "batch_size": 40},
+            "export": {"max_rows": 100}}
     # every variable there was to set one, and its section
     VARS = {"RC_DASH_ANNOTATE": "annotate", "RC_DASH_ANNOTATE_PROVIDER": "annotate",
             "RC_DASH_ANNOTATE_MODEL": "annotate", "RC_DASH_ANNOTATE_BASE_URL": "annotate",
             "RC_DASH_ANNOTATE_KEY_ENV": "annotate", "RC_DASH_ANNOTATE_KEY_FILE": "annotate",
-            "RC_DASH_ANNOTATE_CMD": "annotate"}
+            "RC_DASH_ANNOTATE_CMD": "annotate", "RC_DASH_EXPORT_MAX_ROWS": "export"}
 
     def test_every_one_is_retired(self):
         self.assertEqual(sorted(configmod.RETIRED_SECTIONS), sorted(self.FILE))

@@ -8,7 +8,6 @@
 import type {
   CollectorsResponse,
   ConfigTree,
-  EventsResponse,
   FeedsResponse,
   LiveResponse,
   LiveUserDetail,
@@ -211,14 +210,6 @@ export const getTrajectory = (
     }${to != null ? `&to=${encodeURIComponent(to)}` : ''}${order === 'newest' ? '&order=newest' : ''}`,
     { signal: s },
   );
-
-export function getEvents(query: string, cursor?: number | string | null, s?: AbortSignal) {
-  const q = cursor ? `${query}${query ? '&' : ''}cursor=${encodeURIComponent(cursor)}` : query;
-  return get<EventsResponse>(`/events${q ? '?' + q : ''}`, { signal: s });
-}
-
-/** The export URL. Identical query string to the events request by construction. */
-export const exportUrl = (query: string) => `${API_BASE}/export${query ? '?' + query : ''}`;
 
 /** `ws://`/`wss://` peer of the API origin. */
 export function wsUrl(): string {

@@ -52,9 +52,8 @@ import { feedLabel } from './lib/feeds';
 import { table } from './lib/lookup';
 
 /* Live is the first paint, with the shell; every other tab loads its code
- * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). Search &
- * export is hidden, and its code is fetched like the rest. The sessions list
- * and its inspector (TrajectoriesTab), the Agents tab's last part, are split
+ * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). The sessions
+ * list and its inspector (TrajectoriesTab), the Agents tab's last part, are split
  * off like a tab: the Sessions tab was not, so that its inspector, near the
  * top of that tab, opened in the first render without scrolling the page. At
  * the foot of the Agents tab, scrolling to it is what opening it is for. */
@@ -68,7 +67,6 @@ const SlurmTab = lazyTab(() => import('./tabs/SlurmTab').then((m) => m.SlurmTab)
 const FeedsTab = lazyTab(() => import('./tabs/FeedsTab').then((m) => m.FeedsTab));
 const ChatTab = lazyTab(() => import('./tabs/ChatTab').then((m) => m.ChatTab));
 const UsersTab = lazyTab(() => import('./tabs/UsersTab').then((m) => m.UsersTab));
-const EventsExplorer = lazyTab(() => import('./components/EventsExplorer').then((m) => m.EventsExplorer));
 
 /* In the order an operator reads them (roadmap notes 32 and 50): what is
  * happening and who uses what, how each user works with agents, the agents
@@ -97,7 +95,6 @@ const TABS: Tab[] = [
   { k: 'risk', lbl: 'Risks', eyebrow: 'what should not run here', icon: 'risk', group: 'Monitor', parent: 'nodes', also: 'risk warning' },
   { k: 'slurm', lbl: 'HPC', eyebrow: 'what sessions ask of the Slurm scheduler, and what looks abnormal', icon: 'hpc', group: 'Monitor', also: 'slurm scheduler jobs queue abnormal cluster' },
   { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask a language model about this window', icon: 'chat', group: 'More' },
-  { k: 'events', lbl: 'Search & export', eyebrow: 'every process record, filtered and downloadable', icon: 'events', group: 'More' },
   { k: 'internal', lbl: 'Internal', eyebrow: 'not settled yet', icon: 'internal', group: 'More' },
   { k: 'feeds', lbl: 'Feeds', eyebrow: 'where the data comes from, and how fresh it is', icon: 'feeds', group: 'More', also: 'provenance data sources' },
 ];
@@ -134,9 +131,6 @@ const TRANSPORT_WORDS = { ws: 'streaming', polling: 'every 15 s', connecting: 'c
 const typing = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
-/* Hidden for now, its code kept (user, 2026-10-13): Search & export. An old
- * link to it (?tab=events) opens the first tab instead. */
-const HIDDEN_TABS = new Set(['events']);
 /** How long after each answer the sessions list asks again, while the Agents tab, whose last part it is, is shown. */
 const TRAJ_LIVE_MS = 5000;
 /** No panels yet: one empty map, not a new one each render, so a memoized tab
@@ -343,7 +337,9 @@ export default function App() {
 
   // A cluster without Slurm sets `slurm.enabled: false`; its tab goes away.
   const slurmLeaf = (config.data?.slurm as Record<string, { _value?: unknown }> | undefined)?.enabled;
-  const tabs = TABS.filter((t) => !HIDDEN_TABS.has(t.k) && (t.k !== 'slurm' || slurmLeaf?._value !== false));
+  const tabs = TABS.filter((t) => t.k !== 'slurm' || slurmLeaf?._value !== false);
+  // A tab that is not here -- an old link to Search & export (`?tab=events`),
+  // since removed, or HPC where it is off -- opens the first.
   const tab = tabs.find((t) => t.k === url.tab) || tabs[0];
   // What the site calls its hosts (`ui.node_noun`): every place the page names
   // them says it, through NodeNounCtx (lib/nodes.ts).
@@ -600,8 +596,6 @@ export default function App() {
             goto={goto}
           />
         );
-      case 'events':
-        return <EventsExplorer url={url} setUrl={setUrl} windowMin={resolvedWin?.minutes ?? null} />;
       case 'internal':
         return <InternalTab P={P} cls={cls} />;
       case 'security':

@@ -23,9 +23,6 @@ thing whichever of the two a reader took it from:
                                 reader would drop
     bad_in(start, end)          lines in the range that do not parse: a reader's
                                 `parse_errors`
-    line_read(at, kinds, far)   where a line read from `at` that parses the records of
-                                `kinds` stops at the first past `far`, and how many it
-                                has parsed by each record: `export._matching`'s read
 
 Which records a range holds, in which order, at which offsets, and each one key for
 key and type for type: all the same as the file's (tests/test_replica.py checks them
@@ -56,7 +53,6 @@ from . import where as wh
 from .normalize import epoch_of
 
 BATCH_ROWS = 8192            # rows built into records at a time
-WANT_MAX = 4                 # event-kind sets whose line masks a replica keeps (`line_read`)
 _TIME_KEYS = ("ts_epoch", "ts", "timestamp")
 
 _lookup = None               # path -> Replica or None, set by the history store
@@ -128,7 +124,6 @@ class Replica:
         self._offs = {}          # table name -> its rows' `_off`
         self._pf = {}            # table name -> ParquetFile
         self._rg = {}            # table name -> first row of each row group, and the end
-        self._want = {}          # kinds -> (which lines a read of them parses, running count)
 
     # ------------------------------------------------------------ what it is
     def head_digest(self, n):
@@ -278,57 +273,12 @@ class Replica:
                     has[i] = True
         return off, ts, has
 
-    def _wanted(self, kinds):
-        """`(want, cw)` over every line: whether a line read that parses the
-        records of `kinds` (all of them for None) parses it, as `event_filter`
-        lets a line through by its `event`, and the running count of those
-        (`cw[i]`: how many of the lines before line i)."""
-        key = None if kinds is None else frozenset(kinds)
-        with self._lock:
-            got = self._want.get(key)
-        if got is not None:
-            return got
-        np = _np()
-        pa = fp._pa()
-        starts = self.starts()
-        want = np.zeros(len(starts), dtype=bool)
-        for t, p in self.tables:
-            if key is None:
-                hit = None                              # every record
-            else:
-                # the events a table's rows may hold: its own, or (`other`) any
-                # name no table holds
-                own = {e for e in t.events if e is not None}
-                hit = key - set(fp.EVENT_TABLE) if None in t.events else key & own
-                if not hit:
-                    continue
-                if hit == own:
-                    hit = None
-            offs = self.offs(t.name, p)
-            idx = starts.searchsorted(offs)
-            if hit is not None:
-                ev = self._file(t.name, p).read(columns=["event"]).column("event")
-                keep = pa.compute.is_in(ev, value_set=pa.array(sorted(hit))) \
-                    .fill_null(False).to_numpy(zero_copy_only=False)
-                idx = idx[keep]
-            want[idx] = True
-        cw = np.zeros(len(starts) + 1, dtype=np.int32 if len(starts) < 2 ** 31 else np.int64)
-        np.cumsum(want, out=cw[1:])
-        got = (want, cw)
-        with self._lock:
-            if len(self._want) >= WANT_MAX:
-                self._want.pop(next(iter(self._want)))
-            self._want[key] = got
-        return got
-
     def nbytes(self):
         """The memory this replica's indexes hold, which the history store bounds:
         about 30 bytes a line once a time search and a ranged read have been made."""
         with self._lock:
             arrays = [self._starts, self._nonrec, self._bad] + list(self._offs.values())
             arrays += list(self._probe_ix or ())
-            for pair in self._want.values():
-                arrays += list(pair)
         seen = set()
         n = 0
         for a in arrays:
@@ -336,47 +286,6 @@ class Replica:
                 seen.add(id(a))
                 n += a.nbytes
         return n
-
-    def line_read(self, at, kinds, far=None, reverse=False):
-        """A line read of the file as `export._matching` makes it: from `at`
-        forward, or (`reverse`) newest first from the line ending at `at`,
-        parsing the records of `kinds` (all of them for None) and counting each,
-        and stopping at the first whose time (`epoch_of`) is past `far` -- above
-        it forward, below it newest first -- counted, not handed on.
-
-        Returns `(start, end, count, total)`: the records it hands on are those
-        of [start, end); `count(off)` is how many it has counted once it has
-        parsed the record at `off`, that one included; `total`, how many once it
-        has stopped (or reached the end)."""
-        np = _np()
-        want, cw = self._wanted(kinds)
-        starts, ts, has, _nxt = self._index()
-        n = len(starts)
-        if reverse:
-            top = int(starts.searchsorted(at))           # the lines before `at`
-            s = -1
-            if far is not None and top:
-                past = np.flatnonzero(want[:top] & has[:top] & (ts[:top] < far))
-                if len(past):
-                    s = int(past[-1])
-            start = 0 if s < 0 else (int(starts[s + 1]) if s + 1 < n else self.complete_end)
-            total = int(cw[top] - cw[max(s, 0)])
-
-            def count(off):
-                return int(cw[top] - cw[int(starts.searchsorted(off))])
-            return start, at, count, total
-        first = int(starts.searchsorted(at))
-        s = n
-        if far is not None and first < n:
-            past = np.flatnonzero(want[first:] & has[first:] & (ts[first:] > far))
-            if len(past):
-                s = first + int(past[0])
-        end = int(starts[s]) if s < n else self.complete_end
-        total = int(cw[min(s + 1, n)] - cw[first])
-
-        def count(off):
-            return int(cw[int(starts.searchsorted(off)) + 1] - cw[first])
-        return at, end, count, total
 
     # ------------------------------------------------------------ time searches
     def _probe(self, pos, limit):

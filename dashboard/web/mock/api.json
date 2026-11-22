@@ -42,10 +42,6 @@
    "trajectory_buffer": {
     "_value": 4096,
     "_origin": "config file: dashboard/rc_dashboard.toml"
-   },
-   "export_max_rows": {
-    "_value": 5000000,
-    "_origin": "default"
    }
   },
   "server": {

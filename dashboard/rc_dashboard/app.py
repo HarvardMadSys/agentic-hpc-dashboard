@@ -10,14 +10,13 @@ import collections
 import gzip
 import json
 import os
-import re
 import sys
 import threading
 import time
 
 from fastapi import (FastAPI, HTTPException, Query, Request, WebSocket,
                      WebSocketDisconnect)
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from starlette.responses import Response
@@ -25,7 +24,6 @@ from starlette.responses import Response
 from . import auth as authmod
 from . import guard as guardmod
 from . import history as historymod
-from . import feeds as feedmod
 from . import gcwatch
 from . import jsonout
 from . import keysearch
@@ -34,11 +32,10 @@ from . import redact
 from . import roles, tool_buckets
 from . import windows as winmod
 from .aggregator import Aggregator
-from .anonymize import Verbatim, verbatim
+from .anonymize import Verbatim
 from .ask import unmasked_refusal
-from .export import make_predicate, meta_header, parse_filters, scan
+from .export import parse_filters
 from .iocmds import PAGE_MAX as iocmd_page_max, IoCommands, agent_keys
-from .normalize import Normalizer
 from .reducers import phase_names, phase_rules
 
 
@@ -79,7 +76,8 @@ def dealias_sid(sid, anon):
 
 
 def view_filter(request, anon=None):
-    """The page-wide `user` / `agent_type` filter, in `/api/events`' vocabulary."""
+    """The page-wide `user` / `agent_type` filter, in the filters' vocabulary
+    (`export.parse_filters`)."""
     try:
         return winmod.ViewFilter.from_params(dealias(query_lists(request), anon))
     except ValueError as e:
@@ -344,8 +342,8 @@ def create_app(cfg):
         return out
 
     def masked(payload, label=None):
-        """For the exits that bypass the response class: websocket frames, the
-        export stream, the gzipped trajectory body."""
+        """For the exits that bypass the response class: websocket frames and
+        the gzipped trajectory body."""
         return payload if anon is None else anon.payload(payload, label=label)
 
     app = FastAPI(title="rc-dashboard", version="0.1.0",
@@ -825,8 +823,9 @@ def create_app(cfg):
     iocmds = IoCommands(cfg, _roots, anon)
 
     # Every command behind an I/O number (iocmds.py): a lookup the page starts
-    # with the number's filters -- /api/events' own, plus `apid`, `host` and
-    # `cwd` for a blast-radius row -- and polls. The window is the page's.
+    # with the number's filters -- the shared grammar's (`export.parse_filters`),
+    # plus `apid`, `host` and `cwd` for a blast-radius row -- and polls. The
+    # window is the page's.
     @app.get("/api/io/commands")
     def api_io_commands(request: Request, window_min: int = Query(None),
                         apid: str = Query(None), host: str = Query(None),
@@ -864,148 +863,6 @@ def create_app(cfg):
                        offset=offset, limit=limit, sort=Verbatim(sort),
                        dir="asc" if dir == "asc" else "desc")
         return respond(out, request=request)
-
-    # The filters a reader types text into, by the record field each tests
-    # (`export.make_predicate`): matched as the reader sees the record when
-    # names are masked (`search`).
-    TYPED = (("host", "host"), ("tool", "_eff"))
-
-    def search(pred, qv, sent):
-        """`pred`, with what the reader typed matched on the text they see --
-        aliases, not names: `q` within the command text, and a `host` or `tool`
-        filter against that field. The record's own account is learned before
-        its text is masked (`learn_record`): a scan reaches accounts no response
-        has named yet, older than the live roster, and the first search over
-        them found each one's rows by its real name. So a real name typed in
-        finds nothing. A raw miss of `q` is a miss (masking only swaps names for
-        aliases), unless it could only match an alias or a mask; only those,
-        and raw hits, pay for the rewrite. `pred` itself when there is nothing
-        to test or no names are masked."""
-        typed = [(field, sent[k]) for k, field in TYPED if sent.get(k)]
-        if anon is None or (not qv and not typed):
-            return pred
-        aliasish = bool(qv) and (any(w in qv for w in ("user-", "lab-", "[email", "[uid"))
-                                 or re.fullmatch(r"[0-9a-f-]+", qv) is not None)
-
-        def ok(rec):
-            anon.learn_record(rec)
-            if not pred(rec):
-                return False
-            for field, want in typed:
-                if anon.text(str(rec.get(field))) not in want:
-                    return False
-            if not qv:
-                return True
-            hay = "%s %s" % (rec.get("_command") or "", redact.redact(rec.get("args") or ""))
-            if not aliasish and qv not in hay.lower():
-                return False
-            return qv in anon.text(hay).lower()
-        # what `scan` reads off `pred` -- its time bounds, event types, and the
-        # fields a sealed file's replica tests -- holds for this stricter test
-        ok.bounds, ok.events, ok.where = pred.bounds, pred.events, pred.where
-        return ok
-
-    def event_filters(request):
-        """`/api/events`' and `/api/export`'s filters, the `q` this module
-        searches itself when names are masked (None otherwise), and the filters
-        as the reader sent them. A `user` alias becomes its account (`dealias`),
-        and so does an alias in a `host` or `tool`, to find the records it was
-        shown from; `search` then tests the latter as the reader sees them."""
-        params = query_lists(request)
-        sent = parse_filters(params)
-        f = parse_filters(dealias(params, anon))
-        qv = f.pop("q", None) if anon is not None else None
-        if anon is not None:
-            for k, _ in TYPED:
-                if f.get(k):
-                    f[k] = {anon.dealias_text(v) for v in f[k]}
-        return f, qv, sent
-
-    @app.get("/api/events")
-    def api_events(request: Request,
-                   limit: int = Query(200, le=5000),
-                   cursor: int = Query(0, ge=0),
-                   order: str = Query("desc")):
-        f, qv, sent = event_filters(request)
-        pred = make_predicate(f)
-        norm = Normalizer(cfg)
-        newest = order != "asc"
-        # The bench's columns -- command, ran, cpu, exit -- only mean anything
-        # for a process exit, and an unfiltered feed is ~40% tcp/conn/residency
-        # rows that would render as mostly-blank. So `exit` is the default, and
-        # the response SAYS it applied one: a silently narrowed result set is
-        # exactly the kind of thing that misleads. Pass `event=` (empty) or any
-        # explicit value to widen.
-        default_event = not f.get("event")
-        if default_event:
-            f["event"] = {"exit"}
-            pred = make_predicate(f)
-        pred = search(pred, qv, sent)
-        rows, scanned, matched = [], 0, 0
-        for rec, scanned, matched in scan(_roots(), norm, pred, limit=limit,
-                                          offset=cursor, newest_first=newest):
-            rows.append(redact.record(rec))
-        rep = agg.reports["ebpf"]
-        full = len(rows) >= limit
-        return respond({"rows": rows,
-                # None when the page did not fill: there is provably nothing after it
-                "next_cursor": (cursor + len(rows)) if full else None,
-                "cursor": cursor, "limit": limit,
-                "order": "desc" if newest else "asc",
-                "event_filter_defaulted": default_event,
-                "returned": len(rows), "total_scanned": scanned,
-                "truncated": full,
-                "feed": feedmod.panel_meta(rep)}, request=request)
-
-    @app.get("/api/export")
-    def api_export(request: Request, order: str = Query("desc")):
-        f, qv, sent = event_filters(request)
-        # same default as /api/events, so "the download is the view" holds
-        export_default_event = not f.get("event")
-        if export_default_event:
-            f["event"] = {"exit"}
-        pred = search(make_predicate(f), qv, sent)
-        norm = Normalizer(cfg)
-        cap = int(cfg.get("export.max_rows", 5000000))
-        reports = agg.reports
-        t0 = time.monotonic()
-
-        def gen():
-            matched = 0
-            body = []
-            for rec, _scanned, matched in scan(_roots(), norm, pred, limit=cap,
-                                               newest_first=order != "asc"):
-                # the download is the view, credentials and names masked like it
-                body.append(json.dumps(masked(redact.record(rec)), default=str))
-                if len(body) >= 500:
-                    yield "\n".join(body) + "\n"
-                    body = []
-            # the header is emitted first by the wrapper below; here we only
-            # need the tail flush
-            if body:
-                yield "\n".join(body) + "\n"
-
-        def stream():
-            # a cheap pre-pass is not worth a second full scan, so the header
-            # declares the cap and the filters and leaves `rows` to the trailer;
-            # the filters as the reader sent them, never rewritten (`Verbatim`)
-            head = meta_header(verbatim(dict(sent, event=f["event"])), reports, cfg,
-                               None, None, 0.0)
-            head["_meta"]["rows"] = "see _trailer"
-            yield json.dumps(masked(head), default=str) + "\n"
-            n = 0
-            for chunk in gen():
-                n += chunk.count("\n")
-                yield chunk
-            yield json.dumps({"_trailer": {
-                "rows": n, "truncated": n >= cap,
-                "elapsed_s": round(time.monotonic() - t0, 2)}}) + "\n"
-
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        return StreamingResponse(
-            stream(), media_type="application/x-ndjson",
-            headers={"Content-Disposition":
-                     'attachment; filename="rc_events_%s.jsonl"' % stamp})
 
     def first_frames(minutes):
         """What a reader gets on connecting, made off the event loop."""
@@ -1083,7 +940,7 @@ def create_app(cfg):
                 "expected": static,
                 "fix": "cd dashboard/web && npm ci && npm run build",
                 "api": ["/api/health", "/api/feeds", "/api/live", "/api/panels",
-                        "/api/trajectories", "/api/events", "/api/export"],
+                        "/api/trajectories"],
             }, status_code=503)
 
     # -------------------------------------------------------------- sign-in

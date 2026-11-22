@@ -218,13 +218,6 @@ class ExitTest(unittest.TestCase):
     SECRET = "hunter2pw"
     ARGS = "deploy --password " + SECRET
 
-    def test_a_raw_record_is_copied_masked_and_the_original_kept(self):
-        rec = {"event": "exit", "args": self.ARGS, "pid": 7}
-        out = redact.record(rec)
-        self.assertNotIn(self.SECRET, out["args"])
-        self.assertEqual(out["pid"], 7)
-        self.assertEqual(rec["args"], self.ARGS)   # the detectors still need it raw
-
     def test_a_payload_is_masked_wherever_argv_sits(self):
         body = {"rows": [{"tool": "deploy", "args": self.ARGS,
                           "instances": [{"args": self.ARGS, "cpu_s": 1.5}]}],

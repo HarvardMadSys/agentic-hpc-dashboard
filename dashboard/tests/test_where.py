@@ -1,7 +1,7 @@
 """where: the prefilters a sealed file's replica rejects records by.
 
-A selective read of a sealed day-file -- a filtered view, an events query, the
-commands behind a figure, a session's tree -- hands the replica (`replica.py`) a
+A selective read of a sealed day-file -- a filtered view, the commands behind a
+figure, a session's tree -- hands the replica (`replica.py`) a
 `where` (`where.py`) built from the same inputs as the predicate that decides
 each record, and the replica drops what the `where` rejects before the predicate
 sees it. So every `where` must pass every record its predicate keeps, whatever a

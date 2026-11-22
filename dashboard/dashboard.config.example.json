@@ -234,7 +234,6 @@
     }
   },
 
-  "export": { "max_rows": 5000000 },
   "cache":  { "dir": "dashboard/.cache", "reducer_version": 3 },
   "//server": "auth.password_hash: a salted scrypt hash of the one password readers sign in with.",
   "//server1": "`python -m rc_dashboard new-password` makes the password, writes it to a file only you",

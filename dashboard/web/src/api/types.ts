@@ -2137,19 +2137,6 @@ export interface UserPortrait extends PanelEnvelope {
   tz?: string;
 }
 
-/* ---------------------------------------------------------------- events */
-
-export interface EventsResponse {
-  rows: LiveEvent[];
-  next_cursor: number | string | null;
-  total_scanned: number | null;
-  truncated: boolean;
-  order?: string;
-  cursor?: number;
-  limit?: number;
-  event_filter_defaulted?: boolean;
-}
-
 /* -------------------------------------------------------------------- ws */
 
 export type WsFrame =

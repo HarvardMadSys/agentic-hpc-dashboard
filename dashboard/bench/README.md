@@ -8,7 +8,7 @@ project's venv (`uv sync`).
 | tool | what it does |
 |---|---|
 | `amplify.py` | writes a synthetic collector feed at fleet density, cloned from the demo generator's |
-| `golden.py` | dumps the main responses of a 24 h window (panels, a filtered view, sessions, the inspector, live, users, collectors, events, export); compares two dumps |
+| `golden.py` | dumps the main responses of a 24 h window (panels, a filtered view, sessions, the inspector, live, users, collectors); compares two dumps |
 | `run.py` | times the real service: cold start, window builds, the inspector, the page under live load |
 | `hotpaths.py` | drives the heavy paths named in `--what` in this process, each under `cProfile` |
 | `stallwatch.py` | serves, and writes every thread's stack whenever the event loop stalls |

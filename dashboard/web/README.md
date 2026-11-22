@@ -7,7 +7,7 @@ The dashboard's page, in React, Vite and TypeScript. It reads the `rc_dashboard`
 src/api/        the contract: types, fetch client, hooks, the live websocket
 src/lib/        classes, purposes, formatters, URL/filter state, panel lookup, the sticky control bar, the words and geometry of phases and tasks
 src/charts/     hand-rolled SVG primitives (lines, bars, stacks, ribbon)
-src/components/ Panel/EmptyState, CountCost, Plate, Coverage, ClassFilter, EventsExplorer, PortraitFigure, Icon, CommandPalette
+src/components/ Panel/EmptyState, CountCost, Plate, Coverage, ClassFilter, PortraitFigure, Icon, CommandPalette
 src/tabs/       the tabs and their parts
 mock/           dev-only fixture + Vite middleware (NOT bundled, NOT in src/)
 ```
@@ -22,7 +22,7 @@ RC_BACKEND=http://127.0.0.1:8080 npm run dev:real   # /api, /ws, /login, /logout
 
 `npm run dev` needs no backend: `mock/plugin.ts` answers `/ws` and the routes the tabs are drawn
 from (`/api/config`, `feeds`, `windows`, `panels`, `live`, `trajectories`, `trajectory`, `users`,
-`user`, `events`, `export`) out of `mock/api.json`, which it re-reads on every request. Any other
+`user`) out of `mock/api.json`, which it re-reads on every request. Any other
 route (the collectors' health, Active users' searches and accounts, the commands behind an I/O
 number, Ask) is a 404 there, so what reads it says it was not returned.
 `src/api/client.ts` has no mock branch: dev runs the production code path.
@@ -183,7 +183,7 @@ word shows on hover (its `?`): what is measured, and what the measurement cannot
 | **fake data** | the demo's made-up records | synthetic data |
 
 When a word changes, the tab's URL key, the API field and the filter key keep the old name
-(`risk` is Risks, `slurm` HPC), so links, citations and exports keep working; a panel whose
+(`risk` is Risks, `slurm` HPC), so links and citations keep working; a panel whose
 title changed keeps its old anchor (`id=`), which `src/lib/cites.ts` points at. Sessions are the
 Agents tab's last part, and a link to the old Sessions tab (`?tab=trajectories`, with its `traj`,
 `tuser`, `rank` and `torder`) opens the Agents tab there.
@@ -309,24 +309,18 @@ labelled as polled. A `rebuilt` frame re-reads `/api/panels`, and a `feeds` fram
 REST feeds report. The header's refresh asks for everything again: the live frame, the windows,
 the feeds, the panels and the sessions.
 
-### Filters, URL state and export
+### Filters and URL state
 
 Every filter and view lives in the query string, so a reload or a pasted link restores the view:
 the tab, the window (`win`), the session rank, the inspected session (`traj`, on the Agents tab or
 under a portrait, closed by going to another tab; `tfrom` once a read was continued past its budget,
 `torder=newest`), the user the Agents tab's list of sessions is narrowed to (`tuser`), and the open
 portrait (`portrait`). The page-wide filters are `class`, `user` and `atype`, each repeatable
-(`agent_type` is still read). `src/lib/filters.ts` owns the one serialisation: `apiQuery()` builds
-the query for both `/api/events` and `/api/export`, so a download is exactly the view. Search &
-export, the tab that draws that table and its button (`?tab=events`), is hidden (`HIDDEN_TABS`,
-`src/App.tsx`), and a link to it opens Live. Its own params: `from`, `to`, `host`, `tool`,
-`purpose`, `bucket`, `session_key`, `sandbox`, `approval`, `depth_min`, `depth_max`, `cpu_min`,
-`duration_min`, `exit_code`, `signal`, `q`.
+(`agent_type` is still read). `src/lib/filters.ts` owns the one serialisation (`urlQuery`). A link
+to the Search & export tab, since removed (`?tab=events`), opens Live.
 
 ## Known gaps
 
-- Search & export's event table is **paged** (`next_cursor`), not virtualised: fine for the
-  backend's page size, but a 10⁵-row view would need windowing.
 - `/api/panels` payloads this page does not render (any beyond `tool_mix`, `io_process`,
   `resources`, `sandbox`, `cascades`, `node`, `trend`, `risk` and `slurm`) are ignored, not shown
   generically; sessions are read from `/api/trajectories`, not the panels' `trajectories`.

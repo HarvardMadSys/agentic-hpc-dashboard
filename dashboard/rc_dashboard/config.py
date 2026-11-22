@@ -404,7 +404,6 @@ def defaults():
                  "title": "Credentials on a command line"},
             ],
         },
-        "export": {"max_rows": 5000000},
         # Replace every username, lab or Slurm account name, email address and
         # numeric user ID in what the service sends out with a stable alias
         # (anonymize.py). Off by default: a deployment for the cluster's own
@@ -525,7 +524,6 @@ ENV_MAP = {
     "filters.drop_global": ("RC_DASH_DROP_USERS", _csv),
     "filters.drop_agent": ("RC_DASH_DROP_AGENT_USERS", _csv),
     "filters.drop_self_observation": ("RC_DASH_DROP_SELF_OBS", _flag),
-    "export.max_rows": ("RC_DASH_EXPORT_MAX_ROWS", int),
     "risk.profile": ("RC_DASH_RISK_PROFILE", str),
     "slurm.enabled": ("RC_DASH_SLURM", _flag),
     "ask.enabled": ("RC_DASH_ASK", _flag),
@@ -573,12 +571,14 @@ RETIRED_WHY = "is retired, with the feed it set, which nothing read; it is ignor
 # `annotate` was hidden -- or a saved build's fingerprint (`load`).
 RETIRED_SECTIONS = {
     "annotate": "is retired, with the tool-call purposes a model wrote; it is ignored",
+    "export": "is retired, with the Search & export tab and its download; it is ignored",
 }
 RETIRED_SECTION_ENV = {
     "RC_DASH_ANNOTATE": "annotate", "RC_DASH_ANNOTATE_PROVIDER": "annotate",
     "RC_DASH_ANNOTATE_MODEL": "annotate", "RC_DASH_ANNOTATE_BASE_URL": "annotate",
     "RC_DASH_ANNOTATE_KEY_ENV": "annotate", "RC_DASH_ANNOTATE_KEY_FILE": "annotate",
     "RC_DASH_ANNOTATE_CMD": "annotate",
+    "RC_DASH_EXPORT_MAX_ROWS": "export",
 }
 
 # CLI dest -> leaf path

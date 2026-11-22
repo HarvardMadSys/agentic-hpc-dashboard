@@ -1,4 +1,4 @@
-/* Risk & I/O -- the `io_process` payload, plus the search/filter/export bench.
+/* Risk & I/O -- the `io_process` payload.
  *
  * `rchar/wchar` against `rd/wr` is the page-cache question, and `cache_hit_pct`
  * is meaningless without its coverage, so every accumulator here is rendered

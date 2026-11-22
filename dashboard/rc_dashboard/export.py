@@ -1,16 +1,13 @@
-"""Filtered raw-event query and export.
+"""The shared filter grammar, and the windowed re-scan.
 
-The filter predicate is built ONCE and used by both `/api/events` and
-`/api/export`, so the download is exactly the view rather than an approximation
-of it.  End users have no access to the raw data mount, so this is their only
-route to the underlying rows -- which is why the export is the normalized record
-(derived `_` keys are additive; the collector's own fields are untouched) and why
-the first line is a `_meta` header naming the filter set, the window, the feed
-paths and whether the row cap truncated the result.  A reader can always tell
-what they actually got.
+`parse_filters` and `make_predicate` are the one grammar the records are
+filtered by: the commands behind an I/O figure (`iocmds.py`) and the page-wide
+user and agent-type filter (`windows.ViewFilter`) read it.
 
-Scanning re-reads the day-files rather than serving from memory: a 24-hour window
-of raw events is on the order of 10-20 GB, so it is never buffered.
+The re-scan reads a window's records back from the day-files rather than from
+memory -- a 24-hour window of raw events is on the order of 10-20 GB, so it is
+never buffered -- and costs the window, not the day (`window_plan`,
+`resume_plan`, `window_scan`).
 """
 import heapq
 import json
@@ -25,7 +22,7 @@ from .feedfile import (HEAD_BYTES, chosen_for, day_files, head_digest, is_bounda
                        iter_lines_forward, iter_lines_reverse, seek_to_epoch, stem_of)
 from .feedfile import (_MEMO_FILES, _MEMO_PROBES, _identity, _memo, _memo_lock,  # noqa: F401
                        _memo_of, _probe, _probe_read, _remember, dated_dirs, feed_files)
-from .normalize import canonical_class, epoch_of
+from .normalize import canonical_class
 from .redact import redact
 from .reducers.tools import verdict
 
@@ -183,7 +180,7 @@ def make_predicate(f):
             if bucket(rec.get("_eff") or "") not in f["bucket"]:
                 return False
         return True
-    # The time bounds, for `scan` to stop at: a day-file is in time order, so
+    # The time bounds, for a read to stop at: a day-file is in time order, so
     # past the window's far edge nothing in it can match.
     ok.bounds = (lo, hi)
     # and the event types, for its byte-level pre-check (`event_filter`)
@@ -211,144 +208,9 @@ def where_of(f):
     return w or None
 
 
-NO_TS = float("-inf")
 # How far out of time order a day-file's lines can be: the collector writes a
 # poll round at a time. A scan reads this far past a bound before it stops.
 SCAN_SLACK_S = 120
-
-
-def _matching(path, norm, pred, newest_first, stats):
-    """One file's matching records as `(ts, rec)`, in time order.
-
-    A day-file is appended as events occur, so reading it backwards yields
-    descending timestamps and forwards yields ascending -- which is exactly the
-    precondition `heapq.merge` needs.
-
-    The same order bounds the read by the predicate's `from`/`to`: it starts at
-    the near edge (`seek_to_epoch`) and stops past the far one. It once read
-    every day-file whole, and `heapq.merge` cannot yield until each stream has,
-    so a day wholly outside the window -- 1.7 GB of a capture's first day under
-    a 24 h view of its second -- held every page of results until it was parsed
-    to the end, to match nothing.
-    """
-    lo, hi = getattr(pred, "bounds", (None, None))
-    lo = None if lo is None else lo - SCAN_SLACK_S
-    hi = None if hi is None else hi + SCAN_SLACK_S
-    where = getattr(pred, "where", None)
-    rep = replica.for_path(path) if where is not None else None
-    at = None
-    if rep is not None:
-        resume = {}
-        try:
-            yield from _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where,
-                                         resume)
-            return
-        except Exception as e:
-            # The replica stopped answering part way: the rest of the read from
-            # the file, past the last record it read (`replica.failed`).
-            replica.failed(path, rep, e)
-            at = resume.get("at")
-    edge = hi if newest_first else lo
-    if at is None and edge is not None:
-        try:
-            with gz.open_feed(path) as fh:
-                at = seek_to_epoch(fh, edge, gz.fstat(fh).st_size)
-        except OSError:
-            return
-    if newest_first:
-        lines = iter_lines_reverse(path, end=at)
-    else:
-        lines = iter_lines_forward(path, start=at or 0)
-    # Lines of another event type are dropped before they are parsed, as a
-    # window build drops them: a snapshot stream holds no `exit` at all, and
-    # parsing every line of it to learn that cost most of an exits query.
-    wanted = event_filter(getattr(pred, "events", None))
-    for line in lines:
-        if wanted is not None and wanted(line) is None:
-            continue
-        try:
-            raw = fastjson.record(line)
-        except ValueError:
-            continue
-        stats["scanned"] += 1
-        ts = epoch_of(raw)
-        if ts is not None and (lo if newest_first else hi) is not None:
-            if (ts < lo) if newest_first else (ts > hi):
-                return
-        rec = norm.normalize(raw)
-        if rec is None or not pred(rec):
-            continue
-        ts = rec.get("_ts_epoch")
-        yield (NO_TS if ts is None else ts), rec
-
-
-def _matching_replica(rep, norm, pred, newest_first, stats, lo, hi, where, resume=None):
-    """`_matching` over a sealed file's replica, for a predicate that tests the
-    records' own fields: the same read -- from the same edge (the replica's time
-    search answers as the file's), stopping at the same record past the far
-    bound, `scanned` counting the same records by each one handed on
-    (`Replica.line_read`) -- with only the records the predicate's event types
-    and fields could keep built (`replica.records`), the same rule deciding
-    each. `resume["at"]` keeps where a read of the file would go on from: past
-    the last record read, in the read's direction."""
-    edge = hi if newest_first else lo
-    at = None if edge is None else rep.seek_to_epoch(edge)
-    kinds = getattr(pred, "events", None)
-    if at is None:
-        at = rep.complete_end if newest_first else 0
-    start, end, count, total = rep.line_read(at, kinds, lo if newest_first else hi,
-                                             reverse=newest_first)
-    resume = {} if resume is None else resume
-    done = 0
-    for off, _n, raw in rep.records(start, end, reverse=newest_first, kinds=kinds,
-                                    where=where):
-        resume["at"] = off if newest_first else off + _n
-        rec = norm.normalize(raw)
-        if rec is None or not pred(rec):
-            continue
-        got = count(off)
-        stats["scanned"] += got - done
-        done = got
-        ts = rec.get("_ts_epoch")
-        yield (NO_TS if ts is None else ts), rec
-    stats["scanned"] += total - done
-
-
-def scan(roots, norm, pred, limit=None, offset=0, days=0, newest_first=True):
-    """Yield `(rec, scanned, matched)` for records matching `pred`, in time order.
-
-    `newest_first` is the default because this feeds a log view and the newest
-    matches are the ones a reader wants. It is also much cheaper for the common
-    case: the first page comes off the TAIL of each day-file, so a filtered query
-    does not walk a multi-GB file from its oldest record forward before it can
-    show anything.
-
-    The per-file streams are k-way merged on timestamp rather than concatenated.
-    Concatenation would give "all of host B, then all of host A", which looks
-    ordered per host and is wrong globally -- on a 7-node login fleet that is not
-    a reverse-chronological log, it is seven of them interleaved by filename.
-    `heapq.merge` holds one record per open file, so the cost is one block read
-    per file to seed it and bounded memory thereafter.
-
-    Pagination is offset-based, matching the cursor contract the viewer already
-    uses. A deep page re-walks the earlier matches; acceptable for a log a human
-    scrolls, and the early return keeps a shallow page cheap.
-
-    A record with no resolvable timestamp sorts last under `newest_first` rather
-    than being dropped -- it is still a match, just not placeable in time.
-    """
-    stats = {"scanned": 0}
-    streams = [_matching(p, norm, pred, newest_first, stats)
-               for p in day_files(roots, days)]
-    matched = 0
-    for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0],
-                                reverse=newest_first):
-        matched += 1
-        if matched <= offset:
-            continue
-        yield rec, stats["scanned"], matched
-        if limit and matched - offset >= limit:
-            return
 
 
 # ------------------------------------------------------- windowed re-scan
@@ -680,9 +542,9 @@ def window_scan(plan, norm, since, until=None, events=None, match=None, find=Non
     waited on it, and a trajectory's run-length-encoded chain is appended in
     place.  Fed newest-first, both would be wrong rather than merely unsorted.
 
-    Per-file streams are k-way merged on timestamp for the same reason `scan`
-    merges: concatenating gives all of host B then all of host A, which is not
-    one ordered stream, it is seven of them end to end.
+    Per-file streams are k-way merged on timestamp: concatenating gives all of
+    host B then all of host A, which is not one ordered stream, it is seven of
+    them end to end.
 
     `events`, when given, is the only event types yielded; the rest are skipped
     before they are parsed (`event_filter`). `match`, when given, is a second
@@ -716,22 +578,3 @@ def window_scan(plan, norm, since, until=None, events=None, match=None, find=Non
                for e in plan]
     for _ts, rec in heapq.merge(*streams, key=lambda kr: kr[0]):
         yield rec, stats
-
-
-def meta_header(f, reports, cfg, matched, truncated, elapsed):
-    return {"_meta": {
-        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "filters": {k: (sorted(v) if isinstance(v, set) else v)
-                    for k, v in f.items() if v is not None},
-        "rows": matched,
-        "truncated": truncated,
-        "max_rows": cfg.get("export.max_rows"),
-        "feed_paths": reports["ebpf"]["resolved"] or reports["ebpf"]["configured"],
-        "feed_status": reports["ebpf"]["status"],
-        "schema_versions": reports["ebpf"].get("schema_versions") or {},
-        "elapsed_s": round(elapsed, 2),
-        "note": "Records are the collector's own, plus additive `_`-prefixed derived "
-                "keys (_a3, _eff, _purpose, _sandbox, _approval, _surface, _sid, _ts_epoch). "
-                "Original fields are unmodified, except that credential values in "
-                "args / captured_tail are replaced by [REDACTED] (rc_dashboard/redact.py).",
-    }}

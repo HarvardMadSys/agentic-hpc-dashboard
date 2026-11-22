@@ -7,7 +7,7 @@
 
 The collector seals a day by gzipping its day-files, and the history store
 (`history`, rc_dashboard/history.py) keeps each sealed one as Parquet: a reader
-that reads a sealed file selectively -- one user's events, one session's tree,
+that reads a sealed file selectively -- one user's view, one session's tree,
 the commands behind a figure -- or searches it by time takes the records from its
 replica (replica.py) instead of inflating the `.gz`. A replica must answer
 exactly what its file would, offsets and all, or a page would change with the
@@ -27,8 +27,6 @@ store. So this:
 4. GETs the same requests from both -- /api/panels, /api/live, /api/trajectories
    and /api/users at every window, the filtered views, /api/trajectory and
    /api/user for a few sessions and a user, /api/live/users and /api/live/user,
-   /api/events (newest and oldest first, a second page, every event kind, a
-   user's and an agent type's, both orders), /api/export in both orders,
    /api/io/commands, /api/collectors and /api/feeds -- and diffs the JSON,
    type- and key-order-exact;
 5. checks the on service answered from the replicas: every sealed file a reader
@@ -72,7 +70,6 @@ history store for `--seal-between`.
 import argparse
 import atexit
 import fnmatch
-import itertools
 import json
 import math
 import os
@@ -107,7 +104,6 @@ IGNORE = (
     # -- timings
     ("*elapsed_s", "*", "a duration, timed on the monotonic clock"),
     ("*behind_wall_s", "*", "the wall clock less the pinned one: when the request ran"),
-    ("_meta/generated_at", "export", "the export header's wall-clock stamp"),
     ("*/compressed/index_s", "feeds", "how long indexing the .gz files took"),
     # -- the store's own account: on in one service only
     ("ebpf/history", "feeds", "the history store's own account: on in one service only"),
@@ -337,18 +333,6 @@ class Service:
         except urllib.error.HTTPError as e:
             raise Fatal("%s %s -> HTTP %d: %s" % (self.name, path, e.code, e.read()[:300]))
 
-    def lines(self, path, timeout=600):
-        """A streamed body, a line at a time."""
-        try:
-            r = urllib.request.urlopen(self.url(path), timeout=timeout)
-        except urllib.error.HTTPError as e:
-            raise Fatal("%s %s -> HTTP %d: %s" % (self.name, path, e.code, e.read()[:300]))
-        try:
-            for line in r:
-                yield line
-        finally:
-            r.close()
-
     def wait(self, pred, what, timeout):
         end = time.monotonic() + timeout
         while True:
@@ -562,35 +546,13 @@ def kind_of(path):
     p = path.split("?", 1)[0]
     if p.startswith("/api/io/commands"):
         return "iocmds"
-    name = p.rsplit("/", 1)[-1]
-    if name == "events" and any(k in path for k in ("user=", "agent_type=", "host=")):
-        return "events-filtered"
-    return name
+    return p.rsplit("/", 1)[-1]
 
 
 def compare_json(services, path, report, norm):
     a, b = (s.json(path) for s in services)
     report.add(path, diff(a, b, kind_of(path), norm))
     return a
-
-
-def compare_stream(services, path, report, norm):
-    """A streamed export, a line at a time: both bodies in step, never held whole."""
-    kind = kind_of(path)
-    found = []
-    n = 0
-    for n, (la, lb) in enumerate(itertools.zip_longest(*(s.lines(path) for s in services)), 1):
-        if la is None or lb is None:
-            found.append(("[%d]" % (n - 1), short(la), short(lb)))
-            break
-        a, b = json.loads(la), json.loads(lb)
-        for p, x, y in diff(a, b, kind, norm):
-            found.append(("[%d]%s" % (n - 1, p if p.startswith("/") else "/" + p), x, y))
-            if len(found) > 1000:
-                break
-        if len(found) > 1000:
-            break
-    report.add(path, found, " (%d line(s))" % n)
 
 
 def iocmds(services, params, report, norm, timeout):
@@ -612,7 +574,7 @@ def iocmds(services, params, report, norm, timeout):
 # ----------------------------------------------------------------- the run
 def busiest_user(s):
     """The user with the most exits in the 24 h window, as `s` counts them: the
-    one the filtered views, a portrait, the events and the I/O lookup ask for."""
+    one the filtered views, a portrait and the I/O lookup ask for."""
     users = (s.json("/api/panels?window_min=1440").get("facets") or {}).get("users") or []
     if not users:
         raise Fatal("the 24 h window names no user: nothing to filter by")
@@ -666,20 +628,6 @@ def compare_all(services, user, full, report, norm, timeout):
             for order in ("oldest", "newest"):
                 compare_json(services, "/api/trajectory?" + query(
                     {"sid": sid, "window_min": m, "order": order}), report, norm)
-    every = "exit,truncated,residency,residency_totals,conn,netio,submit,meta,stop"
-    for params in ({"limit": 500},
-                   {"limit": 500, "order": "asc"},
-                   {"limit": 500, "cursor": 500},
-                   {"limit": 500, "event": every},
-                   {"limit": 500, "user": user},
-                   {"limit": 500, "user": user, "order": "asc"},
-                   {"limit": 500, "user": user, "cursor": 500},
-                   {"limit": 500, "user": user, "event": "exit", "order": "asc"},
-                   {"limit": 500, "agent_type": "none"},
-                   {"limit": 500, "agent_type": "none", "order": "asc"}):
-        compare_json(services, "/api/events?" + query(params), report, norm)
-    compare_stream(services, "/api/export?order=asc", report, norm)
-    compare_stream(services, "/api/export", report, norm)
     for m in (1440, full):
         iocmds(services, {"window_min": m, "user": user}, report, norm, timeout)
     compare_json(services, "/api/collectors", report, norm)
@@ -1017,8 +965,8 @@ def run(a, tmp, days, hosts, services):
             if bad:
                 failed = True
                 log("not resumed: " + "; ".join(bad))
-        # The feed report an export's header carries is the one last made
-        # (`refresh_feeds`, on /api/feeds): made anew on both, once both have
+        # The feed report the payloads carry (`feeds.panel_meta`) is the one last
+        # made (`refresh_feeds`, on /api/feeds): made anew on both, once both have
         # read their history, rather than whenever this run happened to ask one.
         for s in services:
             s.json("/api/feeds", 60)
