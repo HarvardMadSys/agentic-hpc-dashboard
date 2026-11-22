@@ -11,7 +11,7 @@ import type { LiveState } from '../api/useLive';
 import { Fluid, Lines } from '../charts/primitives';
 import type { LinePt, LineSeries } from '../charts/primitives';
 import { clockLabel, fullClock, tickTarget, timeTicks } from '../charts/scale';
-import { Basis, EmptyState, Legend, Panel } from '../components/Panel';
+import { EmptyState, Legend, Panel } from '../components/Panel';
 import { AGENT_TYPE_LBL, CLS, CLS_COL, CLS_LBL } from '../lib/classes';
 import { Segmented } from '../components/ClassFilter';
 import type { Who } from '../lib/filters';
@@ -298,17 +298,6 @@ export const LiveTab = memo(function LiveTab({
           feed={liveFeed?.name ?? 'live'}
           empty={!rate.length}
           emptyWhat="the live window holds no bins"
-          basis={
-            <Basis
-              items={[
-                ['window', L?.window ? JSON.stringify(L.window) : null],
-                ['transport', live.transport],
-                ['gaps', 'a minute with no record at all is null and is drawn as a hole in the line; ' +
-                  'in a minute with records, a class with none is 0'],
-                ['backfill', L?.backfill ? JSON.stringify(L.backfill) : null],
-              ]}
-            />
-          }
         >
           <Fluid natural={1060}>
             {(W) => (

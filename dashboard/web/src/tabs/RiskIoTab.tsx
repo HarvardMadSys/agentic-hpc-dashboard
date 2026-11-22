@@ -702,7 +702,6 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
               span
               empty={!lcRows.length}
               emptyWhat="no build or interpreter CPU in the window"
-              basis={lc?.basis}
             >
               <div className="eyebrow">
                 {fmt(lc?.compute_cpu_h ?? 0, 3)} CPU-h of compute{' '}
@@ -774,7 +773,6 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
               span
               empty={!inSection(secRows, sc).length}
               emptyWhat="no credential pattern matched in the window"
-              basis={[sec?.redaction, sec?.undercount].filter(Boolean).join(' ')}
             >
               <div className="eyebrow">
                 {fint(sec?.args_scanned ?? 0)} command lines scanned
@@ -831,7 +829,6 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
               span
               empty={!inSection(dgRows, sc).length}
               emptyWhat="no matching command in the window"
-              basis={[dg?.basis, dg?.site_assumption].filter(Boolean).join(' ')}
             >
               <div className="scroller">
                 <table>

@@ -450,7 +450,10 @@ With a password set, every route above asks for it. `POST /api/ask`, `GET /api/a
 /api/suggestions/done/{id}`) are [Ask LLM](#ask-llm)'s. Every `/api` request but a GET, HEAD or
 OPTIONS takes `Content-Type: application/json` only (a 415 otherwise, `guard.JsonOnly`), which
 another site's page cannot send without the browser asking first; a body past 1 MB is a 413, and a
-malformed one a 400. `window_min` is optional everywhere: omitted, it is `live.window_min`. A value
+malformed one a 400. The page's routes for panels, sessions and users (`/api/panels`,
+`/api/trajectories`, `/api/trajectory`, `/api/users`, `/api/user`) leave out the method notes,
+`notes`, `basis` and every `*_basis` key (`jsonout.strip_basis`): the page shows none of them, and
+Ask LLM reads them where the service holds them. `window_min` is optional everywhere: omitted, it is `live.window_min`. A value
 above retention is clamped, and the response carries `requested`, `clamped` and a `note`.
 
 `/api/trajectory` (`proctree.py`) is the inspector behind a clicked session row. No reducer holds
@@ -1003,8 +1006,8 @@ none nested.
 **Workspace & blast radius** (`reducers/workspace.py`, composed per agent by the cascades reducer)
 shows where each agent worked, relative to its **home**: the agent process's own cwd, or, when that
 is `/` (IDE-hosted), its first call's directory below the root, labelled as such. The collector
-records no file paths, so three kinds of evidence are kept apart on the page and in the payload's
-`basis`:
+records no file paths, so three kinds of evidence are kept apart on the page and in the notes Ask
+LLM reads (`cascades.workspace.basis`):
 
 | reading | kind | what it is |
 |---|---|---|
@@ -1184,7 +1187,7 @@ GPU-hours count only jobs with GPUs and a time limit on the command line, as the
 | `rc_dashboard/guard.py` | who may talk to the service at all: a websocket's Origin, and every request's Host while it has no password |
 | `rc_dashboard/redact.py` | credentials masked in command lines before anything is served |
 | `rc_dashboard/anonymize.py` | stable aliases for the names in everything the service sends out ([Anonymized names](#anonymized-names)) |
-| `rc_dashboard/jsonout.py` | JSON out: serialized with orjson on the request's worker thread, gzipped when the reader takes it |
+| `rc_dashboard/jsonout.py` | JSON out: serialized with orjson on the request's worker thread, gzipped when the reader takes it; the method notes left out of what the page reads (`strip_basis`) |
 | `rc_dashboard/gcwatch.py` | how long Python's garbage collector holds the process, and keeping it short |
 | `rc_dashboard/ask.py` | a question about the window on screen, answered by an agent CLI on this host ([Ask LLM](#ask-llm)) |
 | `rc_dashboard/demo/` | demo mode: the synthetic feed (`world` plans and builds it, `cast` the people, `sessions`/`agents` what each runs, `host` each node's own records, `records` the records as the collector writes them, `feed` the files), and the overrides that point the service at it |

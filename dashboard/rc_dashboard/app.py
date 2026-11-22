@@ -669,7 +669,10 @@ def create_app(cfg):
     # response's `filter` names it. The live tier is not narrowed (`/api/live`).
     @app.get("/api/panels")
     def api_panels(request: Request, window_min: int = Query(None)):
-        return respond(agg.panels(window_min, view_filter(request, anon)), "panels", request)
+        # The basis notes, here and on the routes below, are left to Ask LLM, which
+        # reads `agg` in process: the page shows none (`jsonout.strip_basis`).
+        return respond(jsonout.strip_basis(agg.panels(window_min, view_filter(request, anon))),
+                       "panels", request)
 
     @app.get("/api/live")
     def api_live(request: Request, window_min: int = Query(None)):
@@ -706,8 +709,8 @@ def create_app(cfg):
         """Every user with an agent session in the window, and how each works
         with their agents (portraits.py); narrowed by `user` / `agent_type` as
         the trajectories are."""
-        return respond(redact.payload(agg.users(window_min, view_filter(request, anon))),
-                       "users", request)
+        return respond(jsonout.strip_basis(
+            redact.payload(agg.users(window_min, view_filter(request, anon)))), "users", request)
 
     @app.get("/api/user")
     def api_user(request: Request, name: str = Query(...), window_min: int = Query(None)):
@@ -716,15 +719,15 @@ def create_app(cfg):
         name then finds nobody, as on /api/live/user."""
         if anon is not None:
             name = anon.dealias_user(name)
-        return respond(redact.payload(agg.user(name, window_min, view_filter(request, anon))),
-                       "user", request)
+        return respond(jsonout.strip_basis(
+            redact.payload(agg.user(name, window_min, view_filter(request, anon)))), "user", request)
 
     @app.get("/api/trajectories")
     def api_traj(request: Request, rank: str = Query("recent"),
                  window_min: int = Query(None)):
         out = agg.trajectories(window_min, view_filter(request, anon))
         out["rank_by"] = rank if rank in out.get("ranks", {}) else "recent"
-        return respond(out, "trajectories", request)
+        return respond(jsonout.strip_basis(out), "trajectories", request)
 
     @app.get("/api/trajectory")
     def api_trajectory(request: Request, sid: str = Query(...),
@@ -748,7 +751,7 @@ def create_app(cfg):
         if anon is not None:
             # the id as the page sent it: what it read is the account behind it
             body["sid"] = Verbatim(sid)
-        body = masked(body, "trajectory")
+        body = jsonout.strip_basis(masked(body, "trajectory"))
         # serialized as it always was (`default=str`), with orjson, here on the worker
         return jsonout.response(body, request, headers={"vary": "Accept-Encoding"},
                                 encode=jsonout.dumps_str)

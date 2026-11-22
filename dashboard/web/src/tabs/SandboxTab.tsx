@@ -21,7 +21,7 @@
  */
 import { memo } from 'react';
 import type { Cls, Sandbox, SandboxSessionRow } from '../api/types';
-import { Basis, Panel, More } from '../components/Panel';
+import { Panel, More } from '../components/Panel';
 import { Coverage } from '../components/Coverage';
 import { ShareCell } from '../components/ShareCell';
 import { ByUser, distinct } from '../components/ByUser';
@@ -267,16 +267,6 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           span
           empty={!tcHave.length && !sessions.length}
           emptyWhat="no tool calls or agent sessions in the window"
-          basis={
-            <Basis
-              items={[
-                ['sessions', sb.notes?.sessions],
-                ['tool calls', sb.notes?.tool_calls],
-                ['failed', sb.notes?.failed],
-                ['below_capped', sb.below_capped || null],
-              ]}
-            />
-          }
         >
           <div className="eyebrow">tool calls, by outcome</div>
           <AxisBlock by={sb.tool_calls} have={tcHave} order={CALL_ORDER} col={SB_COL} lbl={CALL_LABEL} grain="tool calls" known={callKnown} />
@@ -297,15 +287,6 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           p={sb}
           empty={!evHave.length && !seHave.length}
           emptyWhat="no sandbox breakdown for the selection"
-          basis={
-            <Basis
-              items={[
-                ['meaning', sb.notes?.meaning],
-                [SB_LABEL.denied, sb.notes?.denied],
-                ['from its parent', sb.notes?.inherit],
-              ]}
-            />
-          }
         >
           <div className="eyebrow">per process</div>
           <AxisBlock by={sb.by_class_events} have={evHave} order={SANDBOX_ORDER} col={SB_COL} lbl={SB_LABEL} grain="processes" known={st.sandbox_known ?? SANDBOX_KNOWN} />
@@ -320,14 +301,6 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           p={sb}
           empty={!apSeHave.length && !apEvHave.length}
           emptyWhat="no approval breakdown for the selection"
-          basis={
-            <Basis
-              items={[
-                ['approval', sb.notes?.approval],
-                ['per record', sb.notes?.events_approval],
-              ]}
-            />
-          }
         >
           <div className="eyebrow">per session</div>
           <AxisBlock by={sb.approval_by_class_sessions} have={apSeHave} order={APPROVAL_ORDER} col={AP_COL} lbl={AP_LABEL} grain="sessions" known={apKnown} />
@@ -368,7 +341,6 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           p={sb}
           empty={!attempts.length}
           emptyWhat="no bwrap or codex-linux-sandbox ran in the window"
-          basis={<Basis items={[['failed', sb.notes?.failed]]} />}
         >
           <div className="scroller">
             <table>

@@ -7,7 +7,7 @@
  * sessions sit side by side, each row sortable by any class's share.
  */
 import type { Cls, IoProcess, IoSort, Resources, SlurmClass, SlurmPanel, ToolMix, Trajectories } from '../api/types';
-import { Basis, Panel } from '../components/Panel';
+import { Panel } from '../components/Panel';
 import { ShareCell } from '../components/ShareCell';
 import { SplitBar } from '../components/SplitBar';
 import type { SplitPart } from '../components/SplitBar';
@@ -188,16 +188,6 @@ export const OverviewTab = memo(function OverviewTab({
         span
         empty={!units.length}
         emptyWhat="no unit is populated for the selection"
-        basis={
-          <Basis
-            items={[
-              [
-                'why',
-                'the class ranking is not stable across units: a unit that de-weights the loudest users routinely erases or flips the per-process gap',
-              ],
-            ]}
-          />
-        }
       >
         {/* Each unit's whole as one stacked bar, so the split reads at a
             glance and the lead can be followed down the table; and each class's

@@ -124,9 +124,9 @@ Research-integrity constraints: breaking one is a reporting error, not a styling
    `coverage_pct` beside every value that has one, and an accumulator or quantile with `n: 0`
    reads **`not measured`**, never `0`, as does a quantile the service flags `all_zero` (every
    value exactly 0: a counter the collector could not fill), in Internal's distributions too.
-7. **Data only**: a panel holds its title, its feed and the chart or table. Every `notes`,
-   `basis`, `cpu_basis`, `scope` or `dedup.rule` string goes in `<Basis>`, collapsed at the
-   panel's foot, or in a `data-tip`.
+7. **Data only**: a panel holds its title, its feed and the chart or table, and no method notes:
+   what a reader needs to read a number goes in its `data-tip`. The service does not send the page
+   its `notes`, `basis` and `*_basis` texts ([API](../README.md#api)); Ask LLM reads them.
 8. **Down to a phone**: at 900px and under (`src/lib/useNarrow.ts`) the rail is a drawer and
    every grid one column. The page never scrolls sideways, down to 320px: wide tables scroll in
    their own `.scroller`, fading at an edge with more (`src/lib/scrollEdges.ts`). Charts are

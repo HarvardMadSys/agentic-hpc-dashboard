@@ -89,7 +89,7 @@ import { SurfaceChip } from '../components/SurfaceChip';
 import { CategoryChip } from '../components/CategoryChip';
 import { treePopHref } from '../lib/popout';
 import { Segmented } from '../components/ClassFilter';
-import { Basis, Legend, Panel } from '../components/Panel';
+import { Legend, Panel } from '../components/Panel';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { GLOSS } from '../lib/glossary';
 import { serverNow } from '../lib/clock';
@@ -1013,20 +1013,6 @@ export function TrajectoryInspector({
               ×
             </button>
           </div>
-        }
-        basis={
-          d?.found ? (
-            <Basis
-              items={[
-                ...Object.entries(d.basis ?? {}),
-                ['scan', d.scan],
-                ['bounds', d.bounds],
-                ['links', d.links],
-                ['timeline', 'bars span start to exit on the read’s own time axis, or on the range zoomed to on the strip above; a dashed bar has no exit in the read, a bar with a left rule started before the axis, one with a right rule ran past it'],
-                ['jumps', 'a moment on the strip opens the first process started at or after it; a ribbon run or a tool token opens the process its first record came from, matched by exit time and purpose or tool. A process that is counted rather than drawn opens at the row that counts it'],
-              ]}
-            />
-          ) : undefined
         }
       >
         <Facts row={row} d={d} />

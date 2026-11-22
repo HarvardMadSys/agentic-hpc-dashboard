@@ -1050,7 +1050,6 @@
      "dropped_pct": 21.4,
      "rule": "resolved shell dropped iff its captured direct child is the command it resolved to"
     },
-    "cpu_basis": "self cpu_s, each process once; child_cpu_s NEVER added (it double-counts the tree)",
     "exits": {
      "by_class": {
       "agent": {
@@ -1745,8 +1744,7 @@
       "grep",
       "rg",
       "zgrep"
-     ],
-     "basis": "a process's own wait status, after the shell dedup above"
+     ]
     }
    },
    "io_process": {
@@ -2153,11 +2151,7 @@
       "net_rx_mb": 1150.7,
       "io_coverage_pct": 46.8
      }
-    ],
-    "notes": {
-     "coverage": "io fields come from /proc/<pid>/io and are unreadable for other users",
-     "cache": "cache_served_mb = rchar - read_bytes; it is an inference, not a counter"
-    }
+    ]
    },
    "resources": {
     "_feed": "ebpfm",
@@ -5600,8 +5594,7 @@
      "hosts": 6,
      "days": 2,
      "window": "2026-09-13 00:00 to 2026-09-14 18:00"
-    },
-    "cpu_basis": "self cpu_s (utime+stime of the exiting process); child_cpu_s NEVER added"
+    }
    },
    "sandbox": {
     "_feed": "ebpfm",
@@ -5869,11 +5862,6 @@
       "auto",
       "supervised"
      ]
-    },
-    "notes": {
-     "meaning": "sandboxed = ran in its own namespaces; Landlock/seccomp-only sandboxes are invisible, containers count",
-     "denied": "'exited before it was checked' (key: denied) is NOT 'not sandboxed'",
-     "failed": "'sandbox failed to start': the wrapper exited non-zero and no wrapped command ran under it"
     }
    },
    "trajectories": {
@@ -6232,7 +6220,6 @@
       "n_calls": 66,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 66,
        "cut": 0,
@@ -6751,7 +6738,6 @@
       "n_calls": 79,
       "phases": {
        "v": 2,
-       "basis": "read from the commands run in its terminals and the words typed in them",
        "driver": "terminal",
        "n_calls": 79,
        "cut": 0,
@@ -7344,7 +7330,6 @@
       "n_calls": 255,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 255,
        "cut": 120,
@@ -7894,7 +7879,6 @@
       "n_calls": 188,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 188,
        "cut": 0,
@@ -8678,7 +8662,6 @@
       "n_calls": 46,
       "phases": {
        "v": 2,
-       "basis": "read from the commands run in its terminals and the words typed in them",
        "driver": "terminal",
        "n_calls": 46,
        "cut": 0,
@@ -9311,7 +9294,6 @@
       "n_calls": 104,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 104,
        "cut": 0,
@@ -10003,7 +9985,6 @@
       "n_calls": 181,
       "phases": {
        "v": 2,
-       "basis": "read from the commands run in its terminals and the words typed in them",
        "driver": "terminal",
        "n_calls": 181,
        "cut": 0,
@@ -10676,7 +10657,6 @@
       "n_calls": 266,
       "phases": {
        "v": 2,
-       "basis": "read from the commands run in its terminals and the words typed in them",
        "driver": "terminal",
        "n_calls": 266,
        "cut": 0,
@@ -11290,7 +11270,6 @@
       "n_calls": 74,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 74,
        "cut": 0,
@@ -12084,7 +12063,6 @@
       "n_calls": 79,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 79,
        "cut": 0,
@@ -12696,7 +12674,6 @@
       "n_calls": 132,
       "phases": {
        "v": 2,
-       "basis": "read from the commands run in its terminals and the words typed in them",
        "driver": "terminal",
        "n_calls": 132,
        "cut": 0,
@@ -13355,7 +13332,6 @@
       "n_calls": 281,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 281,
        "cut": 0,
@@ -14028,7 +14004,6 @@
       "n_calls": 272,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 272,
        "cut": 0,
@@ -14642,7 +14617,6 @@
       "n_calls": 114,
       "phases": {
        "v": 2,
-       "basis": "read from the commands run in its terminals and the words typed in them",
        "driver": "terminal",
        "n_calls": 114,
        "cut": 0,
@@ -15426,7 +15400,6 @@
       "n_calls": 107,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 107,
        "cut": 0,
@@ -16038,7 +16011,6 @@
       "n_calls": 167,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 167,
        "cut": 0,
@@ -16697,7 +16669,6 @@
       "n_calls": 283,
       "phases": {
        "v": 2,
-       "basis": "read from the commands run in its terminals and the words typed in them",
        "driver": "terminal",
        "n_calls": 283,
        "cut": 0,
@@ -17379,7 +17350,6 @@
       "n_calls": 310,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 310,
        "cut": 0,
@@ -18016,7 +17986,6 @@
       "n_calls": 148,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 148,
        "cut": 0,
@@ -18800,7 +18769,6 @@
       "n_calls": 140,
       "phases": {
        "v": 2,
-       "basis": "read from the commands run in its terminals and the words typed in them",
        "driver": "terminal",
        "n_calls": 140,
        "cut": 0,
@@ -19412,7 +19380,6 @@
       "n_calls": 66,
       "phases": {
        "v": 2,
-       "basis": "read from the commands run in its terminals and the words typed in them",
        "driver": "terminal",
        "n_calls": 66,
        "cut": 0,
@@ -20084,7 +20051,6 @@
       "n_calls": 336,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 336,
        "cut": 0,
@@ -20782,7 +20748,6 @@
       "n_calls": 502,
       "phases": {
        "v": 2,
-       "basis": "read from the commands run in its terminals and the words typed in them",
        "driver": "terminal",
        "n_calls": 502,
        "cut": 0,
@@ -21396,7 +21361,6 @@
       "n_calls": 188,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 188,
        "cut": 0,
@@ -22180,7 +22144,6 @@
       "n_calls": 98,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 98,
        "cut": 0,
@@ -22792,7 +22755,6 @@
       "n_calls": 101,
       "phases": {
        "v": 2,
-       "basis": "read from the commands run in its terminals and the words typed in them",
        "driver": "terminal",
        "n_calls": 101,
        "cut": 0,
@@ -23451,7 +23413,6 @@
       "n_calls": 474,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 474,
        "cut": 0,
@@ -24124,7 +24085,6 @@
       "n_calls": 619,
       "phases": {
        "v": 2,
-       "basis": "read from the commands run in its terminals and the words typed in them",
        "driver": "terminal",
        "n_calls": 619,
        "cut": 0,
@@ -24738,7 +24698,6 @@
       "n_calls": 57,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 124,
        "cut": 0,
@@ -25557,7 +25516,6 @@
       "n_calls": 67,
       "phases": {
        "v": 2,
-       "basis": "read from the commands the agent ran and the words it wrote in them",
        "driver": "agent",
        "n_calls": 124,
        "cut": 0,
@@ -26272,8 +26230,7 @@
     "by_key_type": {
      "session_scope": 23,
      "cgroup": 5
-    },
-    "basis": "tool_rle is the run-length encoding of effective_comm in exit order; chains over 4096 runs are truncated"
+    }
    },
    "cascades": {
     "_feed": "ebpfm",
@@ -27857,19 +27814,7 @@
       "inherited_argv": 212,
       "probes_skipped": 5330,
       "fed": 41102
-     },
-     "basis": {
-      "ran_in": "MEASURED: processes whose working directory is that directory",
-      "bytes": "MEASURED per process, not per file: credited to where the process ran",
-      "named": "INFERRED from command lines: distinct paths, read / write / delete / named",
-      "not_seen": "exact file-level reads and writes would need a collector probe (openat/unlink/rename tracepoints) that is not built"
      }
-    },
-    "basis": {
-     "node": "a process whose role is agent, infra or client (roles.py)",
-     "agent_depth": "most agents on any root-to-leaf path; 1 = no agent under another agent",
-     "fanout": "agents directly below an agent (or a tree’s root) with no other agent between",
-     "subagent": "an agent started, through any number of steps, beneath another agent"
     }
    },
    "node": {
@@ -33262,7 +33207,6 @@
      "held_from": 1788795600,
      "days": 8
     },
-    "cpu_delta_basis": "per_user_cgroup.cpu_usage_usec is CUMULATIVE; cpu_delta_s is the difference between the two newest snapshots",
     "privilege": "cgroup v2 stats are readable by the slice owner and root"
    },
    "trend": {
@@ -33607,8 +33551,7 @@
     "bin_s": 60,
     "retention_minutes": 10080,
     "retained_from": 1788795200,
-    "tz": "EDT",
-    "basis": "processes and CPU from the live tier's minute bins; users and agent types from its roster"
+    "tz": "EDT"
    },
    "gpu_duty": {
     "_feed": "dcgm",
@@ -53113,7 +53056,6 @@
     "n_calls": 66,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 66,
      "cut": 0,
@@ -53632,7 +53574,6 @@
     "n_calls": 79,
     "phases": {
      "v": 2,
-     "basis": "read from the commands run in its terminals and the words typed in them",
      "driver": "terminal",
      "n_calls": 79,
      "cut": 0,
@@ -54225,7 +54166,6 @@
     "n_calls": 255,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 255,
      "cut": 120,
@@ -54775,7 +54715,6 @@
     "n_calls": 188,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 188,
      "cut": 0,
@@ -55559,7 +55498,6 @@
     "n_calls": 46,
     "phases": {
      "v": 2,
-     "basis": "read from the commands run in its terminals and the words typed in them",
      "driver": "terminal",
      "n_calls": 46,
      "cut": 0,
@@ -56192,7 +56130,6 @@
     "n_calls": 104,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 104,
      "cut": 0,
@@ -56884,7 +56821,6 @@
     "n_calls": 181,
     "phases": {
      "v": 2,
-     "basis": "read from the commands run in its terminals and the words typed in them",
      "driver": "terminal",
      "n_calls": 181,
      "cut": 0,
@@ -57557,7 +57493,6 @@
     "n_calls": 266,
     "phases": {
      "v": 2,
-     "basis": "read from the commands run in its terminals and the words typed in them",
      "driver": "terminal",
      "n_calls": 266,
      "cut": 0,
@@ -58171,7 +58106,6 @@
     "n_calls": 74,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 74,
      "cut": 0,
@@ -58965,7 +58899,6 @@
     "n_calls": 79,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 79,
      "cut": 0,
@@ -59577,7 +59510,6 @@
     "n_calls": 132,
     "phases": {
      "v": 2,
-     "basis": "read from the commands run in its terminals and the words typed in them",
      "driver": "terminal",
      "n_calls": 132,
      "cut": 0,
@@ -60236,7 +60168,6 @@
     "n_calls": 281,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 281,
      "cut": 0,
@@ -60909,7 +60840,6 @@
     "n_calls": 272,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 272,
      "cut": 0,
@@ -61523,7 +61453,6 @@
     "n_calls": 114,
     "phases": {
      "v": 2,
-     "basis": "read from the commands run in its terminals and the words typed in them",
      "driver": "terminal",
      "n_calls": 114,
      "cut": 0,
@@ -62307,7 +62236,6 @@
     "n_calls": 107,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 107,
      "cut": 0,
@@ -62919,7 +62847,6 @@
     "n_calls": 167,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 167,
      "cut": 0,
@@ -63578,7 +63505,6 @@
     "n_calls": 283,
     "phases": {
      "v": 2,
-     "basis": "read from the commands run in its terminals and the words typed in them",
      "driver": "terminal",
      "n_calls": 283,
      "cut": 0,
@@ -64260,7 +64186,6 @@
     "n_calls": 310,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 310,
      "cut": 0,
@@ -64897,7 +64822,6 @@
     "n_calls": 148,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 148,
      "cut": 0,
@@ -65681,7 +65605,6 @@
     "n_calls": 140,
     "phases": {
      "v": 2,
-     "basis": "read from the commands run in its terminals and the words typed in them",
      "driver": "terminal",
      "n_calls": 140,
      "cut": 0,
@@ -66293,7 +66216,6 @@
     "n_calls": 66,
     "phases": {
      "v": 2,
-     "basis": "read from the commands run in its terminals and the words typed in them",
      "driver": "terminal",
      "n_calls": 66,
      "cut": 0,
@@ -66965,7 +66887,6 @@
     "n_calls": 336,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 336,
      "cut": 0,
@@ -67663,7 +67584,6 @@
     "n_calls": 502,
     "phases": {
      "v": 2,
-     "basis": "read from the commands run in its terminals and the words typed in them",
      "driver": "terminal",
      "n_calls": 502,
      "cut": 0,
@@ -68277,7 +68197,6 @@
     "n_calls": 188,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 188,
      "cut": 0,
@@ -69061,7 +68980,6 @@
     "n_calls": 98,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 98,
      "cut": 0,
@@ -69673,7 +69591,6 @@
     "n_calls": 101,
     "phases": {
      "v": 2,
-     "basis": "read from the commands run in its terminals and the words typed in them",
      "driver": "terminal",
      "n_calls": 101,
      "cut": 0,
@@ -70332,7 +70249,6 @@
     "n_calls": 474,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 474,
      "cut": 0,
@@ -71005,7 +70921,6 @@
     "n_calls": 619,
     "phases": {
      "v": 2,
-     "basis": "read from the commands run in its terminals and the words typed in them",
      "driver": "terminal",
      "n_calls": 619,
      "cut": 0,
@@ -71619,7 +71534,6 @@
     "n_calls": 57,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 124,
      "cut": 0,
@@ -72438,7 +72352,6 @@
     "n_calls": 67,
     "phases": {
      "v": 2,
-     "basis": "read from the commands the agent ran and the words it wrote in them",
      "driver": "agent",
      "n_calls": 124,
      "cut": 0,
@@ -73153,8 +73066,7 @@
   "by_key_type": {
    "session_scope": 23,
    "cgroup": 5
-  },
-  "basis": "tool_rle is the run-length encoding of effective_comm in exit order; chains over 4096 runs are truncated"
+  }
  },
  "trajectory_detail": {
   "_feed": "ebpfm",
@@ -74421,9 +74333,6 @@
      ]
     }
    ]
-  },
-  "basis": {
-   "fixture": "mock/gen_fixture.mjs: a hand-built tree with every row shape the inspector draws"
   }
  },
  "users": {
@@ -74567,10 +74476,6 @@
     "mode": 0.5,
     "mostly": 0.5,
     "project": 0.5
-   },
-   "basis": {
-    "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together",
-    "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
    },
    "users": [
     {
@@ -75786,10 +75691,6 @@
      "mode": 0.5,
      "mostly": 0.5,
      "project": 0.5
-    },
-    "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together",
-     "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "thomwg11",
     "found": true,
@@ -77860,10 +77761,6 @@
      "mostly": 0.5,
      "project": 0.5
     },
-    "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together",
-     "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
-    },
     "user": "jsilva",
     "found": true,
     "fleet_of": "window",
@@ -78608,10 +78505,6 @@
      "mode": 0.5,
      "mostly": 0.5,
      "project": 0.5
-    },
-    "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together",
-     "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "dwei",
     "found": true,
@@ -79385,10 +79278,6 @@
      "mostly": 0.5,
      "project": 0.5
     },
-    "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together",
-     "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
-    },
     "user": "mmarthen",
     "found": true,
     "fleet_of": "window",
@@ -80149,10 +80038,6 @@
      "mode": 0.5,
      "mostly": 0.5,
      "project": 0.5
-    },
-    "basis": {
-     "session": "one agent run: an agent process seen at the root of its tree, with every collector key folded into it (as in the Agents tab’s list of sessions), and its rows on several days together",
-     "traits": "plain statements, each from one rule over these numbers; the rules are served beside them, and none is a judgement"
     },
     "user": "rkoshy",
     "found": true,

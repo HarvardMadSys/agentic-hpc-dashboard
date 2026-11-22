@@ -40,7 +40,7 @@ import type {
 } from '../api/types';
 import { fullClock } from '../charts/scale';
 import { Segmented } from '../components/ClassFilter';
-import { Basis, NoRows, NotReturned, Panel } from '../components/Panel';
+import { NoRows, NotReturned, Panel } from '../components/Panel';
 import { SortTh } from '../components/SortTh';
 import { useSort, useSortMap } from '../lib/useSort';
 import { CmdCell } from '../components/Cmd';
@@ -572,7 +572,6 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goLive = () => {}
   const sortOf = useSortMap();
   const rej = sortOf('refused', 'from', 'asc').sort((sp.rejections ?? []).filter((r) => cls.includes(r.cls as Cls)), (r, k) =>
     k === 'from' ? CLS_LBL[r.cls] ?? r.cls : k === 'tool' ? r.tool : k === 'why' ? r.why : k === 'n' ? r.n : r.eg?.ts ?? null);
-  const basis = <Basis items={Object.entries(sp.basis ?? {})} />;
 
   return (
     <>
@@ -651,7 +650,6 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goLive = () => {}
           span
           empty={!sessions.length}
           emptyWhat="no session submitted or queried in the window"
-          basis={basis}
         >
           <Sessions
             rows={sessions}

@@ -380,7 +380,6 @@ export interface ToolMix extends PanelEnvelope {
   /** agent type -> that type's processes alone, so the Agents tab never mixes types */
   by_agent_type?: Record<string, ToolTypeBlock>;
   dedup: { dropped: number; dropped_pct: number | null; rule: string };
-  cpu_basis: string;
   /** how the counted processes ended (reducers/tools.py `exits`); absent on a
    *  window reduced before they were counted */
   exits?: ToolExits;
@@ -415,7 +414,6 @@ export interface ToolExits {
   by_agent_type: Record<string, ExitBlock>;
   /** programs whose exit 1 is an answer */
   answers: string[];
-  basis: string;
 }
 
 /* ----------------------------------------------------------- io_process */
@@ -527,7 +525,6 @@ export interface IoProcess extends PanelEnvelope {
   by_user: IoByUser[];
   /** the remote ends of the network bytes, named and ranked */
   endpoints?: EndpointList;
-  notes: Record<string, string>;
 }
 
 /* ------------------------------------------------------------ resources */
@@ -589,14 +586,12 @@ export interface Resources extends PanelEnvelope {
   by_class: Record<string, ResClassBlock>;
   stall_by_tool: StallByTool[];
   scope: Record<string, unknown>;
-  cpu_basis: string;
   series?: ResSeries;
   worst_stall?: ResourceInstance[];
   worst_fault?: ResourceInstance[];
   worst_wait?: ResourceInstance[];
   /** waits longer than the process lived, set aside as not measured: class -> field -> n */
   impossible_waits?: Record<string, Record<string, number>>;
-  impossible_basis?: string;
 }
 
 /* -------------------------------------------------------------- sandbox */
@@ -671,7 +666,6 @@ export interface Sandbox extends PanelEnvelope {
     approval: string[];
     approval_known?: string[];
   };
-  notes: Record<string, string>;
 }
 
 /* --------------------------------------------------------- trajectories */
@@ -850,7 +844,6 @@ export interface PhaseDay {
 export interface PhaseBlock {
   /** 2 for a block that carries its tasks; a block of the first version has no `tasks`, `headline`, or `days` */
   v: number;
-  basis: string;
   /** whose calls it was read from: an agent's tool calls (`agent`), or, where no agent ran the session, the jobs its
    *  terminals' shells ran (`terminal`: a person's login, an editor's terminal). Absent from a service that read
    *  agents alone, which is `agent` */
@@ -1021,7 +1014,6 @@ export interface Trajectories extends PanelEnvelope {
   by_key_type: Record<string, number>;
   /** Over every session in the window, per class (not just the listed rows). */
   summary?: Record<string, TrajSummary>;
-  basis: string;
 }
 
 /* ------------------------------------------- one trajectory's process tree
@@ -1205,7 +1197,6 @@ export interface TrajectoryDetail extends PanelEnvelope {
   timeline?: { lo: number | null; hi: number | null };
   nav?: TrajNav;
   tree?: ProcNode;
-  basis?: Record<string, string>;
 }
 
 /** A process the navigator can jump to: when it started and exited, which. */
@@ -1470,7 +1461,6 @@ export interface Workspace {
     rows_cap: number;
   };
   buffer?: Record<string, number>;
-  basis?: Record<string, string>;
 }
 
 export interface Cascades extends PanelEnvelope {
@@ -1495,7 +1485,6 @@ export interface Cascades extends PanelEnvelope {
   trees?: CascadeTree[];
   buffer?: { nodes: number; cap: number; dropped: number };
   workspace?: Workspace | null;
-  basis?: Record<string, unknown>;
 }
 
 /* ---------------------------------------------------------------- panels */
@@ -1701,7 +1690,6 @@ export interface SlurmPanel extends PanelEnvelope {
   abnormal?: { rules: SlurmRule[]; sessions: number; served: number };
   series?: { bin_s: number; t: number[]; by_class: Record<string, { jobs: (number | null)[]; queries: (number | null)[] }> };
   rejections?: { cls: string; tool: string; why: string; n: number; eg: { user: string | null; ts: string | null; args: string } | null }[];
-  basis?: Record<string, unknown>;
 }
 
 /** The present the service computed a frame at (rc_dashboard/clock.py). */
@@ -1992,7 +1980,6 @@ export interface UsersResponse extends PanelEnvelope {
   unattributed?: number;
   traits: TraitRule[];
   rules: Record<string, number>;
-  basis?: Record<string, string>;
 }
 
 /** One session in a portrait. */
@@ -2059,7 +2046,6 @@ export interface UserPortrait extends PanelEnvelope {
   fleet?: UsersFleet | null;
   traits?: TraitRule[];
   rules?: Record<string, number>;
-  basis?: Record<string, string>;
   row?: UserRow;
   phases?: {
     /** seconds in each phase over the sessions whose block was built */
@@ -2211,13 +2197,11 @@ export interface RiskPanel extends PanelEnvelope {
     compute_cpu_h: number;
     share_of_all_cpu_pct: number;
     by_class: Partial<Record<string, { n: number; cpu_s: number; cpu_h: number; users: number }>>;
-    basis?: string;
   };
   dangerous?: {
     rows: DangerousRow[];
     axes?: Record<string, string>;
     site_assumption?: string;
-    basis?: string;
   };
   secrets?: {
     rows: SecretRow[];
@@ -2536,7 +2520,6 @@ export interface NodePanel extends PanelEnvelope {
   disk?: NodeDisk[];
   thresholds?: { disk_full_pct: number; inode_full_pct: number };
   series?: NodeSeries;
-  cpu_delta_basis?: string;
   privilege?: string;
   _error?: string;
 }
@@ -2573,6 +2556,5 @@ export interface TrendPanel extends PanelEnvelope {
   retention_minutes?: number;
   retained_from?: number | null;
   tz?: string;
-  basis?: string;
   _error?: string;
 }

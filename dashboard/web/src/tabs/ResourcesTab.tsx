@@ -14,7 +14,7 @@ import { Term } from '../components/Term';
 import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
-import { Basis, Panel, More } from '../components/Panel';
+import { Panel, More } from '../components/Panel';
 import { CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt, mb, notMeasured, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
@@ -365,15 +365,6 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', 
           empty={!have.some((c) => byClass[c]?.faults || byClass[c]?.delays || byClass[c]?.dstate)}
           emptyWhat="delay accounting was not readable for the selection"
           span
-          basis={
-            <Basis
-              items={[
-                ['set aside', r.impossible_waits && Object.keys(r.impossible_waits).length
-                  ? r.impossible_waits : null],
-                ['why', r.impossible_basis],
-              ]}
-            />
-          }
         >
           <FaultTable byClass={byClass} have={have} impossible={r.impossible_waits ?? {}} />
         </Panel>

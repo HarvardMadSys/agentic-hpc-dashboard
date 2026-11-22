@@ -1434,7 +1434,8 @@ See [Is each collector OK?](../../dashboard/README.md#is-each-collector-ok). No 
 ## Served, not drawn
 
 What the service computes and serves but no figure draws: each costs its reducer's work, and some
-reach Ask LLM's snapshot or a panel's basis note.
+reach Ask LLM's snapshot. The panels' method notes (`notes`, `basis`, `*_basis`) are not served to the
+page at all (`jsonout.strip_basis`): Ask LLM reads them in process.
 
 - **`trajectories`' `by_key_type` and `by_class_counts`**.
 
