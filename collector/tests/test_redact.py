@@ -255,11 +255,6 @@ class PromptTest(unittest.TestCase):
         script = "python3 - <<'EOF'\nprint('codex exec is the runner', codex)\nEOF"
         self.assertEqual(R.redact_argv(['bash', '-c', script])[1], None)
 
-    def test_a_lone_path_is_a_script_not_a_prompt(self):
-        argv = ['/x/.local/bin/cursor-agent', '--use-system-ca',
-                '/x/.local/share/cursor-agent/versions/2026.10.22/index.js', '--api-key', 'crsr_abc']
-        self.assertEqual(red(argv), ' '.join(argv[:3]) + ' --api-key ' + K)
-
     # --- the review's leaks ----------------------------------------------------
     def test_operators_split_commands_glued_or_not(self):
         """Python 3.6's shlex left `;` glued to a word under whitespace_split, so

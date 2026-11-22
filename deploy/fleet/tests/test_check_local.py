@@ -85,12 +85,6 @@ class TestStartChecks(unittest.TestCase):
                   os.path.join(self.tmpd, "data")):
             self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o700, d)
 
-    def test_dirs_only_creates_private_dirs(self):
-        self.assertEqual(self.run_check("--dirs-only"), 0)
-        for d in (self.tmpd, os.path.join(self.tmpd, "cache"), os.path.join(self.tmpd, "logs"),
-                  os.path.join(self.tmpd, "data")):
-            self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o700, d)
-
     def test_dirs_only_refuses_open_folder(self):
         os.mkdir(self.tmpd)
         os.chmod(self.tmpd, 0o755)

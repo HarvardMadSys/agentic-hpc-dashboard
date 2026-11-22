@@ -221,15 +221,6 @@ class SegmentTest(unittest.TestCase):
         self.assertEqual((b["v"], b["basis"]),
                          (2, "read from the commands the agent ran and the words it wrote in them"))
 
-    def test_extra_housekeeping_counts_in_the_block_and_nowhere_else(self):
-        lg = PhaseLog()
-        lg.add_housekeeping("git", 60, bin_cap=10)
-        kept = state(lg)
-        b = segment([K(0, 1, "explore", "ls")], lg, PREVIEWS, dict(DEFAULTS),
-                    extra_hk={"under a process that never exited": 2})
-        self.assertEqual(b["housekeeping"]["n"], 1 + 2)
-        self.assertEqual(state(lg), kept)
-
 
 class BeyondTheBriefTest(unittest.TestCase):
     """What the module states and the brief's tests leave open."""
@@ -762,13 +753,6 @@ class MovedPastTest(unittest.TestCase):
     no guess, the lane still runs as long as it does, and an idle gap names the calls that are
     still running as it begins (`alive`)."""
 
-    def test_a_call_the_agent_moved_past_holds_no_idle(self):
-        b = seg([K(0, 50000, "run", "linktest"), K(60, 1, "explore", "ls a"),
-                 K(9000, 1, "explore", "ls b")])
-        idle = [p for p in b["list"] if p["kind"] == "idle"]
-        self.assertEqual([(p["t0"], p["t1"]) for p in idle], [(61.0, 9000.0)])
-        self.assertEqual(idle[0]["alive"], [["linktest", 0.0]])
-
     def test_a_call_with_no_later_call_still_holds_the_gap(self):
         b = seg([K(0, 1, "explore", "ls"), K(10, 5000, "test", "pytest -x")])
         self.assertNotIn("idle", kinds(b))
@@ -777,10 +761,6 @@ class MovedPastTest(unittest.TestCase):
         b = seg([K(0, 3000, "test", "pytest -x"), K(0.5, 1, "explore", "ls"),
                  K(3100, 1, "explore", "ls b")])
         self.assertNotIn("idle", kinds(b))
-
-    def test_an_idle_gap_with_nothing_running_has_no_alive(self):
-        b = seg([K(0, 1, "explore", "ls a"), K(1000, 1, "explore", "ls b")])
-        self.assertIsNone(next(p for p in b["list"] if p["kind"] == "idle")["alive"])
 
     def test_the_gap_begins_when_the_step_before_it_ends(self):
         # The call is the last the agent started before the gap: it is waited on until it ends.

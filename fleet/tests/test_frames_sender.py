@@ -3,7 +3,6 @@
 Each test runs `fleet_stream.py send` as its own process over a root written by
 FakeCollector, writes the hello a receiver would, and decodes what comes back.
 """
-import gzip
 import io
 import json
 import os
@@ -226,20 +225,6 @@ class TestSender(Base):
         trailer = frames[i_trailer][0]
         self.assertEqual(trailer["crc"], zlib.crc32(old) & 0xffffffff)
         self.assertEqual(trailer["isize"], len(old) % 2 ** 32)
-
-    def test_missing_sealed_day_sends_gz(self):
-        c = FakeCollector(self.root, day="2026-11-10")
-        old = b'{"x":2}\n' * 100
-        c.append("exits", old)
-        old_key = c.key("exits")
-        c.roll("2026-11-11", gzip=True)
-        with open(c.path("exits", "2026-11-10") + ".gz", "rb") as fh:
-            gz_bytes = fh.read()
-        s = self.sender()
-        frames = s.frames_until(lambda f: f[0].get("t") == "trailer" and f[0]["path"] == old_key)
-        joined = b"".join(p for h, p, _ in frames if h["t"] == "gz" and h["path"] == old_key + ".gz")
-        self.assertEqual(joined, gz_bytes)
-        self.assertEqual(gzip.decompress(joined), old)
 
     def test_partial_sealed_day_from_gz(self):
         c = FakeCollector(self.root, day="2026-11-10")

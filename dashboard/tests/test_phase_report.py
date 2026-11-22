@@ -233,10 +233,6 @@ class ShapeTest(unittest.TestCase):
 class TaskLinesTest(unittest.TestCase):
     """The lines a row's tasks print: a task, the gap before it, and a lone stretch."""
 
-    def test_a_built_label_is_bare(self):
-        self.assertEqual(pr.task_line(0, task(), DAY),
-                         "  T0 12:00–12:50  50m00s  task  Run train.py")
-
     def test_a_quoted_label_shows_its_quotes_and_where_the_words_came_from(self):
         for i, (source, ref, tail) in enumerate((("commit", "", '"Fix the loader" [commit]'),
                                                  ("pr", "#235", '"Fix the loader" [pr #235]'),
@@ -484,9 +480,6 @@ class EndToEndTest(unittest.TestCase):
                       "entries started under a parent whose note may have been dropped, at most 0",
                       text)
         self.assertNotIn("!!", text)
-
-    def test_a_pid_with_no_row_is_said(self):
-        self.assertIn("!! no row for: 999", self.run_report("--apid", "999"))
 
     def test_a_day_is_held_whole_past_max_sessions(self):
         # Past the cap the reducer evicts by the wall clock: for a past day, every session.

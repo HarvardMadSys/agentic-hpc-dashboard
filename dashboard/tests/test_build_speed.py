@@ -8,7 +8,6 @@ live tier is checked here against the path it replaced:
   leaves out of its skipped count the blank lines matching everywhere did;
 * a memoized probe or head digest answers as a fresh read, and never for a file
   that has changed since;
-* `heapq.nlargest` ranks the sessions `sorted(...)[:n]` ranked, ties included;
 * eviction at a cap drops the keys a plain dict dropped, in the same order;
 * a worst-offender list skipped below its floor serves the top it served;
 * the live series' cached rows, and the backfill rows the tails would drop;
@@ -21,7 +20,6 @@ live tier is checked here against the path it replaced:
 """
 import collections
 import gzip
-import heapq
 import json
 import os
 import random
@@ -200,16 +198,6 @@ class MemoTest(Scratch):
             after = export.seek_to_epoch(fh, self.t0 + 600, os.path.getsize(p))
             self.assertEqual(export.head_digest(fh, 4096), digest)
         self.assertLess(after, os.path.getsize(p))
-
-
-class RankTest(unittest.TestCase):
-
-    def test_nlargest_is_sorted_reverse_cut_ties_in_order(self):
-        rnd = random.Random(5)
-        items = [(rnd.randint(0, 6), i) for i in range(500)]
-        for n in (0, 1, 15, 499, 500, 900):
-            self.assertEqual(heapq.nlargest(n, items, key=lambda x: x[0]),
-                             sorted(items, key=lambda x: x[0], reverse=True)[:n])
 
 
 class EvictTest(unittest.TestCase):

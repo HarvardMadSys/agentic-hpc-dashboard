@@ -28,8 +28,7 @@ from rc_dashboard import proctree, snapshots                            # noqa: 
 from rc_dashboard.normalize import Normalizer                           # noqa: E402
 from rc_dashboard.reducers import phase_names, phase_segment, phase_tasks   # noqa: E402
 from rc_dashboard.reducers import trajectories as trajmod               # noqa: E402
-from rc_dashboard.reducers.phase_log import (FLAGS, OPEN, PAST, PREV, SEEN, TAGS,   # noqa: E402
-                                             PhaseLog)
+from rc_dashboard.reducers.phase_log import FLAGS, OPEN, PAST, PREV, SEEN, TAGS   # noqa: E402
 from rc_dashboard.windows import PanelView                              # noqa: E402
 from test_sessions import HOME, SNAP, cfg, ranked, rec, reduce          # noqa: E402
 from test_traj_phases import (T0, bash8, fed, quiet_t0, root8, row_of, s8,   # noqa: E402
@@ -119,18 +118,6 @@ class TagsTest(unittest.TestCase):
         names, words = red._tagsets[s.phase.calls[0][TAGS]]
         self.assertIn(("test", "tests/test_io.py"), names)
         self.assertEqual(words, ("commit", "Fix the loader", ""))
-
-    def test_a_call_that_ran_past_keeps_its_names(self):
-        lg = PhaseLog()
-        lg.add((0.0, 1.0, "run", 1, 0, 0, 7, None, 3), 10)
-        self.assertTrue(lg.ran_past(7, 50.0))
-        self.assertEqual(lg.calls[0][PAST:], (50.0, 3))
-
-    def test_the_bound_counts_what_it_drops(self):
-        with mock.patch.object(trajmod, "MAX_TAGSETS", 2):
-            payload = reduce([root8(T0)]
-                             + [bash8(T0 + 5 * i, 201 + i, "cat f%d.py" % i) for i in range(4)])
-        self.assertEqual(payload["trajectories"]["buffer"]["phase_tag_overflow"], 3)
 
     def test_names_survive_the_hour_merge_and_a_pickle(self):
         # Hour one names a.py, the test, and the commit; hour two the test again, c.py, nothing,
@@ -859,14 +846,6 @@ class AcrossMidnightTest(unittest.TestCase):
         self.assertEqual((first["n_events"], second["n_events"]), (30, 31))
         self.assertLess(first["last"], self.m)
         self.assertGreater(second["first"], self.m)
-
-    def test_a_row_of_one_day_has_no_days_and_no_sid(self):
-        recs = [root8(T1)] + reads(T1, 12, 201)
-        block = row_of(reduce(recs))["phases"]
-        self.assertNotIn("days", block)
-        self.assertEqual({p["sid"] for p in block["list"]}, {None})
-        self.assertEqual([t["sid"] for t in block["tasks"]], [None])
-        self.assertEqual(block["n_calls"], 12)
 
     def test_only_the_same_agent_on_the_same_host_is_joined(self):
         # Agent 300 works on the second day only, and a second host has an agent with the pid

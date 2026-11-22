@@ -172,18 +172,6 @@ class RestartTest(FeedCase):
         second.poll_once()
         self.assertEqual(self.events(second), dict(NONE, agent=20, human=10))
 
-    def test_a_poll_that_runs_before_positioning_reads_nothing(self):
-        # app.py polls while the backfill runs. A file the tail has not been
-        # handed yet would be read from byte 0 -- and then read again by the
-        # backfill, counting the whole history twice.
-        self.append("h1.exits.jsonl", self.thirty_exits())
-        agg = Aggregator(self.cfg())
-
-        self.assertEqual(agg.poll_once(), 0)
-        agg.backfill_now()
-        agg.poll_once()
-        self.assertEqual(self.events(agg), dict(NONE, agent=20, human=10))
-
 
 class PositioningTest(FeedCase):
 

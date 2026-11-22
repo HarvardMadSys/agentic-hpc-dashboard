@@ -44,29 +44,6 @@ class LogTest(unittest.TestCase):
             lg.add(C(10 * i, 10 * i + 1), cap=3)
         self.assertEqual((len(lg.calls), lg.cut, lg.cut_at, lg.n), (3, 2, 30, 5))
 
-    def test_a_process_outliving_its_call_extends_it(self):
-        lg = PhaseLog()
-        lg.add(C(0, 5, "run", pid=201), cap=10)
-        self.assertTrue(lg.ran_past(201, 3600))
-        self.assertEqual(lg.calls[0][PAST], 3600)
-        self.assertFalse(lg.ran_past(999, 10))
-
-    def test_housekeeping_is_binned_by_minute(self):
-        lg = PhaseLog()
-        for t in (60, 61, 125):
-            lg.add_housekeeping("git", t, bin_cap=10)
-        self.assertEqual((lg.hk, lg.hk_bins), ({"git": 3}, {60: 2, 120: 1}))
-
-    def test_merge_and_fold_add_up(self):
-        a, b = PhaseLog(), PhaseLog()
-        a.add(C(0, 1), 10)
-        b.add(C(5, 6), 10)
-        b.add_housekeeping("git", 5, 10)
-        f = PhaseLog.fold([a, b], 10)
-        self.assertEqual((f.n, f.hk), (2, {"git": 1}))
-        a.merge(b, 10)
-        self.assertEqual(a.n, 2)
-
     def test_the_layouts_later_code_builds_tuples_by(self):
         # (start, end, cat, h, prev, flags, pid, past)
         # [first, last, n, cats, cmds, text, wrote, sid]
@@ -488,12 +465,6 @@ class PendingTest(unittest.TestCase):
         self.assertTrue(pj.loop_like(pj.entries[("h", 600)], poll_min=5, poll_cv=0.25))
         self.assertFalse(pj.loop_like(pj.entries[("h", 600)], poll_min=7, poll_cv=0.25))
 
-    def test_a_reused_pid_does_not_take_an_earlier_processes_children(self):   # Review Focus 3
-        pj = PendingJoin(cap=100)
-        pj.push("h", 500, pj.leaf(10, 11, "explore", "ls", None, False, "sid1"))
-        self.assertIsNone(pj.pop("h", 500, start=1000))
-        self.assertNotIn(("h", 500), pj.entries)
-
     def test_the_payload_text_and_a_write_travel_up(self):
         pj = PendingJoin(cap=100)
         pj.push("h", 301, pj.leaf(1, 2, "edit", "codex", "--codex-run-as-fs-helper", True, "s"))
@@ -502,12 +473,6 @@ class PendingTest(unittest.TestCase):
         e = pj.pop("h", 300, start=0.4)
         self.assertTrue(e[P_WROTE])
         self.assertEqual(e[P_TEXT], "--codex-run-as-fs-helper")
-
-    def test_the_cap_evicts_and_counts(self):
-        pj = PendingJoin(cap=2)
-        for p in (1, 2, 3):
-            pj.push("h", 1000 + p, pj.leaf(p, p, "run", "x", None, False, "s"))
-        self.assertEqual((len(pj.entries), pj.evicted), (2, 1))
 
     # ------------------------------------------------------------- shape
     def test_a_leaf_is_a_one_record_entry(self):

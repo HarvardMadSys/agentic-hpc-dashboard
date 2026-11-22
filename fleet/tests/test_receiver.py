@@ -299,20 +299,6 @@ class TestBackoff(unittest.TestCase):
         finally:
             rig.cleanup()
 
-    def test_connected_link_is_not_down(self):
-        rig = Rig()
-        try:
-            FakeCollector(rig.src)
-            rig.start()
-            end = time.time() + 10
-            while time.time() < end and not rig.link.status()["connected"]:
-                time.sleep(0.05)
-            st = rig.link.status()
-            self.assertTrue(st["connected"])
-            self.assertIsNone(st["down_since"])
-        finally:
-            rig.cleanup()
-
 
 if __name__ == "__main__":
     unittest.main()

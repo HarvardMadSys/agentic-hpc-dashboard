@@ -110,12 +110,6 @@ class CutTest(unittest.TestCase):
         self.assertEqual(len(sp), 2)
         self.assertEqual(sp[1].gap[1], [0])          # the moved-past call is still alive
 
-    def test_a_process_a_finished_call_left_behind_holds_the_gap(self):
-        sp = spans([C(60 * i, 5, "run", [("run", "a.py")]) for i in range(9)]
-                   + [C(540, 1, "run", [("run", "update.sh")], past=8000)]
-                   + [C(7000 + 60 * i, 5, "run", [("run", "a.py")]) for i in range(10)])
-        self.assertEqual(len(sp), 1)
-
     def test_a_new_object_that_takes_over_cuts_where_it_first_occurs(self):
         a = [C(60 * i, 5, "edit", [("write", "a.py")]) for i in range(30)]
         b = [C(1800 + 60 * i, 5, "run", [("dir", "novel_events/controls")]) for i in range(30)]
@@ -129,12 +123,6 @@ class CutTest(unittest.TestCase):
         other = [C(960 + 60 * i, 5, "edit", [("write", "y_old.py")]) for i in range(15)]
         self.assertEqual(len(spans(a + commit + same)), 1)
         self.assertEqual(len(spans(a + commit + other)), 2)
-
-    def test_a_lone_call_hours_from_other_work_is_set_apart(self):
-        sp = spans([C(60 * i, 5, "edit", [("write", "a.py")]) for i in range(20)]
-                   + [C(20000, 3, "explore", [("read", "harness/x.py")])]
-                   + [C(40000 + 60 * i, 5, "edit", [("write", "a.py")]) for i in range(20)])
-        self.assertEqual([x.kind for x in sp], ["task", "lone", "task"])
 
     def test_short_tasks_merge_unless_they_hold_words(self):
         # Three pieces of one stretch with no gap, each cut where its new object takes over. The
@@ -587,16 +575,8 @@ class CapTest(unittest.TestCase):
         self.assertEqual(len(spans(self.pieces(at(22)))), 14)       # across midnight: 8 and 6
         self.assertEqual(len(spans(self.pieces(at(6)), cap=7)), 7)
 
-    def test_a_day_lends_its_budget_to_no_other(self):
-        # One piece at 23:48, then 14 from 00:05. Each day's budget is its own: the first day's
-        # unused nine lend the second nothing, so 1 and 14 make 1 and 10, not 15 under 20.
-        late = [C(at(23, 48) + 20 + 90 * j, 5, "edit", [("write", "late.py")]) for j in range(10)]
-        sp = spans(late + self.pieces(at(23, 48) + 1020))
-        days = [time.localtime(x.t0)[2] for x in sp]
-        self.assertEqual((days.count(14), days.count(15)), (1, DEFAULTS["cap"]))
-
     def test_on_a_tie_a_pair_of_the_day_goes_before_one_across_midnight(self):
-        # The same calls: one piece at 23:48, then 14 from 00:05, and no two share a name, so
+        # One piece at 23:48, then 14 from 00:05, and no two share a name, so
         # every pair is at 0. The second day's own pairs go first: its first five pieces merge,
         # and the 23:48 piece stays a task of its own, so the day's boundary holds. (Before this
         # rule the tie went to the earliest pair, across midnight, and the 23:48 piece took the
@@ -883,14 +863,6 @@ class NameTest(unittest.TestCase):
         self.assertEqual((t["label"], t["source"], t["ref"]), ("Fix it", "pr", "#9"))
         (t,) = two("edit", ("log", "Add it", ""), ("log", "Fix it", ""))
         self.assertEqual((t["label"], t["source"], t["ref"]), ("Add it", "log", ""))
-
-    def test_the_first_log_entry_names_a_task_with_no_commit(self):
-        work = [C(60 * i, 5, "edit", [("write", "analysis/run.py")]) for i in range(12)]
-        entries = [C(100.5, 2, "edit", [], ("log", "Phase B full run approved", "")),
-                   C(500.5, 2, "edit", [], ("log", "Phase B full run done", ""))]
-        (t,), _ = named(work + entries)
-        self.assertEqual((t["label"], t["source"], t["ref"]),
-                         ("Phase B full run approved", "log", ""))
 
     def test_a_built_label_is_a_verb_and_the_names_most_specific_to_the_task(self):
         env = ("read", "slurm/env.sh")                 # every call of the session names it

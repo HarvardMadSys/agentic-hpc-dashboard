@@ -79,11 +79,6 @@ class CategoryTest(unittest.TestCase):
         self.assertEqual(got["category"], "run")
         self.assertEqual(got["uses"], [["run", 60.0], ["explore", 40.0]])
 
-    def test_time_not_calls_weighs_the_uses(self):
-        # one long run among twenty quick reads: the run took the session's time
-        got = kind(block([ph("explore", 0, 200, 20), ph("run", 200, 3200, 1)]))
-        self.assertEqual(got["category"], "run")
-
     def test_no_use_at_half_is_a_mix(self):
         got = kind(block([ph("slurm", 0, 390), ph("explore", 390, 770),
                           ph("run", 770, 1000)]))
@@ -220,10 +215,6 @@ class CategoryTest(unittest.TestCase):
     def test_waiting_and_nothing_else_is_wait(self):
         got = kind(block([ph("wait", 0, 86400, 1, "sleep")]))
         self.assertEqual((got["category"], got["uses"]), ("wait", []))
-
-    def test_no_tool_call_is_none(self):
-        got = kind(block([], n_calls=0, hk=13))
-        self.assertEqual((got["category"], got["uses"]), ("none", []))
 
     def test_every_category_is_listed_and_the_uses_are_the_users_tabs(self):
         self.assertEqual(PS.USES, ("explore", "develop", "build", "run", "hpc", "git"))

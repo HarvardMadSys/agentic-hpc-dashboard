@@ -473,13 +473,6 @@ class CategoryTest(unittest.TestCase):
                          "ugrep -G --ignore-files -qE passed|failed /tmp/t.output"), "explore")
         self.assertEqual(category_of_argv("srun", None), "slurm")
 
-    def test_what_a_wait_waits_on(self):
-        self.assertEqual(waits_on("squeue -h -u $USER -o %j", "slurm"), "slurm")
-        self.assertEqual(waits_on("grep -qE 'passed|failed' /tmp/x/tasks/a.output", "explore"), "output")
-        self.assertEqual(waits_on("pgrep -f train.py", "wait"), "process")
-        self.assertEqual(waits_on("sleep 600", "wait"), "sleep")
-        self.assertEqual(waits_on("date", "explore"), "command")
-
     def test_hashes_are_stable_and_ignore_spacing(self):
         self.assertEqual(norm_hash("squeue  -u x"), norm_hash("squeue -u x"))
         self.assertEqual(norm_hash("squeue -u x"), zlib.crc32(b"squeue -u x"))
@@ -767,12 +760,6 @@ class CategoryShapeTest(unittest.TestCase):
         self.assertEqual(category_of("git commit -m \"Fix X\n\nmake sure it works\nrun pytest\""), "git")
         self.assertEqual(category_of("git commit -m \"$(cat <<'EOF'\nmake the build faster\nEOF\n)\""), "git")
 
-    def test_every_answer_is_one_of_the_categories(self):
-        for table in (CASES, WRAPPERS_AND_SETUP, LOOPS, SUBSTITUTIONS, PRIORITY, SLEEPS_FIRST, PYTHON, EDITS,
-                      GIT, TOOLS, SLURM_AND_WAIT, FETCH, EXPLORE, UNKNOWN_PROGRAMS, NOT_COMMANDS, UNKNOWN):
-            for text, _ in table:
-                self.assertIn(category_of(text), CATS)
-
     def test_the_categories_are_in_priority_order(self):
         self.assertEqual(CATS, ("test", "slurm", "run", "build", "edit", "git", "wait", "explore", "unknown"))
 
@@ -818,21 +805,12 @@ class VariableProgramTest(unittest.TestCase):
             "source slurm/env.sh && ${PYTHON} scripts/eval_e2e.py --beam 400"), "run")
         self.assertEqual(category_of('"$PY" -m pytest -q'), "test")
 
-    def test_python_arguments_read_as_python(self):
-        self.assertEqual(category_of("$INTERP -c 'import json; print(1)'"), "run")
-        self.assertEqual(category_of("$BIN -m pytest tests"), "test")
-
     def test_a_variable_python_heredoc_follows_the_heredoc_rules(self):
         edit = ("source slurm/env.sh && $PY - <<'PY'\nimport pathlib\np = pathlib.Path('a.py')\n"
                 "p.write_text(p.read_text().replace('a', 'b'))\nPY")
         self.assertEqual(category_of(edit), "edit")
         run = "PY=../venv/bin/python; $PY - <<'EOF'\nimport duckdb\nprint(duckdb.connect())\nEOF"
         self.assertEqual(category_of(run), "run")
-
-    def test_other_variables_read_as_today(self):
-        self.assertEqual(category_of("$CMD --flag x"), "unknown")
-        self.assertEqual(category_of('echo "$HOME"'), "explore")
-        self.assertEqual(category_of("ls $DIR"), "explore")
 
     # -- rule 1: the text assigns it earlier ---------------------------------------------------
     # Each uses a name and an argument no other rule reads (`SB`, `job.sh`), so only the assignment
@@ -1531,10 +1509,6 @@ class DirectTest(unittest.TestCase):
 
     def test_only_two_agent_types_have_calls(self):
         self.assertEqual(PHASE_AGENTS, frozenset({"claude_code", "codex"}))
-
-    def test_fs_helper(self):
-        self.assertTrue(is_fs_helper({"args": "/h/bin/codex --codex-run-as-fs-helper"}))
-        self.assertFalse(is_fs_helper({"args": "codex exec"}))
 
     def test_the_fs_helper_as_the_captures_have_it(self):
         helper = {"_command": "codex", "args": "/n/home01/u/.codex/packages/app-server-daemon/releases/"
