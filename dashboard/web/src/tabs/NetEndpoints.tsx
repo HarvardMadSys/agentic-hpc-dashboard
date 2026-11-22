@@ -6,8 +6,8 @@
  * process's command line gave, else the address (rc_dashboard/endpoints.py).
  * The service sends the top ten for every mix of classes, so ranking the
  * classes the page shows here is exact. Counted as each process exited, like
- * the per-class table beside it, and narrowed by the page-wide who filter the
- * same way.
+ * the classes' byte totals (`by_class`), and narrowed by the page-wide who
+ * filter the same way.
  */
 import { useState } from 'react';
 import type { EndpointCover, EndpointList, EndpointRow, EndpointUse, IoClassBlock } from '../api/types';
@@ -105,8 +105,8 @@ export function NetEndpoints({ ep, have, byClass }: {
     : k === 'rx' ? rxOf(r, cls)
     : of(r, k));
 
-  // What the endpoints cover of the bytes the per-class table counts, over the
-  // classes the page shows -- a class with no endpoint at all included, for its losses.
+  // What the endpoints cover of the bytes the classes sent and received (`by_class`),
+  // over the classes the page shows -- a class with no endpoint at all included, for its losses.
   const cover = (f: (v: EndpointCover) => number) => have.reduce((a, c) => a + (ep.cover[c] ? f(ep.cover[c]) : 0), 0);
   const listed = cover((v) => v.tx + v.rx);
   const lost = cover((v) => v.lost_tx + v.lost_rx);
@@ -114,7 +114,7 @@ export function NetEndpoints({ ep, have, byClass }: {
   const panel = have.reduce((a, c) => a + ((byClass[c]?.net_tx_mb?.total ?? 0) + (byClass[c]?.net_rx_mb?.total ?? 0)) * MB, 0);
 
   return (
-    <div className="net-ends">
+    <div>
       <div className="net-ends-ctl">
         <span className="eyebrow" data-tip="the remote ends of the network bytes: one row per name">
           top {ep.top} endpoints
@@ -175,7 +175,7 @@ export function NetEndpoints({ ep, have, byClass }: {
       )}
       <div className="nm net-ends-note">
         {`${fint(ep.names)} endpoints from ${fint(ep.addresses)} addresses in the window.`}
-        {panel > 0 && ` Endpoints are known for ${pc((100 * listed) / panel)} of the bytes in the per-class table.`}
+        {panel > 0 && ` Endpoints are known for ${pc((100 * listed) / panel)} of the bytes these classes sent and received.`}
         {lost > 0 && ` The collector listed no endpoint for ${mb(lost / MB)}.`}
         {missing > 0 && ` ${fint(missing)} process${missing === 1 ? '' : 'es'} moved bytes without an endpoint list.`}
         {ep.pending > 0 && ` ${fint(ep.pending)} name${ep.pending === 1 ? ' is' : 's are'} still being looked up.`}

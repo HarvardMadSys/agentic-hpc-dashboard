@@ -440,7 +440,6 @@ export interface IoClassBlock {
   cache_hit_pct: number | null;
   net_tx_mb: Accum;
   net_rx_mb: Accum;
-  net_calls: Accum | null;
   scope: Record<string, unknown>;
   quants: Record<string, Quant>;
 }

@@ -1141,9 +1141,8 @@ the Internal tab's (IN-1 to IN-4).
 | RE-1 | login node health: nodes, NFS mounts, local disks, accounts, stuck processes | NODE | `node` | `reducers/resources.py:NodeReducer.result` · `tabs/NodeHealth.tsx:NodeHealth` |
 | RE-2 | worst individual processes | BUILD | `resources.worst_stall`, `worst_fault`, `worst_wait` | `ResourceReducer._keep_worst` · `tabs/ResourcesTab.tsx:WorstPanel`, `tabs/RiskIoTab.tsx:InstanceTable` |
 | RE-3 | disk read and written by tool | BUILD; a bar opens IOCMDS | `io_process.by_tool` | `reducers/io.py:IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:toolBars`, `charts/primitives.tsx:HGroupBars` |
-| RE-4 | network bytes per class (table) | BUILD; a cell opens IOCMDS | `io_process.by_class[c]`: `net_tx_mb`, `net_rx_mb`, `net_calls` | `IoReducer.feed` · `tabs/RiskIoTab.tsx:RiskIoTab` |
-| RE-5 | network endpoints | BUILD, named on read | `io_process.endpoints` | `IoReducer._feed_endpoints`, `_endpoint_rows`; `endpoints.py:serve`, `fold` · `tabs/NetEndpoints.tsx:NetEndpoints` |
-| RE-6 | I/O by user | BUILD; a cell opens IOCMDS | `io_process.by_user` | `IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:RiskIoTab` |
+| RE-4 | network endpoints | BUILD, named on read | `io_process.endpoints`; `by_class[c]`: `net_tx_mb`, `net_rx_mb` | `IoReducer._feed_endpoints`, `_endpoint_rows`; `endpoints.py:serve`, `fold` · `tabs/NetEndpoints.tsx:NetEndpoints` |
+| RE-5 | I/O by user | BUILD; a cell opens IOCMDS | `io_process.by_user` | `IoReducer.feed`, `io.py:_heaviest` · `tabs/RiskIoTab.tsx:RiskIoTab` |
 
 #### RE-1 login node health
 
@@ -1178,31 +1177,25 @@ the Internal tab's (IN-1 to IN-4).
   bar opens IOCMDS for the tool, read from the JSONL unless the page is filtered by user.
 - **Cost:** a few adds a record; the tool map is unbounded; per read, four `nlargest` passes.
 
-#### RE-4 network bytes per class
-
-- **Shows:** per class, network bytes sent and received and network calls, with coverage.
-- **Records:** `exit`: `net_tx_bytes`, `net_rx_bytes`, `net_calls`, each null when the collector's
-  netbytes block was dropped.
-- **Computation:** an `Acc` per class and counter.
-
-#### RE-5 network endpoints
+#### RE-4 network endpoints
 
 - **Shows:** the top 10 remote endpoints by calls or bytes, split by class
   ([Network endpoints](../../dashboard/README.md#network-endpoints)).
 - **Records:** `exit`: `net_endpoints` (schema 7): per endpoint `addr`, `inbound`, `calls`,
   `tx_bytes`, `rx_bytes`, `proto`, `port`, `host`, `external`, `provider`; and its `unattributed`,
-  `overflow`, `unaccounted` losses.
+  `overflow`, `unaccounted` losses; for the share, `net_tx_bytes` and `net_rx_bytes`.
 - **Computation:** `IoReducer._feed_endpoints` adds each address's calls and bytes per class, every
   address kept. On every `/api/panels` read, `endpoints.serve` names each address (lookups run on
   background threads and are kept in `<cache.dir>/rdns.json`) and groups the addresses that share a
   name; for every combination of the classes present it keeps the union of the top 10 by calls and
-  by bytes (`fold`). The page ranks the combination it shows, and gives the share of RE-4's bytes
-  whose endpoint is known.
+  by bytes (`fold`). The page ranks the combination it shows, and gives the share of the bytes
+  those classes sent and received (`by_class[c]`'s `net_tx_mb` and `net_rx_mb` totals, which LV-6
+  draws) whose endpoint is known.
 - **Cost:** per record, a dict update per endpoint; per `/api/panels` read, a pass over every address
   for every class combination (up to 15). While names are pending, the page reads `/api/panels`
   again after 3, 6, 12, 24 and 48 s. Not measured.
 
-#### RE-6 I/O by user
+#### RE-5 I/O by user
 
 - **Shows:** per user, processes, disk and requested bytes, network bytes, I/O coverage.
 - **Computation:** `IoReducer.feed` per user, each process's own bytes; `result` serves the union of
@@ -1545,7 +1538,7 @@ with the read paths and figures above) and, where nothing was measured, by the w
    endpoints' addresses, the live tier's submissions.
 8. **Making and serving the panels**: every held view's payload is made again each rebuild tick, a
    reducer per lock hold; each `/api/panels` read copies the payload and names and ranks the
-   endpoints for every class mix (RE-5). Not measured.
+   endpoints for every class mix (RE-4). Not measured.
 9. **The live frame** (LV-5, LV-17 to LV-21): one per distinct window per poll that brought records,
    cheap by design (cached bin rows, closed roster bins summed once), but made under the
    aggregator's lock.

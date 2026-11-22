@@ -370,7 +370,6 @@ function ioProcess() {
         c === 'human' ? accum(null, 0, 0) : accum(c === 'agent' ? 4_882.6 : 1_142.4, c === 'agent' ? 88_442 : 24_118, c === 'agent' ? 64.2 : 22.8),
       net_rx_mb:
         c === 'human' ? accum(null, 0, 0) : accum(c === 'agent' ? 18_442.8 : 6_118.2, c === 'agent' ? 88_442 : 24_118, c === 'agent' ? 64.2 : 22.8),
-      net_calls: c === 'human' ? null : c === 'agent' ? 88_442 : 24_118,
       scope: { hosts: HOSTS.length, days: 2, note: 'per-process I/O is blank for other users (ptrace_may_access)' },
       quants: {
         rd_mb: quant(withIo, [0, 0.01, 0.12, 1.8, 14.2, 412.6, 9_884.2, 6.4], Number(((100 * withIo) / events).toFixed(1))),

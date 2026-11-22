@@ -97,7 +97,6 @@ export const GLOSS: Record<string, string> = table({
   cachehit: 'cache hit: the share of bytes read that came from memory rather than the disk',
   tx: 'sent: bytes that left this login node over the network (tx, egress)',
   rx: 'received: bytes that arrived over the network (rx, ingress)',
-  netcalls: 'network calls: send and receive calls the processes made',
   coverage: 'coverage: the share of processes this could be measured for; the number covers those alone',
   exttcp: 'external TCP: open network connections to other machines',
 

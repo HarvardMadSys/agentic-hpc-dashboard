@@ -3104,22 +3104,7 @@ td.host-by {
   padding-left: 4px;
 }
 
-/* Network bytes: the per-class table and the endpoint list side by side, the
-   list under the table when the panel is too narrow for both (NetEndpoints.tsx) */
-.net-split {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px 32px;
-  align-items: flex-start;
-}
-.net-class {
-  flex: 0 1 440px;
-  min-width: 0;
-}
-.net-ends {
-  flex: 1 1 520px;
-  min-width: 0;
-}
+/* Network bytes: the endpoint list (NetEndpoints.tsx) */
 .net-ends-ctl {
   display: flex;
   flex-wrap: wrap;

@@ -10,8 +10,8 @@ import type { Cls, IoByTool, IoProcess, IoSort } from '../api/types';
 import { Fluid, HBars, HGroupBars } from '../charts/primitives';
 import { TOOL_COL } from '../charts/TimeChart';
 import type { BarSeries, HBarCell, HBarGroup } from '../charts/primitives';
-import { Legend, More, NoRows, Panel } from '../components/Panel';
-import { AccumCell, Coverage, QuantCells, QuantHead, quantVal } from '../components/Coverage';
+import { Legend, More, NoRows, NotReturned, Panel } from '../components/Panel';
+import { Coverage, QuantCells, QuantHead, quantVal } from '../components/Coverage';
 import { Plate } from '../components/Plate';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { ByUser, distinct } from '../components/ByUser';
@@ -571,54 +571,14 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
           empty={!have.length || !have.some(netRead)}
           emptyWhat="no TCP accounting for the selection"
         >
-          {/* each class's bytes and calls, and beside them (under them, when
-              narrow) where the bytes went. Each class's share of the bytes is
-              Who uses what's, on Live: bars of the same totals here said it
-              again. */}
-          <div className="net-split">
-            <div className="net-class">
-              <div className="scroller">
-                <table>
-                  <thead>
-                    <tr>
-                      <SortTh s={sortOf('net-class')} k="cls" first="asc">class</SortTh>
-                      <SortTh s={sortOf('net-class')} k="tx" num tip={GLOSS.tx}>sent</SortTh>
-                      <SortTh s={sortOf('net-class')} k="rx" num tip={GLOSS.rx}>received</SortTh>
-                      <SortTh s={sortOf('net-class')} k="calls" num tip={GLOSS.netcalls}>network calls</SortTh>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sortOf('net-class').sort(have, (c, k) =>
-                      k === 'cls' ? CLS_LBL[c] ?? c
-                      : k === 'tx' ? byClass[c]?.net_tx_mb?.total ?? null
-                      : k === 'rx' ? byClass[c]?.net_rx_mb?.total ?? null
-                      : byClass[c]?.net_calls?.total ?? null,
-                    ).map((c) => (
-                      <tr key={c}>
-                        <td>{CLS_LBL[c] ?? c}</td>
-                        <td className="num">
-                          <IoNum q={{ title: `network sent · ${CLS_LBL[c] ?? c}`, sort: 'tx_mb', class: [c], ...coveredBy(io) }}>
-                            <AccumCell a={byClass[c]?.net_tx_mb} unit="MB" />
-                          </IoNum>
-                        </td>
-                        <td className="num">
-                          <IoNum q={{ title: `network received · ${CLS_LBL[c] ?? c}`, sort: 'rx_mb', class: [c], ...coveredBy(io) }}>
-                            <AccumCell a={byClass[c]?.net_rx_mb} unit="MB" />
-                          </IoNum>
-                        </td>
-                        {/* an Acc like its tx/rx neighbours: the count carries the
-                            same coverage, so it must show it the same way */}
-                        <td className="num">
-                          <AccumCell a={byClass[c]?.net_calls} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            {io.endpoints && <NetEndpoints ep={io.endpoints} have={have} byClass={byClass} />}
-          </div>
+          {/* Where each class's bytes went. The bytes themselves are Who uses
+              what's sent and received rows, on Live, which open the same
+              commands: a table of them here said it again. */}
+          {io.endpoints ? (
+            <NetEndpoints ep={io.endpoints} have={have} byClass={byClass} />
+          ) : (
+            <NotReturned feed={io._feed} notice="the I/O panel came without its endpoint list" />
+          )}
         </Panel>
 
         <Panel

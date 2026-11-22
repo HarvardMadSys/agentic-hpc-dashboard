@@ -1497,7 +1497,6 @@
        "coverage_pct": 64.2,
        "mean": 0.2085
       },
-      "net_calls": 88442,
       "scope": {
        "hosts": 6,
        "days": 2,
@@ -1556,7 +1555,6 @@
        "coverage_pct": 0,
        "mean": null
       },
-      "net_calls": null,
       "scope": {
        "hosts": 6,
        "days": 2,
@@ -1615,7 +1613,6 @@
        "coverage_pct": 22.8,
        "mean": 0.2537
       },
-      "net_calls": 24118,
       "scope": {
        "hosts": 6,
        "days": 2,

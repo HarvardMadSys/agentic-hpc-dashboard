@@ -757,10 +757,11 @@ the directory.
 
 ## Network endpoints
 
-The Network bytes panel (Resources tab, I/O section) lists, beside its per-class table, the ten
-remote endpoints the processes made the most send and receive calls to, or with a switch moved the
-most bytes to and from, each row split by class. It is counted from the collector's `net_endpoints`
-block (schema 7) at each exit, so an older capture shows no list.
+The Network bytes panel (Resources tab, I/O section) lists the ten remote endpoints the processes
+made the most send and receive calls to, or with a switch moved the most bytes to and from, each
+row split by class; each class's bytes sent and received in all are rows of Who uses what, on
+Live. It is counted from the collector's `net_endpoints` block (schema 7) at each exit, so an
+older capture shows no list.
 
 - **One row per name.** The service names each address when the panel is read (`endpoints.py`): by
   reverse DNS from this host if it can, else by a name a command line gave for it (the collector's
@@ -772,9 +773,9 @@ block (schema 7) at each exit, so an older capture shows no list.
   name" after a day and a failed lookup after ten minutes, serving the old answer meanwhile. They use
   this host's resolver, so a private address in another site's capture is named as this host names
   it.
-- **What it cannot show is said**: the note under the list gives the share of the table's bytes whose
-  endpoint is known, the bytes a block held with no address, and the processes that moved bytes with
-  no endpoint block.
+- **What it cannot show is said**: the note under the list gives the share of the classes' bytes
+  whose endpoint is known, the bytes a block held with no address, and the processes that moved
+  bytes with no endpoint block.
 - **A restart, not a rebuild.** `server.rdns.enabled` (`RC_DASH_RDNS`, on by default) turns the
   lookups off, and names then come only from command lines; `server.rdns.workers` (4) sets how many
   run at once. A name is applied when the panel is read, never saved, so neither setting affects a
