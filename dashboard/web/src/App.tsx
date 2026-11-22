@@ -52,9 +52,8 @@ import { feedLabel } from './lib/feeds';
 import { table } from './lib/lookup';
 
 /* Live is the first paint, with the shell; every other tab loads its code
- * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). Search &
- * export is hidden, and its code is fetched like the rest. The sessions list
- * and its inspector (TrajectoriesTab), the Agents tab's last part, are split
+ * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). The sessions
+ * list and its inspector (TrajectoriesTab), the Agents tab's last part, are split
  * off like a tab: the Sessions tab was not, so that its inspector, near the
  * top of that tab, opened in the first render without scrolling the page. At
  * the foot of the Agents tab, scrolling to it is what opening it is for. */
@@ -68,7 +67,6 @@ const SlurmTab = lazyTab(() => import('./tabs/SlurmTab').then((m) => m.SlurmTab)
 const FeedsTab = lazyTab(() => import('./tabs/FeedsTab').then((m) => m.FeedsTab));
 const ChatTab = lazyTab(() => import('./tabs/ChatTab').then((m) => m.ChatTab));
 const UsersTab = lazyTab(() => import('./tabs/UsersTab').then((m) => m.UsersTab));
-const EventsExplorer = lazyTab(() => import('./components/EventsExplorer').then((m) => m.EventsExplorer));
 
 /* In the order an operator reads them (roadmap notes 32 and 50): what is
  * happening and who uses what, how each user works with agents, the agents
@@ -89,15 +87,14 @@ const EventsExplorer = lazyTab(() => import('./components/EventsExplorer').then(
 /* `also`: the names a tab had before, which "go to" still finds it by. */
 type Tab = { k: string; lbl: string; eyebrow: string; icon: IconName; group: string; parent?: 'nodes'; also?: string };
 const TABS: Tab[] = [
-  { k: 'live', lbl: 'Live', eyebrow: 'right now, over the window, and who uses what', icon: 'live', group: 'Monitor', also: 'overview who uses what' },
-  { k: 'users', lbl: 'Users', eyebrow: 'a portrait of each user, from how they use coding agents, and their sessions', icon: 'users', group: 'Monitor' },
-  { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, the tools they ran, and each session: what it ran, and when', icon: 'agents', group: 'Monitor', also: 'sessions session trajectories trajectory inspector process tree' },
+  { k: 'live', lbl: 'Live', eyebrow: 'what runs, and who runs it', icon: 'live', group: 'Monitor', also: 'overview who uses what' },
+  { k: 'users', lbl: 'Users', eyebrow: 'how each user works with coding agents, and their sessions', icon: 'users', group: 'Monitor' },
+  { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, the tools they ran, and each session', icon: 'agents', group: 'Monitor', also: 'sessions session trajectories trajectory inspector process tree' },
   { k: 'security', lbl: 'Security', eyebrow: 'how agents were launched and sandboxed, what they exposed, and where they reached', icon: 'security', group: 'Monitor', also: 'sandbox approval bypass credentials secrets blast radius' },
   { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O', icon: 'resources', group: 'Monitor', parent: 'nodes' },
   { k: 'risk', lbl: 'Risks', eyebrow: 'what should not run here', icon: 'risk', group: 'Monitor', parent: 'nodes', also: 'risk warning' },
-  { k: 'slurm', lbl: 'HPC', eyebrow: 'the Slurm scheduler: what each session asks of it, and what looks abnormal', icon: 'hpc', group: 'Monitor', also: 'slurm scheduler jobs queue abnormal cluster' },
+  { k: 'slurm', lbl: 'HPC', eyebrow: 'what sessions ask of the Slurm scheduler, and what looks abnormal', icon: 'hpc', group: 'Monitor', also: 'slurm scheduler jobs queue abnormal cluster' },
   { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask a language model about this window', icon: 'chat', group: 'More' },
-  { k: 'events', lbl: 'Search & export', eyebrow: 'every process record, filtered and downloadable', icon: 'events', group: 'More' },
   { k: 'internal', lbl: 'Internal', eyebrow: 'not settled yet', icon: 'internal', group: 'More' },
   { k: 'feeds', lbl: 'Feeds', eyebrow: 'where the data comes from, and how fresh it is', icon: 'feeds', group: 'More', also: 'provenance data sources' },
 ];
@@ -134,9 +131,6 @@ const TRANSPORT_WORDS = { ws: 'streaming', polling: 'every 15 s', connecting: 'c
 const typing = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
-/* Hidden for now, its code kept (user, 2026-10-13): Search & export. An old
- * link to it (?tab=events) opens the first tab instead. */
-const HIDDEN_TABS = new Set(['events']);
 /** How long after each answer the sessions list asks again, while the Agents tab, whose last part it is, is shown. */
 const TRAJ_LIVE_MS = 5000;
 /** No panels yet: one empty map, not a new one each render, so a memoized tab
@@ -195,13 +189,13 @@ function pillOf(
         tip: 'new records stream in as the collector writes them' };
     case 'polling':
       return { status: 'stale', text: 'refreshing every 15 s', beat: false,
-        tip: 'the live stream is unavailable, so the page asks for new data every 15 seconds' };
+        tip: 'the live stream is unavailable' };
     case 'connecting':
       return { status: 'empty', text: 'connecting…', beat: false,
         tip: 'opening the live stream to the dashboard service' };
     default:
       return { status: 'missing', text: 'disconnected · retrying', beat: false,
-        tip: 'the dashboard service is not answering; the page keeps retrying' };
+        tip: 'the dashboard service is not answering' };
   }
 }
 
@@ -343,7 +337,9 @@ export default function App() {
 
   // A cluster without Slurm sets `slurm.enabled: false`; its tab goes away.
   const slurmLeaf = (config.data?.slurm as Record<string, { _value?: unknown }> | undefined)?.enabled;
-  const tabs = TABS.filter((t) => !HIDDEN_TABS.has(t.k) && (t.k !== 'slurm' || slurmLeaf?._value !== false));
+  const tabs = TABS.filter((t) => t.k !== 'slurm' || slurmLeaf?._value !== false);
+  // A tab that is not here -- an old link to Search & export (`?tab=events`),
+  // since removed, or HPC where it is off -- opens the first.
   const tab = tabs.find((t) => t.k === url.tab) || tabs[0];
   // What the site calls its hosts (`ui.node_noun`): every place the page names
   // them says it, through NodeNounCtx (lib/nodes.ts).
@@ -600,8 +596,6 @@ export default function App() {
             goto={goto}
           />
         );
-      case 'events':
-        return <EventsExplorer url={url} setUrl={setUrl} windowMin={resolvedWin?.minutes ?? null} />;
       case 'internal':
         return <InternalTab P={P} cls={cls} />;
       case 'security':
@@ -757,7 +751,7 @@ export default function App() {
             </span>
             <span className="mark-t">Agent Observatory</span>
           </div>
-          <div className="sub mono" data-tip="which deployment this is: site.name (RC_DASH_SITE_NAME)">
+          <div className="sub mono" data-tip="which deployment this is">
             {siteName || 'rc_measurement'}
           </div>
         </div>
@@ -847,7 +841,7 @@ export default function App() {
             form, so signing out works without the page's own code. */}
         {passwordSet && (
           <form className="rail-signout" method="post" action="/logout">
-            <button type="submit" data-tip="sign this browser out; the page then asks for the password again">
+            <button type="submit" data-tip="sign this browser out">
               <Icon name="signout" size={16} />
               <span>Sign out</span>
             </button>
@@ -904,8 +898,8 @@ export default function App() {
       <main ref={mainRef}>
         {synthetic.length > 0 && (
           <p className="fake-note" role="note">
-            <b>Fake data.</b> This is a demo: every record on this page was made up for
-            fictional login nodes, users and sessions. Nothing here was measured.
+            <b>Fake data.</b> A demo: every record on this page was made up. Nothing here was
+            measured.
           </p>
         )}
         <div className={`head${showControls ? ' with-bar' : ''}`}>
@@ -926,7 +920,7 @@ export default function App() {
                 <StatusPill
                   status="empty"
                   text="frozen capture"
-                  tip={`not a live feed: the service's clock is pinned to the capture's end and does not move\n${live.live.clock.source}`}
+                  tip={`not a live feed: the clock stops at the capture's end\n${live.live.clock.source}`}
                 />
                 <span className="stat" data-tip="every window ends here; nothing after it exists in this feed">
                   as of <b>{live.live.clock.as_of}</b>
@@ -938,10 +932,7 @@ export default function App() {
             {anonymized && (
               <span
                 className="pill"
-                data-tip={
-                  'names are replaced by stable aliases (user-…, lab-…) before anything leaves ' +
-                  'the service; email addresses and user IDs are hidden'
-                }
+                data-tip="names are stable aliases (user-…, lab-…); email addresses and user IDs are hidden"
               >
                 anonymized
               </span>
@@ -949,16 +940,13 @@ export default function App() {
             {synthetic.length > 0 && (
               <span
                 className="pill synthetic"
-                data-tip={
-                  `a demo: every record here was made up by rc_dashboard/demo -- fictional ${nodes.many}, ` +
-                  `users and sessions; nothing was measured\n${synthetic.join(', ')}`
-                }
+                data-tip={`made up by the demo:\n${synthetic.join(', ')}`}
               >
                 fake data
               </span>
             )}
             {hl.lag && !live.live?.clock?.pinned && (
-              <span className="stat" data-tip="how long ago the collector wrote the newest record the dashboard has; a few seconds is normal">
+              <span className="stat" data-tip="the age of the newest record; a few seconds is normal">
                 newest record <b>{hl.lag}</b> old
               </span>
             )}

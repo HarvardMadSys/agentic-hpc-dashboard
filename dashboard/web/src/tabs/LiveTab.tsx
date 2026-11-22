@@ -6,19 +6,17 @@
  */
 import { Fragment, memo, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { Cls, FeedReport, FeedsResponse, LiveEvent, LiveHost, LiveResponse, ToolMix, Trajectories } from '../api/types';
+import type { Cls, FeedReport, FeedsResponse, LiveHost, LiveResponse, ToolMix, Trajectories } from '../api/types';
 import type { LiveState } from '../api/useLive';
 import { Fluid, Lines } from '../charts/primitives';
 import type { LinePt, LineSeries } from '../charts/primitives';
 import { clockLabel, fullClock, tickTarget, timeTicks } from '../charts/scale';
-import { Basis, EmptyState, Legend, NoRows, Panel } from '../components/Panel';
+import { EmptyState, Legend, Panel } from '../components/Panel';
 import { AGENT_TYPE_LBL, CLS, CLS_COL, CLS_LBL } from '../lib/classes';
 import { Segmented } from '../components/ClassFilter';
 import type { Who } from '../lib/filters';
-import { DASH, dur, fint, fmt } from '../lib/format';
-import { pcol } from '../lib/purposes';
+import { DASH, fint, fmt } from '../lib/format';
 import { ActiveUsers } from './LiveUsers';
-import { ByUser, distinct } from '../components/ByUser';
 import { WindowPlates } from '../components/WindowPlates';
 import { WindowCharts } from './LiveCharts';
 import { DayByDay } from './DayByDay';
@@ -30,19 +28,6 @@ import { pick } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 
 /* ------------------------------------------------------------- helpers */
-
-/* `depth` is the collector's count of process generations between a process
- * and its nearest agent ancestor: its depth in that agent's process tree. */
-const DEPTH_TIP =
-  "depth in the agent's process tree:\n\n" +
-  '0 = the agent process itself\n1 = started directly by the agent (e.g. a tool-call shell)\n' +
-  '2 = started by one of those (e.g. the command that shell ran)\nand so on down the tree\n\n' +
-  "— = no agent above it: a human's own process";
-
-function depthLabel(d: number | null | undefined): string {
-  if (d == null) return DASH;
-  return d === 0 ? '0 (agent)' : String(d);
-}
 
 /** No live frame yet: one empty list, so a memo keyed on the bins holds. */
 const NO_BINS: LiveResponse['rate'] = [];
@@ -58,12 +43,11 @@ function latest(rate: LiveResponse['rate'], c: string): number | null {
 
 /* `roots` is the count of live agent and IDE session trees on the host: the
  * word a reader meets is "sessions" (roadmap note 14). A node's load and CPU
- * are the node tier's, on Login node health (tabs/NodeHealth.tsx): the live
- * frame's rows carry them as null, so this table has no column for them. */
+ * are the node tier's, on Login node health (tabs/NodeHealth.tsx), so this
+ * table has no column for them. */
 const HOST_COLS: [key: string, lbl: string, kind: 'int' | 'num', gloss?: string][] = [
   ['roots', 'sessions', 'int', 'sessions_now'],
   ['procs', 'running', 'int', 'running'],
-  ['events', 'exited', 'int', 'exited'],
   ['rss_gb', 'memory GB', 'num', 'rss'],
   ['d_state', 'D-state', 'int', 'dstate'],
   ['users', 'users', 'int', 'user'],
@@ -314,17 +298,6 @@ export const LiveTab = memo(function LiveTab({
           feed={liveFeed?.name ?? 'live'}
           empty={!rate.length}
           emptyWhat="the live window holds no bins"
-          basis={
-            <Basis
-              items={[
-                ['window', L?.window ? JSON.stringify(L.window) : null],
-                ['transport', live.transport],
-                ['gaps', 'a minute with no record at all is null and is drawn as a hole in the line; ' +
-                  'in a minute with records, a class with none is 0'],
-                ['backfill', L?.backfill ? JSON.stringify(L.backfill) : null],
-              ]}
-            />
-          }
         >
           <Fluid natural={1060}>
             {(W) => (
@@ -374,7 +347,7 @@ export const LiveTab = memo(function LiveTab({
 
         <Panel
           title={`${nodes.Many} right now`}
-          ask={[{ panel: 'live', keys: ['hosts', 'now'] }]}
+          ask={[{ panel: 'live', keys: ['hosts'] }]}
           span
           live
           feed={liveFeed?.name ?? 'live'}
@@ -436,138 +409,3 @@ export const LiveTab = memo(function LiveTab({
     </>
   );
 });
-
-/* Shared by the live stream and the /api/events explorer, so a row looks the
- * same however it was fetched. Class is tagged as TEXT, not colour: crimson is
- * reserved for agent identity, so purpose owns the colour here. */
-export function EventTable({ rows }: { rows: LiveEvent[] }) {
-  if (!rows.length) return <NoRows />;
-  const failed = (e: LiveEvent) => e.signal != null || (e.exit_code != null && e.exit_code !== 0);
-  return (
-    <ByUser
-      rows={rows}
-      user={(e) => e.user}
-      noun="process"
-      // both callers hold it in a `.stream`, which is already the scroll box
-      scroll={false}
-      cols={[
-        {
-          h: 'class',
-          cell: (rs) => distinct(rs, (e) => CLS_LBL[e.actor3 ?? ''] ?? e.actor3),
-          sort: (rs) => distinct(rs, (e) => CLS_LBL[e.actor3 ?? ''] ?? e.actor3),
-        },
-        {
-          h: 'commands',
-          cell: (rs) => <span className="mono">{distinct(rs, (e) => e.comm ?? e.tool, 4)}</span>,
-          sort: (rs) => distinct(rs, (e) => e.comm ?? e.tool, 4),
-        },
-        {
-          h: 'CPU',
-          num: true,
-          cell: (rs) => dur(rs.reduce((a, e) => a + (e.cpu_s ?? 0), 0)),
-          sort: (rs) => rs.reduce((a, e) => a + (e.cpu_s ?? 0), 0),
-        },
-        {
-          h: 'failed',
-          num: true,
-          tip: 'exited non-zero or on a signal',
-          cell: (rs) => (rs.some(failed) ? fint(rs.filter(failed).length) : DASH),
-          sort: (rs) => rs.filter(failed).length,
-        },
-        {
-          h: 'latest',
-          cell: (rs) => <span className="mono nm">{rs.map((e) => e.ts ?? '').sort().pop() || DASH}</span>,
-          sort: (rs) => rs.map((e) => e.ts ?? '').sort().pop() || null,
-        },
-      ]}
-      sub={(rs, withUser) => <EventRows rows={rs} withUser={withUser} />}
-    />
-  );
-}
-
-type EvKey = 'at' | 'user' | 'class' | 'pid' | 'host' | 'depth' | 'cmd' | 'ran' | 'cpu' | 'exit';
-const evVal = (e: LiveEvent, k: EvKey) =>
-  k === 'at' ? e.epoch ?? e.ts : k === 'user' ? e.user : k === 'class' ? e.actor3 : k === 'pid' ? e.pid : k === 'host' ? e.host
-  : k === 'depth' ? e.depth : k === 'cmd' ? e.comm ?? e.tool : k === 'ran' ? e.duration_s : k === 'cpu' ? e.cpu_s
-  : e.signal != null ? 1000 + e.signal : e.exit_code;
-
-/** One user's processes, as rows; every user's, with a user column. */
-function EventRows({ rows, withUser }: { rows: LiveEvent[]; withUser?: boolean }) {
-  const nodes = useNodeWords();
-  const s = useSort<EvKey>('at');
-  return (
-    <table>
-      <thead>
-        <tr>
-          <SortTh s={s} k="at">at</SortTh>
-          {withUser && <SortTh s={s} k="user" first="asc">user</SortTh>}
-          <SortTh s={s} k="class" first="asc">class</SortTh>
-          <SortTh s={s} k="pid" num>pid</SortTh>
-          <SortTh s={s} k="host" first="asc">{nodes.one}</SortTh>
-          <SortTh s={s} k="depth" num tip={DEPTH_TIP}>tree depth</SortTh>
-          <SortTh s={s} k="cmd" first="asc">command</SortTh>
-          <SortTh s={s} k="ran" num>ran</SortTh>
-          <SortTh s={s} k="cpu" num>CPU</SortTh>
-          <SortTh s={s} k="exit" num>exit</SortTh>
-        </tr>
-      </thead>
-      <tbody>
-        {s.sort(rows, evVal).map((e, i) => {
-          const comm = e.comm ?? e.tool ?? '';
-          const args = e.args ?? '';
-          const tail = args.startsWith(comm) ? args.slice(comm.length) : args ? ' ' + args : '';
-          return (
-            <tr key={`${e.epoch ?? e.ts ?? ''}-${i}`}>
-              <td className="mono" style={{ color: 'var(--muted)' }}>
-                {e.ts ?? DASH}
-              </td>
-              {withUser && <td className="mono">{e.user ?? DASH}</td>}
-              <td
-                style={{ color: CLS_COL[e.actor3 ?? ''] ?? 'var(--muted)' }}
-                data-tip={e.agent_type ? `agent type: ${AGENT_TYPE_LBL[e.agent_type] ?? e.agent_type}` : undefined}
-              >
-                {CLS_LBL[e.actor3 ?? ''] ?? e.actor3 ?? 'unlabeled'}
-              </td>
-              <td
-                className="num mono"
-                style={{ fontSize: '12px' }}
-                data-tip={e.ppid != null ? `parent pid ${e.ppid}` : undefined}
-              >
-                {e.pid ?? DASH}
-              </td>
-              <td className="mono" style={{ color: 'var(--muted)' }}>
-                {(e.host ?? '').replace('login', '') || DASH}
-              </td>
-              <td className="num" data-tip={DEPTH_TIP}>
-                {depthLabel(e.depth)}
-              </td>
-              {/* the cell is cut to one line, so the hover shows the whole
-                  command (masked as served) and nothing else */}
-              <td className="arg" data-tip={args || comm || undefined} data-tip-wide>
-                <span className="cmd" style={{ color: pcol(e.purpose) }}>
-                  {comm || DASH}
-                </span>
-                <span style={{ color: 'var(--ink-2)' }}>{tail}</span>
-              </td>
-              <td className="num">{dur(e.duration_s)}</td>
-              <td className="num">
-                {e.cpu_s == null ? DASH : e.cpu_s < 0.01 ? '<0.01s' : e.cpu_s.toFixed(2) + 's'}
-              </td>
-              <td className="num">
-                {e.signal ? (
-                  <span style={{ color: 'var(--warn)' }}>sig{e.signal}</span>
-                ) : e.exit_code == null ? (
-                  DASH
-                ) : e.exit_code ? (
-                  <span style={{ color: 'var(--crit)' }}>{e.exit_code}</span>
-                ) : (
-                  '0'
-                )}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
-  );
-}

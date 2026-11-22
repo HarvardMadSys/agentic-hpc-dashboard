@@ -22,9 +22,9 @@ export function BuildStamp() {
       <span
         data-tip={
           commit == null
-            ? 'not built from a git checkout, or git was not on the build host: the page cannot say which commit it is'
+            ? 'the page cannot say which commit it is'
             : dirty
-              ? `built from ${commit}\nwith uncommitted changes under dashboard/web/: the page is that commit plus those edits`
+              ? `built from ${commit}\nwith uncommitted changes`
               : `the git commit this page was built from\n${commit}`
         }
       >
@@ -33,11 +33,11 @@ export function BuildStamp() {
       </span>
       <br />
       {built ? (
-        <span data-tip={`when this page's bundle was built (vite build)\n${builtAt} · ${ago(Date.now() - built.getTime())}`}>
+        <span data-tip={`when this page was built\n${builtAt} · ${ago(Date.now() - built.getTime())}`}>
           built <span style={{ color: 'var(--ink-2)' }}>{local(built)}</span>
         </span>
       ) : (
-        <span data-tip="Vite's dev server serves src/ from the working tree, with hot reload: there is no bundle, so no build time">
+        <span data-tip="the dev server: no bundle, so no build time">
           built <span style={{ color: 'var(--ink-2)' }}>{DASH}</span> (dev server)
         </span>
       )}

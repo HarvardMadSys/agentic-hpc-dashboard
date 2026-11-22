@@ -148,23 +148,18 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
                       <SortTh s={sortOf('wait')} k="cls" first="asc">class</SortTh>
                       <SortTh s={sortOf('wait')} k="run" num tip="time on a CPU, summed">run</SortTh>
                       <SortTh s={sortOf('wait')} k="wait" num gloss="runqueue">wait</SortTh>
-                      <SortTh s={sortOf('wait')} k="ratio" num tip="CPU time divided by run time, the median over processes with more than 1 s of CPU: the two clocks should agree, so a value far from 1 means CPU is being counted on another basis">ratio</SortTh>
                     </tr>
                   </thead>
                   <tbody>
                     {sortOf('wait').sort(have, (c, k) =>
                       k === 'cls' ? CLS_LBL[c] ?? c
                       : k === 'run' ? (byClass[c]?.sched_run_s as Accum | undefined)?.total ?? null
-                      : k === 'wait' ? (byClass[c]?.sched_wait_s as Accum | undefined)?.total ?? null
-                      : byClass[c]?.schedstat_ratio ?? null,
+                      : (byClass[c]?.sched_wait_s as Accum | undefined)?.total ?? null,
                     ).map((c) => (
                       <tr key={c}>
                         <td>{CLS_LBL[c] ?? c}</td>
                         <td className="num"><AccumCell a={byClass[c]?.sched_run_s as Accum | undefined} unit="s" /></td>
                         <td className="num"><AccumCell a={byClass[c]?.sched_wait_s as Accum | undefined} unit="s" /></td>
-                        <td className="num">
-                          {byClass[c]?.schedstat_ratio == null ? <span className="nm">not measured</span> : fmt(byClass[c]!.schedstat_ratio, 2)}
-                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -182,7 +177,7 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
             ) : (
               <NoRows what="no process stalled in uninterruptible sleep in the window" />
             )}
-            <p className="nm" style={{ margin: 0 }}>tools are ranked over every class: the class filter does not narrow this chart</p>
+            <p className="nm" style={{ margin: 0 }}>the class filter does not narrow this chart</p>
             {stalls.length > 0 && (
               <More label="every tool that stalled">
                 <div className="scroller">
@@ -224,7 +219,6 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
       case 'read':
         return (
           <>
-            <div className="eyebrow">solid: disk read · dashed: read requested, through read() calls; the gap is the <Term k="pagecache">page cache</Term></div>
             <TimeChart {...z} s={s} lines={ioLines('rd_mb', 'rchar_mb', 'requested')} ylabel="MB / min"
               yname="read" perMin legend={ioLegend('requested')} />
           </>
@@ -232,7 +226,6 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
       case 'write':
         return (
           <>
-            <div className="eyebrow">solid: disk written · dashed: write requested, through write() calls</div>
             <TimeChart {...z} s={s} lines={ioLines('wr_mb', 'wchar_mb', 'requested')} ylabel="MB / min"
               yname="written" perMin legend={ioLegend('requested')} />
           </>
@@ -240,7 +233,6 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
       case 'net':
         return anyValue(netLines) ? (
           <>
-            <div className="eyebrow">solid: sent · dashed: received, by the processes that exited in each bin</div>
             <TimeChart {...z} s={s} lines={netLines} ylabel="MB / min" yname="network" perMin
               legend={[
                 ...ioCls.map((c) => ({ k: CLS_LBL[c] ?? c, c: CLS_COL[c] ?? 'var(--ink-3)' })),
@@ -269,7 +261,7 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
         span
         empty={!hasSeries}
         emptyWhat="no process exited in the window for the selection"
-        header={<span className="pill" data-tip="both charts on this panel are binned this finely; scroll on either to zoom both, and the charts under them with them">{binEye}</span>}
+        header={<span className="pill" data-tip="the bin width; scroll on a chart to zoom it and the charts below">{binEye}</span>}
       >
         <div className="pair-row">
           <div>
@@ -277,7 +269,7 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
             {s && <TimeChart {...z} s={s} lines={byCls('cpu_s')} perMin ylabel="CPU s / min" yname="CPU s/min" />}
           </div>
           <div>
-            <div className="eyebrow"><Term k="rss">memory</Term> · sampled while processes ran</div>
+            <div className="eyebrow"><Term k="rss">memory</Term></div>
             {s && anyValue(memLines) ? (
               <TimeChart {...z} s={s} lines={memLines} scale={1 / 1024} ylabel="GB" yname="GB" />
             ) : (

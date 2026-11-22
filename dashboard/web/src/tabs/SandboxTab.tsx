@@ -20,18 +20,16 @@
  * "no", and never silently into a denominator either.
  */
 import { memo } from 'react';
-import { GLOSS } from '../lib/glossary';
 import type { Cls, Sandbox, SandboxSessionRow } from '../api/types';
-import { Basis, Panel, More } from '../components/Panel';
+import { Panel, More } from '../components/Panel';
 import { Coverage } from '../components/Coverage';
-import { Plate } from '../components/Plate';
 import { ShareCell } from '../components/ShareCell';
 import { ByUser, distinct } from '../components/ByUser';
 import { SortTh } from '../components/SortTh';
 import { useSort, useSortMap } from '../lib/useSort';
 import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { useNodeWords } from '../lib/nodes';
-import { DASH, fint, fmt, pc } from '../lib/format';
+import { DASH, fint, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 import {
@@ -53,25 +51,14 @@ import {
   legendCol,
   shareOfKnown,
 } from '../lib/sandbox';
-import type { Share } from '../lib/sandbox';
-import { table } from '../lib/lookup';
-
-/** When the collector read a process's namespaces, in the page's words; the
- *  collector's own name for it is on hover. */
-const SRC_LBL: Record<string, string> = table({
-  'none:tick': 'census',
-  'none:exec': 'at start',
-  'userns:exec': 'at start, user namespace',
-  inherit: 'from its parent',
-  denied: SB_LABEL.denied,
-});
 
 type ByClass = Record<string, Record<string, number>> | undefined;
 
 /** One axis's states by class. A state the axis can judge (`known`) is a share of the class's
  *  judged ones; the others -- unknown, no tool calls, exited before it was checked, not an agent --
  *  are counts, and the coverage under each class says how many were judged at all (lib/sandbox.ts).
- *  Dividing by every state made the bypass share 10.0% (2 of 20) under a plate of 11.8% (2 of 17). */
+ *  Dividing by every state made the bypass share 10.0% (2 of 20) against the 11.8% (2 of 17) the
+ *  security checks give. */
 function AxisBlock({ by, have, order, col, lbl, grain, known }: {
   by: ByClass;
   have: string[];
@@ -139,18 +126,6 @@ function AxisBlock({ by, have, order, col, lbl, grain, known }: {
       </table>
     </div>
   );
-}
-
-/** "coverage agent 99% · IDE 64%" -- what share of each class has a known sandbox state. */
-/** "of 1,351 agent tool calls": the denominator, in words. When some could not
- * be judged, it says the share is of the ones that could, not of all of them. */
-function agentOf(s: Share | undefined, what: string, knownWhat: string) {
-  if (!s?.total) return undefined;
-  return s.known < s.total ? `of ${fint(s.known)} ${what} ${knownWhat}` : `of ${fint(s.total)} ${what}`;
-}
-
-function sharesOf(by: ByClass, have: string[], state: string | string[], known: string[]) {
-  return Object.fromEntries(have.map((c) => [c, shareOfKnown(by?.[c], state, known)]));
 }
 
 const callsOf = (r: SandboxSessionRow) =>
@@ -271,7 +246,6 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
   const tcHave = shown(sb.tool_calls, cls);
   const apSeHave = shown(sb.approval_by_class_sessions, cls);
   const apEvHave = shown(sb.approval_by_class_events, cls);
-  const anc = sb.ancestry_matrix ?? [];
   // every table here sorts by any column (roadmap note 27), each on its own
   const sortOf = useSortMap();
   const sessions = sb.sessions ?? [];
@@ -281,41 +255,10 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
   const attempts = sb.attempts ?? [];
   const modes = sb.launch_modes ?? [];
 
-  const callIso = sharesOf(sb.tool_calls, tcHave, 'isolated', callKnown);
-  const sessBypass = sharesOf(sb.approval_by_class_sessions, apSeHave, 'bypassed', apKnown);
-  const failedAgent = tcHave.includes('agent') ? sb.tool_calls?.agent?.failed ?? 0 : null;
-  const wrapperCalls = attempts.reduce((a, r) => a + (r.outcome === 'no_payload' ? 0 : r.n), 0);
-
+  // The shares sandboxed and bypassed, and the sandboxes that failed to start, are the
+  // security checks above these panels (SecurityTab.tsx); the panels hold what is behind them.
   return (
     <>
-      <div className="plates three">
-        <Plate
-          k="agent tool calls sandboxed"
-          total={callIso.agent?.pct ?? null}
-          fmtFn={(n) => (n == null ? DASH : pc(n))}
-          tip="a tool call is a sandbox-wrapper invocation or a Claude Code Bash shell; a sandbox that failed to start counts as not sandboxed, an unreadable wrapped command is left out"
-          note={agentOf(callIso.agent, 'agent tool calls', 'whose outcome is known')}
-        />
-        <Plate
-          k="agent sandboxes failed to start"
-          total={failedAgent}
-          tip="a bwrap / codex-linux-sandbox call that exited non-zero with no wrapped command under it: the sandbox was tried and did not come up"
-          note={
-            wrapperCalls
-              ? `of ${fint(wrapperCalls)} sandbox wrapper calls`
-              : 'no sandbox wrapper ran in the window'
-          }
-        />
-        <Plate
-          k="agent sessions launched with a bypass flag"
-          total={sessBypass.agent?.pct ?? null}
-          alarm={(sessBypass.agent?.pct ?? 0) > 0}
-          fmtFn={(n) => (n == null ? DASH : pc(n))}
-          tip="read off each session root's own command line. Settings files, codex config.toml and a mid-session switch are invisible; for `codex app-server` the command line can’t tell, so it is left out of the share."
-          note={agentOf(sessBypass.agent, 'agent sessions', 'whose launch flags are readable')}
-        />
-      </div>
-
       <div className="grid wider">
         <Panel
           id="sec-tool-calls-did-they-run-namespace-isolated"
@@ -324,16 +267,6 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           span
           empty={!tcHave.length && !sessions.length}
           emptyWhat="no tool calls or agent sessions in the window"
-          basis={
-            <Basis
-              items={[
-                ['sessions', sb.notes?.sessions],
-                ['tool calls', sb.notes?.tool_calls],
-                ['failed', sb.notes?.failed],
-                ['below_capped', sb.below_capped || null],
-              ]}
-            />
-          }
         >
           <div className="eyebrow">tool calls, by outcome</div>
           <AxisBlock by={sb.tool_calls} have={tcHave} order={CALL_ORDER} col={SB_COL} lbl={CALL_LABEL} grain="tool calls" known={callKnown} />
@@ -354,16 +287,6 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           p={sb}
           empty={!evHave.length && !seHave.length}
           emptyWhat="no sandbox breakdown for the selection"
-          basis={
-            <Basis
-              items={[
-                ['meaning', sb.notes?.meaning],
-                [SB_LABEL.denied, sb.notes?.denied],
-                ['from its parent', sb.notes?.inherit],
-                ['when each was checked', sb.sandbox_src],
-              ]}
-            />
-          }
         >
           <div className="eyebrow">per process</div>
           <AxisBlock by={sb.by_class_events} have={evHave} order={SANDBOX_ORDER} col={SB_COL} lbl={SB_LABEL} grain="processes" known={st.sandbox_known ?? SANDBOX_KNOWN} />
@@ -378,14 +301,6 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           p={sb}
           empty={!apSeHave.length && !apEvHave.length}
           emptyWhat="no approval breakdown for the selection"
-          basis={
-            <Basis
-              items={[
-                ['approval', sb.notes?.approval],
-                ['per record', sb.notes?.events_approval],
-              ]}
-            />
-          }
         >
           <div className="eyebrow">per session</div>
           <AxisBlock by={sb.approval_by_class_sessions} have={apSeHave} order={APPROVAL_ORDER} col={AP_COL} lbl={AP_LABEL} grain="sessions" known={apKnown} />
@@ -426,7 +341,6 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
           p={sb}
           empty={!attempts.length}
           emptyWhat="no bwrap or codex-linux-sandbox ran in the window"
-          basis={<Basis items={[['failed', sb.notes?.failed]]} />}
         >
           <div className="scroller">
             <table>
@@ -459,117 +373,6 @@ export const SandboxTab = memo(function SandboxTab({ P, cls }: { P: Panels; cls:
               </tbody>
             </table>
           </div>
-        </Panel>
-
-        <Panel
-          id="sec-ancestry-kind-verdict"
-          title="Processes by sandbox wrapper, kind and sandbox state"
-          p={sb}
-          span
-          empty={!anc.length}
-          emptyWhat="the feed carried no rows by sandbox wrapper"
-          basis={
-            <Basis
-              items={[
-                [
-                  'reading',
-                  'a wrapper is read at its own exec, before it unshares, so its own row is always "not sandboxed" and says nothing about the call it wraps; what ran under it decides that',
-                ],
-                ['sandbox_detail', sb.sandbox_detail],
-                ['agent_only', sb.agent_only],
-              ]}
-            />
-          }
-        >
-          <div className="scroller">
-            <table>
-              <thead>
-                <tr>
-                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="ancestry" first="asc" gloss="ancestry">under wrapper</SortTh>
-                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="kind" first="asc" tip="process: an ordinary process; wrapper: the sandbox helper itself">category</SortTh>
-                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="verdict" first="asc" gloss="verdict">sandboxed?</SortTh>
-                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="n" num tip="processes">n</SortTh>
-                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="dstate" num gloss="dstate">D-state wait</SortTh>
-                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="cov" num gloss="coverage">coverage</SortTh>
-                  <SortTh s={sortOf('anc', 'ancestry', 'asc')} k="reading" first="asc">reading</SortTh>
-                </tr>
-              </thead>
-              <tbody>
-                {sortOf('anc', 'ancestry', 'asc').sort(anc, (a, k) =>
-                  k === 'ancestry' ? a.ancestry : k === 'kind' ? a.kind : k === 'verdict' ? label(SB_LABEL, a.sandbox)
-                  : k === 'n' ? a.n : k === 'dstate' ? a.dstate_wait_s : k === 'cov' ? a.dstate_coverage_pct : a.reading,
-                ).map((a, i) => (
-                  <tr key={a.ancestry + a.kind + a.sandbox + i}>
-                    <td className="mono">{a.ancestry}</td>
-                    <td className="mono">{a.kind ?? DASH}</td>
-                    <td>
-                      <span
-                        className="sev"
-                        style={{
-                          borderColor: legendCol(SB_COL[a.sandbox]),
-                          color:
-                            a.sandbox === 'unsandboxed'
-                              ? '#8a6410'
-                              : a.sandbox === 'sandboxed'
-                                ? '#166b50'
-                                : 'var(--muted)',
-                        }}
-                      >
-                        {label(SB_LABEL, a.sandbox)}
-                      </span>
-                    </td>
-                    <td className="num">{fint(a.n)}</td>
-                    <td className="num">
-                      {a.dstate_wait_s == null ? (
-                        <span className="nm">not measured</span>
-                      ) : (
-                        fmt(a.dstate_wait_s) + ' s'
-                      )}
-                    </td>
-                    <td className="num">
-                      <Coverage pct={a.dstate_coverage_pct} n={a.n} />
-                    </td>
-                    <td>{a.reading ?? DASH}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
-
-        <Panel
-          id="sec-where-the-per-process-verdict-came-from"
-          title="When each process was checked"
-          p={sb}
-          empty={!Object.keys(sb.sandbox_src ?? {}).length}
-          emptyWhat="no source breakdown"
-          basis={<Basis items={[['inherit', sb.notes?.inherit]]} />}
-        >
-          {(() => {
-            const all = Object.entries(sb.sandbox_src ?? {});
-            const tot = all.reduce((a, [, v]) => a + v, 0);
-            const src = sortOf('src', 'src', 'asc').sort(all, ([k, v], key) => (key === 'src' ? k : v));
-            return (
-              <table className="roomy shares">
-                <thead>
-                  <tr>
-                    <SortTh s={sortOf('src', 'src', 'asc')} k="src" first="asc">checked</SortTh>
-                    <SortTh s={sortOf('src', 'src', 'asc')} k="n">share</SortTh>
-                  </tr>
-                </thead>
-                <tbody>
-                  {src.map(([k, v]) => (
-                    <tr key={k}>
-                      <td className="lbl" data-tip={`${GLOSS[k === 'denied' ? 'exitedbeforeread' : k === 'inherit' ? 'inherit' : k.replace(':', '_')] ?? k}\nas the collector names it: ${k}`}>{SRC_LBL[k] ?? k}</td>
-                      <td>
-                        <ShareCell pct={tot ? (100 * v) / tot : null} sub={fint(v)} c="var(--s2)" />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            );
-          })()}
         </Panel>
       </div>
     </>

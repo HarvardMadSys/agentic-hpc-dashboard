@@ -303,5 +303,55 @@ class Retired(Case):
         self.assertEqual(sorted(cfg.as_dict()["feeds"]), ["ebpf", "ebpf_node"])
 
 
+class RetiredSections(Case):
+    """The sections of features since removed (`annotate`, the tool-call purposes
+    a model wrote; `export`, the Search & export tab's download): a file or a
+    variable written for one is named and ignored, never refused, and nothing of
+    it is served -- a key it held included."""
+
+    KEY = "sk-ant-api03-EXAMPLEEXAMPLEEXAMPLE0123"
+    # each section as a site's file may still hold it
+    FILE = {"annotate": {"enabled": True, "provider": "command", "api_key": KEY,
+                         "command": ["env", "ANTHROPIC_API_KEY=" + KEY, "claude", "-p"],
+                         "system_prompt": "token " + KEY, "batch_size": 40},
+            "export": {"max_rows": 100}}
+    # every variable there was to set one, and its section
+    VARS = {"RC_DASH_ANNOTATE": "annotate", "RC_DASH_ANNOTATE_PROVIDER": "annotate",
+            "RC_DASH_ANNOTATE_MODEL": "annotate", "RC_DASH_ANNOTATE_BASE_URL": "annotate",
+            "RC_DASH_ANNOTATE_KEY_ENV": "annotate", "RC_DASH_ANNOTATE_KEY_FILE": "annotate",
+            "RC_DASH_ANNOTATE_CMD": "annotate", "RC_DASH_EXPORT_MAX_ROWS": "export"}
+
+    def test_every_one_is_retired(self):
+        self.assertEqual(sorted(configmod.RETIRED_SECTIONS), sorted(self.FILE))
+        self.assertEqual(configmod.RETIRED_SECTION_ENV, self.VARS)
+        for name in self.FILE:
+            self.assertNotIn(name, configmod.defaults())
+            self.assertFalse([k for k in configmod.ENV_MAP if k.startswith(name + ".")])
+
+    def test_a_file_that_sets_one_starts_without_it(self):
+        cfg, err = self.load(dict(self.FILE, ask={"enabled": False}))
+        for name in self.FILE:
+            self.assertIn("config file %s: %s is retired" % (os.path.join(self.tmp, "c.json"),
+                                                            name), err)
+            self.assertIsNone(cfg.get(name))
+        self.assertNotIn("is not a setting", err)
+        self.assertIs(cfg.get("ask.enabled"), False)
+        # dropped, so neither /api/config nor a saved build's fingerprint holds
+        # it, nor the key it held, which /api/config no longer hides
+        served = cfg.as_dict(with_origins=True)
+        for name in self.FILE:
+            self.assertNotIn(name, served)
+            self.assertNotIn(name, cfg.as_dict())
+        self.assertNotIn(self.KEY, json.dumps(served))
+
+    def test_a_variable_that_set_one_is_named_and_ignored(self):
+        for var, name in sorted(self.VARS.items()):
+            # `maybe`, which a yes/no or a number setting refused: retired, it stops nothing
+            with self.subTest(var=var), mock.patch.dict(os.environ, {var: "maybe"}):
+                cfg, err = self.load({})
+                self.assertIn("warning: %s is retired" % var, err)
+                self.assertIsNone(cfg.get(name))
+
+
 if __name__ == "__main__":
     unittest.main()

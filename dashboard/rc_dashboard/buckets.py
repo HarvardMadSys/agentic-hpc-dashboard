@@ -62,9 +62,9 @@ class RollingBuckets:
     def _span(self, now, window_s=None):
         """The half-open bin range [start, end] a view covers.
 
-        ONE definition, used by `series`, `totals` and `covers` alike: the
-        headline number under a chart is the sum of exactly the bins the chart
-        drew, never a separately-derived figure that could drift from it.
+        ONE definition, used by `series` and `covers` alike: the span a view
+        says it covers is exactly the bins its chart drew, never a
+        separately-derived one that could drift from it.
         """
         end = self._index(now)
         n = self.n if window_s is None else max(1, int(window_s) // self.bin_s)
@@ -170,24 +170,3 @@ class RollingBuckets:
         if not slot:
             return dict.fromkeys(classes)
         return {c: slot[c].get(counter) if c in slot else 0 for c in classes}
-
-    def totals(self, classes=None, now=None, window_s=None):
-        """Summed counters over the SAME bins `series` would draw."""
-        start, end = self._span(now or time.time(), window_s)
-        out = {}
-        for idx, slot in self.bins.items():
-            if idx < start or idx > end:
-                continue
-            for cls, counters in slot.items():
-                if classes and cls not in classes:
-                    continue
-                d = out.setdefault(cls, {})
-                for k, v in counters.items():
-                    d[k] = d.get(k, 0) + v
-        return out
-
-    def last_complete_bin(self, classes, now=None):
-        """The newest bin that is definitely finished -- never the in-progress
-        one -- as the same cells `series` draws for it."""
-        now = now or time.time()
-        return self._cells(self.bins.get(self._index(now) - 1), classes, "n")

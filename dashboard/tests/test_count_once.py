@@ -111,6 +111,14 @@ def series_sum(row):
     return round(sum(v for v in row if v is not None), 3)
 
 
+def binned(lv, now, cls="human"):
+    """What the live tier's minute bins hold of a class over the last hour, as
+    it serves them: processes from the rate series, CPU from the days."""
+    n = series_sum(r[cls] for r in lv.result(now=now, window_s=3600)["rate"])
+    cpu = sum(d["by_class"][cls]["cpu_s"] or 0 for d in lv.daily(now)["days"])
+    return n, cpu
+
+
 class TruncatedThenExitTest(unittest.TestCase):
     """One `vim`, alive across a collector stop: `truncated` with 3600 CPU-s and
     500 MB read, then its exit with 3605 CPU-s and 505 MB read. One process,
@@ -148,7 +156,6 @@ class TruncatedThenExitTest(unittest.TestCase):
         self.assertEqual((h["events"], h["cpu_s"]), (1, 3605.0))
         self.assertEqual(h["quants"]["cpu_s"]["n"], 1)
         s = r["series"]["by_class"]["human"]
-        self.assertEqual(series_sum(s["n"]), 1)
         self.assertEqual(series_sum(s["cpu_s"]), 3605.0)
         self.assertEqual(series_sum(s["rd_mb"]), 505.0)
 
@@ -164,8 +171,7 @@ class TruncatedThenExitTest(unittest.TestCase):
 
     def test_the_live_tier_counts_it_once(self):
         lv = live(self.recs)
-        now = lv.result(now=self.now, window_s=3600)["now"]
-        self.assertEqual((now["events"]["human"], now["cpu_s"]["human"]), (1, 3605.0))
+        self.assertEqual(binned(lv, self.now), (1, 3605.0))
         rows = lv.users(now=self.now, window_s=3600)["rows"]
         self.assertEqual([(u["user"], u["n"], u["cpu_s"], u["rd_mb"]) for u in rows],
                          [("carol", 1, 3605.0, 505.0)])
@@ -174,8 +180,7 @@ class TruncatedThenExitTest(unittest.TestCase):
 
     def test_the_backfill_counts_it_once(self):
         lv = live(reversed(self.recs), older=True)
-        now = lv.result(now=self.now, window_s=3600)["now"]
-        self.assertEqual((now["events"]["human"], now["cpu_s"]["human"]), (1, 3605.0))
+        self.assertEqual(binned(lv, self.now), (1, 3605.0))
 
 
 class AgentAliveAcrossAStopTest(unittest.TestCase):
@@ -194,11 +199,6 @@ class AgentAliveAcrossAStopTest(unittest.TestCase):
             person("exit", t + 120, 700, 650, "srun", "srun --pty bash", "erin", cpu_s=2.5),
         ])
         cls.p = cls.view.payload
-
-    def test_the_role_census_counts_each_exit_once(self):
-        census = {(r["agent_type"], r["role"]): (r["n"], r["cpu_s"])
-                  for r in self.p["cascades"]["role_census"]}
-        self.assertEqual(census[("claude_code", "agent")], (1, 60.0))
 
     def test_the_workspace_counts_each_process_once(self):
         ws = self.view.reducers["workspace"]
@@ -485,17 +485,19 @@ class UnreapedChildTest(unittest.TestCase):
         # crosses the seam in the carry, and its exit still takes none of it off
         seam = (int(NOW // HOUR) - 1) * HOUR
         recs = normalized(unreaped(seam - 30, parent_at=60.0))
-        want = materialize(one_pass(recs))
+        one = one_pass(recs)
+        want = materialize(one)
         saved, carry, fresh = hour_states(recs)
         self.assertGreaterEqual(len(saved), 2)
-        got = materialize(merged(saved, fresh, carry))
-        for name, p in (("one pass", want), ("merged from hours", got)):
+        both = merged(saved, fresh, carry)
+        got = materialize(both)
+        for name, p, view in (("one pass", want, one), ("merged from hours", got, both)):
             with self.subTest(name):
                 io = p["io_process"]
                 self.assertEqual({u["user"]: u["rd_mb"] for u in io["by_user"]}, {"bob": 120.0})
                 self.assertEqual(self.counts(io["own_io"]),
                                  {"unreaped": 1, "rejected": 0, "clamped": 0})
-                self.assertEqual(p["trajectories"]["buffer"]["reaped_unreaped"], 1)
+                self.assertEqual(view.reducers["trajectories"].own.unreaped, 1)
 
     def test_after_two_nodes_carries_are_put_together(self):
         # each node holds a 100 MB child for its pid 300; a window puts the two
@@ -712,13 +714,14 @@ class PidReuseTest(unittest.TestCase):
         # and its bytes count twice, at its exit and in the launcher's figure
         # (own_io.py, a known limit). The refusal is the signal.
         recs = self.launcher(own_io.START_SLACK_S + 1)
-        p = window(recs).payload
+        v = window(recs)
+        p = v.payload
         self.assertEqual({u["user"]: u["rd_mb"] for u in p["io_process"]["by_user"]},
                          {"carol": 13.0})
         for k in ("io_process", "tool_mix", "resources"):
             with self.subTest(panel=k):
                 self.assertEqual(p[k]["own_io"]["rejected"], 1)
-        self.assertEqual(p["trajectories"]["buffer"]["reaped_rejected"], 1)
+        self.assertEqual(v.reducers["trajectories"].own.rejected, 1)
         for older, signal in ((False, "rejected"), (True, "waiting")):
             with self.subTest(older=older):
                 lv = live(recs, older=older)
@@ -820,7 +823,6 @@ class JoinBoundsTest(unittest.TestCase):
         self.assertEqual(p["tool_mix"]["own_io"]["evicted"], 2)
         self.assertEqual(p["resources"]["own_io"]["evicted"], 2)
         self.assertEqual(p["workspace"]["own_io"]["evicted"], 2)
-        self.assertEqual(p["trajectories"]["buffer"]["reaped_evicted"], 2)
 
     def test_one_pass_s_cap_where_a_window_puts_the_nodes_joins_together(self):
         c = capped(3)
@@ -1206,12 +1208,13 @@ class ClampTest(unittest.TestCase):
             raw("exit", t + 3, 120, 100, "zsh", "zsh -c cat f", io=iob(1.996, 2.0), **kw)]
 
     def test_the_panels(self):
-        p = window(self.recs).payload
+        v = window(self.recs)
+        p = v.payload
         self.assertEqual(p["io_process"]["by_class"]["agent"]["rd_mb"], 12.0)
         for k in ("io_process", "tool_mix", "resources", "workspace"):
             with self.subTest(panel=k):
                 self.assertEqual(p[k]["own_io"]["clamped"], 1)
-        self.assertEqual(p["trajectories"]["buffer"]["reaped_clamped"], 1)
+        self.assertEqual(v.reducers["trajectories"].own.clamped, 1)
 
     def test_the_live_tier_in_either_order(self):
         for older in (False, True):

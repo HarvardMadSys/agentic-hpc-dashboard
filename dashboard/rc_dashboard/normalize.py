@@ -142,7 +142,7 @@ SELF_OBSERVATION = re.compile(
 IDENTITY_EVENTS = ("exit", "truncated", "residency", "conn", "netio", "submit")
 
 SANDBOX_STATES = ("sandboxed", "unsandboxed", "denied", "unknown")
-# The keys are what /api/events and /api/export filter on, so a key keeps its
+# The keys are what the filters test (`export.make_predicate`), so a key keeps its
 # meaning and only its label moves: `supervised` is shown as "no bypass flag at
 # launch", because that is all argv can say -- ~/.claude/settings.json, a
 # `--settings` file, codex's config.toml and a mid-session mode switch are all
@@ -187,7 +187,7 @@ def _load_helpers():
     Probe the real name first.
 
     Probed once per process. Every `Normalizer` -- one per build, hour reduced,
-    inspector read, I/O lookup, /api/events page and export -- used to probe
+    inspector read and I/O lookup -- used to probe
     again: `sys.path` gained an entry each time, and an import that fails is not
     remembered, so each probe walked all of it. A service up for days got
     slower at every one of those.

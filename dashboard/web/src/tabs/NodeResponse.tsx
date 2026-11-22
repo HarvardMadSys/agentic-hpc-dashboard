@@ -96,18 +96,18 @@ export function NodeResponse({ P, win, view, onView }: {
       emptyWhat={ns?._error
         ? `the node history could not be read: ${ns._error}`
         : reading
-          ? `reading the node tier’s history: ${fint(ns?.read.lines)} snapshots in ${fint(ns?.read.files)} files so far`
+          ? `reading the history: ${fint(ns?.read.lines)} snapshots in ${fint(ns?.read.files)} files so far`
           : `no ${nodes.one} snapshot in the window`}
       header={ns && (
-        <span className="pill" data-tip={`each chart is binned this finely, and zooms with the window’s charts above; the probes are the node tier’s own, every snapshot`}>
+        <span className="pill" data-tip="the bin width; zooms with the charts above">
           {pill}
         </span>
       )}
     >
       {reading && (
         <p className="nm" style={{ margin: '0 0 8px' }}>
-          still reading the node tier’s history ({fint(ns?.read.lines)} snapshots, {mb((ns?.read.bytes ?? 0) / 1e6)} so far): the
-          older part of the window fills in as it does
+          still reading ({fint(ns?.read.lines)} snapshots, {mb((ns?.read.bytes ?? 0) / 1e6)} so far): the older part of the
+          window fills in as it does
         </p>
       )}
       <div className="pair-row">

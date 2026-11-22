@@ -897,8 +897,14 @@ test('the basis line: tasks, then what they and the phases under them are read f
   assert.equal(T.TASKS_BASIS, 'tasks · read from the commands the agent ran and the words it wrote in them');
   // a session no agent ran is read from its terminals, and says so (`trajectories.TERMINAL_BASIS`)
   assert.equal(T.TERMINAL_TASKS_BASIS, 'tasks · read from the commands run in its terminals and the words typed in them');
-  // it is the service's own basis under the name of the level it opens with, so the two cannot drift
-  for (const r of blocks) assert.equal(T.tasksBasis(r.phases), `tasks · ${r.phases.basis}`, r.sid);
+  // it is the service's own basis under the name of the level it opens with, read from the service's
+  // source (`phase_segment.BASIS`, `trajectories.TERMINAL_BASIS`), which no longer sends it to the page
+  // (`jsonout.strip_basis`), so the two cannot drift
+  const served = (file, name) =>
+    new RegExp(`^${name} = "([^"]*)"$`, 'm').exec(readFileSync(new URL(`../../rc_dashboard/reducers/${file}`, import.meta.url), 'utf8'))?.[1];
+  const [basis, terminal] = [served('phase_segment.py', 'BASIS'), served('trajectories.py', 'TERMINAL_BASIS')];
+  assert.ok(basis && terminal);
+  for (const r of blocks) assert.equal(T.tasksBasis(r.phases), `tasks · ${r.phases.driver === 'terminal' ? terminal : basis}`, r.sid);
   assert.ok(blocks.some((r) => r.phases.driver === 'terminal') && blocks.some((r) => r.phases.driver === 'agent'));
   assert.equal(T.tasksBasis({}), T.TASKS_BASIS, "a service that read agents alone sends no driver: an agent's");
   // the chart says it by its block's driver, and no other file of the page spells the basis, so the phases-only line is gone
@@ -1223,15 +1229,13 @@ test('the fixture: every row is read, an agent of any type by its tool calls, an
 });
 
 test("the fixture: tasks tile every block's phases, and every phase names its task", () => {
-  const BASIS = 'read from the commands the agent ran and the words it wrote in them';
-  const TERMINAL_BASIS = 'read from the commands run in its terminals and the words typed in them';
   const GAP_S = 3600; // `phase_tasks.DEFAULTS.gap_s`: a gap this long with nothing the agent waits on cuts a task
   const unread = /undefined|null|NaN|\[object|—/;
   const ids = new Set(rows.map((r) => r.sid));
   for (const r of blocks) {
     const b = r.phases;
     assert.equal(b.v, 2, r.sid);
-    assert.equal(b.basis, b.driver === 'terminal' ? TERMINAL_BASIS : BASIS, r.sid);
+    assert.equal(b.basis, undefined, `${r.sid}: the page's payloads carry no basis notes`);
     assert.equal(b.driver, r.actor3 === 'agent' ? 'agent' : 'terminal', r.sid);
     assert.ok(Array.isArray(b.tasks) && b.tasks.length >= 1, `${r.sid}: no tasks`);
     assert.ok(typeof b.headline === 'string' || b.headline === null, `${r.sid}: headline ${b.headline}`);
@@ -2686,7 +2690,7 @@ test("the inspector tells the session's story before its processes: the facts, t
   ];
   for (let i = 1; i < order.length; i++) assert.ok(order[i - 1][0] < order[i][0], `${order[i - 1][1]} before ${order[i][1]}`);
   // the panel's header holds the close button alone: the tree's controls stand beside the tree
-  const header = /header=\{([\s\S]*?)\}\s*basis=/.exec(ins)?.[1] ?? '';
+  const header = /header=\{([\s\S]*?)\}\s*>/.exec(ins)?.[1] ?? '';
   assert.match(header, /ins-close/);
   assert.doesNotMatch(header, /<Segmented|expand all|pop out/);
   // the story is the row's, so it waits for no read: the headline, the gist, and what it did are drawn as soon as the row is here

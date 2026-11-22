@@ -1518,7 +1518,8 @@ class WorkspaceReducer:
         return tilde(path, uhome)
 
     def result(self):
-        """The buffer and parse counters. The per-agent views are composed by the
+        """The buffer and parse counters, served as `cascades.workspace.buffer`
+        and not as a panel of their own. The per-agent views are composed by the
         cascades reducer, which owns the agent tree they follow."""
         return {"keys": len(self.keys), "cap": self.max_keys, "dir_entries": self.entries,
                 "dir_entries_cap": self.max_entries, "dropped": self.dropped,

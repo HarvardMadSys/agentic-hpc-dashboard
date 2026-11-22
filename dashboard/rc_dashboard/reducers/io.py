@@ -89,7 +89,7 @@ class IoReducer:
         self.cls = collections.defaultdict(lambda: {
             "events": 0, "io_seen": 0, "net_seen": 0,
             "rd_mb": 0.0, "wr_mb": 0.0, "rchar_mb": 0.0, "wchar_mb": 0.0,
-            "net_tx_mb": Acc(), "net_rx_mb": Acc(), "net_calls": Acc(),
+            "net_tx_mb": Acc(), "net_rx_mb": Acc(),
             "scope": collections.Counter(),
             "quants": {k: Quant() for k in IO_KEYS},
         })
@@ -137,7 +137,6 @@ class IoReducer:
                       rec.get("net_calls"))
         c["net_tx_mb"].add(tx / 1e6 if tx is not None else None)
         c["net_rx_mb"].add(rx / 1e6 if rx is not None else None)
-        c["net_calls"].add(nc)
         if tx is not None:
             t["net_tx_mb"] += tx / 1e6
             u["net_tx_mb"] += tx / 1e6
@@ -229,7 +228,7 @@ class IoReducer:
             for k in ("events", "io_seen", "net_seen", "rd_mb", "wr_mb", "rchar_mb",
                       "wchar_mb"):
                 m[k] += c[k]
-            for k in ("net_tx_mb", "net_rx_mb", "net_calls"):
+            for k in ("net_tx_mb", "net_rx_mb"):
                 m[k].merge(c[k])
             add_counts(m["scope"], c["scope"])
             for k, q in c["quants"].items():
@@ -293,7 +292,6 @@ class IoReducer:
                 "cache_hit_pct": pct(cache, c["rchar_mb"]),
                 "net_tx_mb": c["net_tx_mb"].as_dict(),
                 "net_rx_mb": c["net_rx_mb"].as_dict(),
-                "net_calls": c["net_calls"].as_dict(),
                 "scope": dict(c["scope"]),
                 "quants": {k: q.as_dict() for k, q in c["quants"].items()},
             }

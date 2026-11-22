@@ -38,6 +38,33 @@ GZIP_MIN = 1024
 GZIP_LEVEL = 5
 _OPTS = orjson.OPT_NON_STR_KEYS
 
+# Basis notes: how a panel counts, in words -- `notes`, `basis` and every
+# `*_basis`. The page shows none of them, so the routes it reads leave them out
+# (`strip_basis`); Ask LLM reads the same payloads in process, and keeps them.
+BASIS_KEYS = frozenset(("notes", "basis"))
+
+
+def is_basis(key):
+    return key in BASIS_KEYS or (isinstance(key, str) and key.endswith("_basis"))
+
+
+def strip_basis(obj):
+    """`obj` without its basis notes: every dict reached through dicts loses
+    them, copied where it changes and shared where it does not, so a payload
+    the service holds is never changed. Lists are not walked: no basis note is
+    inside one, and they hold a payload's bulk."""
+    if not isinstance(obj, dict):
+        return obj
+    out, changed = {}, False
+    for k, v in obj.items():
+        if is_basis(k):
+            changed = True
+            continue
+        w = strip_basis(v)
+        changed = changed or w is not v
+        out[k] = w
+    return out if changed else obj
+
 
 def _default(o):
     if isinstance(o, (set, frozenset, collections.deque)):

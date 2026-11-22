@@ -1,23 +1,24 @@
 # What the collector collects
 
-> We are overcollecting data right now as we are still in the stage of doing measurement and analysis. Once we are done with the analysis, the collector will be configured to collect only the necessary data.
+> We are overcollecting while we are still measuring and analysing; once the analysis is
+> done, the collector will be configured to collect only the necessary data. We also capture
+> some data twice, to verify the accuracy of our prior collection efforts, which run as
+> unprivileged processes on the login nodes with 1 CPU core.
 
-> We also capture some duplicate data to verify the accuracy of our prior collection efforts (which run as unprivileged processes on the login nodes with 1 CPU core).
-
-Every signal the collector records, in plain words, by where it comes from and when. The
-record kinds and their field names are in [README.md](README.md#what-it-collects); each of
-the node snapshot's keys, which tier reads it, and what replaced what, in
-[COVERAGE.md](COVERAGE.md).
+Every signal the collector records, in plain words, by where it comes from and when. Each
+record kind and field is in [README.md](README.md#what-it-collects); each of the node
+snapshot's keys, and which tier reads it, in [COVERAGE.md](COVERAGE.md).
 
 The collector has two tiers ([README.md](README.md#two-tiers-chosen-by-privilege)):
 
-- the **eBPF tier**, which runs as root and records events from the kernel as they happen;
-- the **node tier**, which runs as any user and takes a snapshot of the node every 5 minutes
+- the **eBPF tier** runs as root and records events from the kernel as they happen;
+- the **node tier** runs as any user and takes a snapshot of the node every 5 minutes
   (`EBPFM_NODE_INTERVAL`, 300 s) from `/proc`, `/sys` and standard tools (`ps`, `free`,
   `uptime`, `w`, `vmstat`, `mpstat`, `iostat`, `sar`, `nfsiostat`, `ss`).
 
-Command lines are masked before they are written: credentials, and the prompts handed to an
-agent on its command line, become `[REDACTED]` (`EBPFM_REDACT`, on by default).
+Command lines are masked before they are written (`EBPFM_REDACT`, on by default):
+credentials become `[REDACTED]`, and the prompts handed to an agent on its command line
+`[REDACTED-PROMPT]`.
 
 ## eBPF tier (root)
 
@@ -33,7 +34,7 @@ agent on its command line, become `[REDACTED]` (`EBPFM_REDACT`, on by default).
 - **I/O**: bytes read and written at the storage layer, bytes read and written through syscalls
 - **Delay accounting**: time blocked on disk I/O, on swap-in, on free pages
 - **Uninterruptible sleep (D state)**: total time, the longest single stretch, number of times
-- **Network bytes (TCP/UDP, IPv4/IPv6)**: bytes sent, bytes received, number of send/receive calls; and per remote endpoint: address, port, protocol, direction (inbound/outbound), bytes sent, bytes received, call count
+- **Network bytes (TCP/UDP, IPv4/IPv6)**: bytes sent, bytes received, number of send/receive calls; and per remote endpoint: address, port, protocol, direction (inbound/outbound), bytes sent, bytes received, call count, and a host name only where the process's own command line names it
 - **Its connections**: how many it opened and accepted, how many were established or failed and how many external, their bytes sent and received, their summed lifetime, the median and longest connect latency, and the top remote peers by bytes (address, port, bytes)
 - **Sandboxing**: namespace identity (user/mount/pid/net, from `/proc/<pid>/ns`) and, from `/proc/<pid>/status`, seccomp mode, no-new-privs, capability bounding set and pid-namespace depth: whether it ran in a sandbox of its own
 
@@ -46,7 +47,7 @@ agent on its command line, become `[REDACTED]` (`EBPFM_REDACT`, on by default).
 
 ### Each Slurm submission (sbatch/salloc/srun)
 
-- the tool's stdout/stderr (masked; up to 8 KB, `EBPFM_SUBMIT_BUDGET`) and the job id parsed from it; the working directory; and the request (partition, GPUs, array) where the command line states it
+- the last 300 characters of the tool's stdout/stderr, credentials masked (none for an interactive `srun --pty`), and the job id parsed from it (the collector reads up to 8 KB, `EBPFM_SUBMIT_BUDGET`); the working directory; and the request (partition, GPUs, array) where the command line states it
 
 ### Once a run, at start and stop
 

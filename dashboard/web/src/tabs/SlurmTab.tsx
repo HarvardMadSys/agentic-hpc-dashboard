@@ -40,7 +40,7 @@ import type {
 } from '../api/types';
 import { fullClock } from '../charts/scale';
 import { Segmented } from '../components/ClassFilter';
-import { Basis, NoRows, NotReturned, Panel } from '../components/Panel';
+import { NoRows, NotReturned, Panel } from '../components/Panel';
 import { SortTh } from '../components/SortTh';
 import { useSort, useSortMap } from '../lib/useSort';
 import { CmdCell } from '../components/Cmd';
@@ -87,7 +87,7 @@ function Polling({ r }: { r: SlurmSession }) {
     <span
       className={l.polling ? undefined : 'nm'}
       style={l.polling ? { color: 'var(--crimson-ink)' } : undefined}
-      data-tip={`${fint(l.polls)} checks of the queue, ${fullClock(l.from)} → ${fullClock(l.to)}\n(calls within 2 s count as one check; checks within 3 min of each other are one stretch of polling)${l.polling ? '' : '\nunder 10 min: not counted as polling'}`}
+      data-tip={`${fint(l.polls)} checks of the queue, ${fullClock(l.from)} → ${fullClock(l.to)}${l.polling ? '' : '\nunder 10 min: not counted as polling'}`}
     >
       {txt}
     </span>
@@ -174,7 +174,7 @@ const Sessions = memo(function Sessions({ rows, total, busiest, served }: {
         options={[
           { k: 'all', lbl: 'every session', tip: 'every session the service sent' },
           { k: 'jobs', lbl: 'submitted jobs', tip: 'sessions with a submission that came back with a job id' },
-          { k: 'polling', lbl: 'polled the queue', tip: 'sessions that checked the queue at least every 3 min, for 10 min or more' },
+          { k: 'polling', lbl: 'polled the queue' },
           { k: 'refused', lbl: 'refused', tip: 'sessions with a submission the scheduler turned down' },
           { k: 'abnormal', lbl: 'broke a rule', tip: 'sessions whose activity at the scheduler broke one of the rules under Abnormal Slurm activity' },
         ]}
@@ -184,11 +184,11 @@ const Sessions = memo(function Sessions({ rows, total, busiest, served }: {
           <table className="roomy byuser-t wrap-head">
             <thead>
               <tr>
-                <SortTh s={s} k="session" first="asc" tip="an agent session (its tool calls folded into it), or everything one person or IDE ran; first and last Slurm activity beneath">session</SortTh>
+                <SortTh s={s} k="session" first="asc" tip="an agent session, or everything one person or IDE ran; first and last Slurm activity beneath">session</SortTh>
                 <SortTh s={s} k="jobs" num tip="submissions that came back with a job id">jobs submitted</SortTh>
                 <SortTh s={s} k="refused" num tip="submissions the scheduler turned down: a QOS limit, a partition rule, a bad script">refused</SortTh>
                 <SortTh s={s} k="peak" num tip="the most jobs it submitted within any 60 s">most in a minute</SortTh>
-                <SortTh s={s} k="shapes" num tip="different submit commands once numbers are masked: one script resubmitted 100 times is 1; a newly written script each time counts each">distinct commands</SortTh>
+                <SortTh s={s} k="shapes" num tip="different submit commands, numbers masked: one script resubmitted 100 times is 1">distinct commands</SortTh>
                 <th data-tip="flags on its submit commands, and how many submissions used each">sbatch flags</th>
                 <SortTh s={s} k="queries" num tip="calls to squeue, sacct, scontrol, sinfo, … asking how jobs or the cluster are doing">queue checks</SortTh>
                 <SortTh s={s} k="qpj" num tip="queue checks for every job it submitted">checks per job</SortTh>
@@ -266,9 +266,9 @@ const ByClass = memo(function ByClass({ by, have, tm }: { by: Record<string, Slu
     ['by sessions / users', undefined, (c) => `${fint(by[c].sessions)} / ${fint(by[c].users)}`],
     ['queue checks per job', 'squeue, sacct, scontrol, … calls for every job submitted', (c) => (by[c].queries_per_job == null ? DASH : fmt(by[c].queries_per_job))],
     ['queue checks', undefined, (c) => fint(by[c].queries)],
-    ['sessions polling the queue', 'a poll at least every 3 min, for 10 min or more', (c) => fint(by[c].polling_sessions)],
+    ['sessions polling the queue', undefined, (c) => fint(by[c].polling_sessions)],
     ['hours spent polling', 'the sum of those stretches of polling', (c) => (by[c].polling_h ? fmt(by[c].polling_h) : DASH)],
-    ['share of its processes that are scheduler commands', 'from the tool mix: sbatch, srun, salloc, scancel, squeue, sacct, sinfo, scontrol, … over every process the class ran', (c) => pc(schedPct(c))],
+    ['share of its processes that are scheduler commands', 'sbatch, srun, salloc, scancel, squeue, sacct, sinfo, scontrol and the like, of every process the class ran', (c) => pc(schedPct(c))],
     ...FLAGS.map(([f, lbl, tip]): [string, string, (c: string) => React.ReactNode] => [
       `submitted with ${lbl}`,
       `${tip}; share of the submissions that asked for a job`,
@@ -442,7 +442,7 @@ function Abnormal({ sp, cls, have }: { sp: SlurmPanel; cls: Cls[]; have: string[
         <table className="roomy">
           <thead>
             <tr>
-              <th data-tip="what the service counts as abnormal, and the threshold it uses (reducers.slurm.abnormal)">rule</th>
+              <th data-tip="what the service counts as abnormal, and the threshold it uses">rule</th>
               {have.map((c) => (
                 <th key={c} className="num" data-tip={`${CLS_LBL[c] ?? c} sessions that broke the rule`}>
                   <i className="u-dot" style={{ background: CLS_COL[c] }} />
@@ -477,7 +477,7 @@ function Abnormal({ sp, cls, have }: { sp: SlurmPanel; cls: Cls[]; have: string[
           <table className="roomy byuser-t wrap-head">
             <thead>
               <tr>
-                <SortTh s={s} k="session" first="asc" tip="an agent session (its tool calls folded into it), or everything one person or IDE ran; first and last Slurm activity beneath">session</SortTh>
+                <SortTh s={s} k="session" first="asc" tip="an agent session, or everything one person or IDE ran; first and last Slurm activity beneath">session</SortTh>
                 <SortTh s={s} k="rules" first="desc" tip="the rules it broke, and what it did; sorted, the most rules first">what it did</SortTh>
                 <SortTh s={s} k="jobs" num tip="submissions that came back with a job id">jobs submitted</SortTh>
                 <SortTh s={s} k="queries" num tip="calls to squeue, sacct, scontrol, sinfo, … asking how jobs or the cluster are doing">queue checks</SortTh>
@@ -572,7 +572,6 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goLive = () => {}
   const sortOf = useSortMap();
   const rej = sortOf('refused', 'from', 'asc').sort((sp.rejections ?? []).filter((r) => cls.includes(r.cls as Cls)), (r, k) =>
     k === 'from' ? CLS_LBL[r.cls] ?? r.cls : k === 'tool' ? r.tool : k === 'why' ? r.why : k === 'n' ? r.n : r.eg?.ts ?? null);
-  const basis = <Basis items={Object.entries(sp.basis ?? {})} />;
 
   return (
     <>
@@ -581,7 +580,7 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goLive = () => {}
           k={`agent jobs submitted ${win}`}
           total={cls.includes('agent') && sp._present ? a?.jobs ?? 0 : null}
           by={byOf((c) => c.jobs)}
-          tip="submissions that came back with a job id; dry runs and steps into a held allocation are not jobs"
+          tip="submissions that came back with a job id"
           note={a ? `${fint(a.sessions)} agent sessions · busiest ${fint(a.peak_per_min)} in one minute` : undefined}
         />
         <Plate
@@ -589,7 +588,7 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goLive = () => {}
           total={cls.includes('agent') ? a?.queries_per_job ?? null : null}
           fmtFn={fmt}
           by={byOf((c) => c.queries_per_job)}
-          tip="squeue, sacct, scontrol, sinfo, … calls for every job submitted: an agent waiting on a job polls; a person mostly does not"
+          tip="squeue, sacct, scontrol, sinfo, … calls for every job submitted"
           note={a ? `${fint(a.queries)} queue checks by agents` : undefined}
         />
         <Plate
@@ -651,7 +650,6 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goLive = () => {}
           span
           empty={!sessions.length}
           emptyWhat="no session submitted or queried in the window"
-          basis={basis}
         >
           <Sessions
             rows={sessions}

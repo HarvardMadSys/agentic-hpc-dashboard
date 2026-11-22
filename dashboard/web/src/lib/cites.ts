@@ -75,7 +75,6 @@ const SESSIONS = 'Sessions';
  *  so their rows are found on the tab rather than in a named panel. */
 const PLACES: [string, Place][] = [
   ['panels.tool_mix.tools', { tab: 'agents', panel: 'Top tools', anchor: 'sec-head-of-the-tool-distribution' }],
-  ['panels.tool_mix.head', { tab: 'agents', panel: 'Top tools', anchor: 'sec-head-of-the-tool-distribution' }],
   ['panels.tool_mix.n_tools', { tab: 'agents', panel: 'Top tools', anchor: 'sec-head-of-the-tool-distribution' }],
   ['panels.tool_mix.exits', { tab: 'agents', panel: 'Commands that failed', anchor: 'sec-commands-that-failed' }],
   ['panels.tool_mix', { tab: 'agents', panel: 'Tool mix', anchor: 'sec-tool-mix' }],
@@ -99,16 +98,12 @@ const PLACES: [string, Place][] = [
   ['panels.sandbox.launch_modes', { tab: 'security', panel: 'Approval at launch — an independent axis' }],
   ['panels.sandbox.approval_by_class_events', { tab: 'security', panel: 'Approval at launch — an independent axis' }],
   ['panels.sandbox.approval_by_class_sessions', { tab: 'security', panel: 'Approval at launch — an independent axis' }],
-  ['panels.sandbox.ancestry_matrix', { tab: 'security', panel: 'Processes by sandbox wrapper, kind and sandbox state', anchor: 'sec-ancestry-kind-verdict' }],
-  ['panels.sandbox.sandbox_src', { tab: 'security', panel: 'When each process was checked', anchor: 'sec-where-the-per-process-verdict-came-from' }],
-  ['panels.sandbox.sandbox_detail', { tab: 'security', panel: 'When each process was checked', anchor: 'sec-where-the-per-process-verdict-came-from' }],
   ['panels.sandbox', { tab: 'security', panel: 'Sandboxed — per process and per session', anchor: 'sec-namespace-isolation-per-process-and-per-session' }],
   ['panels.slurm.abnormal', { tab: 'slurm', panel: 'Abnormal Slurm activity' }],
   ['panels.slurm.sessions', { tab: 'slurm', panel: 'Sessions at the scheduler' }],
   ['panels.slurm.rejections', { tab: 'slurm', panel: 'Submissions the scheduler refused' }],
   ['panels.slurm', { tab: 'slurm', panel: 'How each class uses the scheduler' }],
   ['panels.cascades', { tab: 'agents', panel: 'Agents and their subagents', anchor: 'sec-agent-trees' }],
-  ['panels.workspace', { tab: 'agents', panel: 'Agents and their subagents', anchor: 'sec-agent-trees' }],
   ['panels.node.series', { tab: 'live', panel: 'Login node response', anchor: 'sec-node-response' }],
   ['panels.node', { tab: 'resources', panel: 'Login node health', anchor: 'sec-node-health' }],
   ['panels.trend', { tab: 'live', panel: 'Day by day', anchor: 'sec-day-by-day' }],
@@ -181,7 +176,7 @@ const rec = (d: unknown): Record<string, unknown> =>
 /** The fields that name a row, the most telling first; a folder by the path
  *  the page shows it as. */
 const NAME_KEYS = ['command', 'pattern', 'tool', 'user', 'host', 'wrapper', 'agent_type', 'b', 'label',
-  'title', 'ancestry', 'why', 'root', 'id', 'shown', 'path'];
+  'title', 'why', 'root', 'id', 'shown', 'path'];
 
 function names(d: Record<string, unknown>): string[] {
   const out: string[] = [];

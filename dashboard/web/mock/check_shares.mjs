@@ -192,12 +192,13 @@ function stateRow(html, from, state) {
   });
 }
 
-test('the Sandbox tables: a state is a share of the judged ones, as the plates above them say', async () => {
+test('the Sandbox tables: a state is a share of the judged ones, as the security checks above them say', async () => {
   const html = await ui.render('tabs/SandboxTab.tsx', 'SandboxTab', { P: FIX, cls: ALL });
   const s = FIX.sandbox.approval_by_class_sessions.agent;
   assert.equal(s.bypassed + s.auto + s.supervised, 17);
-  // the plate: 2 of the 17 sessions whose launch flags are readable, 11.8%
-  assert.match(textOf(html), /agent sessions launched with a bypass flag \? 12% of 17/);
+  // the check: 2 of the 17 sessions whose launch flags are readable, 11.8%
+  const checks = textOf(await ui.render('tabs/SecurityTab.tsx', 'SecurityChecks', { P: FIX, cls: ALL }));
+  assert.match(checks, /2 agent sessions launched with a bypass flag .*12% of the 17 agent sessions whose launch flags are readable/);
   // on develop the table under it said 10% (2 of 20)
   assert.deepEqual(stateRow(html, 'Approval at launch', 'bypass flag'), ['12%']);
   // tool calls: 41 of 778 judged (on develop 5.2%, of 785)

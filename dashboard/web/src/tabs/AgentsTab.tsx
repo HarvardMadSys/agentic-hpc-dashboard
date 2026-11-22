@@ -8,8 +8,7 @@
  * - Count every classifier-tagged process as an agent. The collector tags any
  *   process whose argv mentions ~/.claude, ~/.codex or ~/.vscode-server, which
  *   makes thousands of "nested agents" a day out of tool-call shells, embedded
- *   ripgrep and version probes. Only role `agent` is an agent here; the rest
- *   of what was tagged is still in the payload's `role_census`.
+ *   ripgrep and version probes. Only role `agent` is an agent here.
  * - Call hosting nesting. A daemon or a remote server running eight sessions is
  *   fan-out from infrastructure, not an agent inside an agent; `nested` counts
  *   only agent-under-agent paths.
@@ -60,7 +59,7 @@ import { table } from '../lib/lookup';
 
 const HOME_TIP: Record<HomeSrc, string> = table({
   agent: "the agent process's own cwd: the directory it was started in",
-  first_call: 'it was started at `/` (IDE-hosted), so its first tool call’s directory off the root stands in',
+  first_call: 'started at / (IDE-hosted): its first tool call’s directory stands in',
 });
 
 /* Directory rows an opened agent shows before "show all". */
@@ -83,10 +82,10 @@ function nodeTip(n: CascadeNode): string {
     n.last_seen ? `last seen ${n.last_seen}${n.exited ? ' (exited)' : ''}` : null,
     // `claude daemon` names who started it; it is its user's, and hosts every
     // background session they start, so that is not those sessions' parent
-    n.spawned_by != null ? `started by pid ${n.spawned_by} (its --spawned-by); it hosts its user's background sessions, whoever asked for them` : null,
-    n.frontend ? 'front-end: it only launches the agent directly below it (`codex app-server`, or the native binary a Node.js launcher execs), which runs the session' : null,
+    n.spawned_by != null ? `started by pid ${n.spawned_by}; it hosts its user's background sessions` : null,
+    n.frontend ? 'front-end: it only launches the agent below it, which runs the session' : null,
     n.implied ? 'implied: a tool-call shell named it as parent; it left no record itself' : null,
-    n.role === 'agent' && n.surface ? `driven from: ${surfaceTip(n.surface, n.surface_detail).split('\n')[0]}` : null,
+    n.role === 'agent' && n.surface ? surfaceTip(n.surface, n.surface_detail).split('\n')[0] : null,
     ...(n.role === 'agent' ? launchTip(n) : []),
   ]
     .filter(Boolean)
@@ -112,7 +111,7 @@ function OutsideWrites({ n, tip }: { n: number | null | undefined; tip?: string 
   if (n == null) return <span data-tip="no start folder to be outside of">{DASH}</span>;
   if (n === 0) return <span style={{ color: 'var(--muted)' }}>0</span>;
   return (
-    <span className="ws-flagmark" data-tip={tip ?? 'distinct paths written or deleted outside its start folder, as its commands mention them (guessed from the text)'}>
+    <span className="ws-flagmark" data-tip={tip ?? 'paths written or deleted outside its start folder, guessed from its commands'}>
       {fint(n)} outside
     </span>
   );
@@ -148,7 +147,7 @@ function Ops({ d }: { d: { read: number; write: number; delete: number; named: n
   return (
     <span className="ws-ops">
       {shown.map(([c, v, lbl]) => (
-        <span key={c} className={c} data-tip={`${fint(v)} distinct path${v === 1 ? '' : 's'} ${lbl} (guessed from the text of its commands)`}>
+        <span key={c} className={c} data-tip={`${fint(v)} distinct path${v === 1 ? '' : 's'} ${lbl}`}>
           {c.slice(3)} {fint(v)}
         </span>
       ))}
@@ -211,13 +210,13 @@ function DirTable({ v, ioq }: { v: WsView; ioq?: (d: WsDir, sort: IoSort) => IoQ
             <tr>
               <SortTh s={s} k="dir" first="asc">directory</SortTh>
               <SortTh s={s} k="procs" num
-                tip={`MEASURED: processes whose cwd the collector recorded as this directory${v.summary.cwd_read_pct != null ? ` -- read at exec for ${pc(v.summary.cwd_read_pct)}, copied from the parent at fork for the rest` : ''}`}>
+                tip="MEASURED: processes that ran in this directory">
                 ran in
               </SortTh>
               <th />
-              <SortTh s={s} k="rd" num tip="MEASURED per process: bytes the processes that ran here read through read() calls, cached or not">read requested</SortTh>
-              <SortTh s={s} k="wr" num tip="MEASURED per process: bytes the processes that ran here passed to write() calls">write requested</SortTh>
-              <SortTh s={s} k="named" className="ws-inf" tip="GUESSED from the text of its commands, not measured: distinct files here that its commands mention, by what each command does with them">
+              <SortTh s={s} k="rd" num tip="MEASURED: bytes the processes here read through read(), cached or not">read requested</SortTh>
+              <SortTh s={s} k="wr" num tip="MEASURED: bytes the processes here passed to write()">write requested</SortTh>
+              <SortTh s={s} k="named" className="ws-inf" tip="GUESSED from the text of its commands, not measured">
                 files its commands mention
               </SortTh>
               <SortTh s={s} k="seen">seen</SortTh>
@@ -607,8 +606,8 @@ function OutsideOf({ ns }: { ns: CascadeNode[] }) {
   const by = ns.map((n) => n.workspace?.outside_writes ?? 0).filter((v) => v > 0);
   const sum = by.reduce((a, v) => a + v, 0);
   return (
-    <Outside n={sum} tip={`${fint(sum)} distinct path${sum === 1 ? '' : 's'} written or deleted outside their start folders, as their commands mention them (guessed from the text): ${
-      fint(by.length)} of these ${fint(ns.length)} agents wrote them, and a path two of them named counts twice`} />
+    <Outside n={sum} tip={`${fint(sum)} path${sum === 1 ? '' : 's'} written or deleted outside their start folders, guessed from their commands, by ${
+      fint(by.length)} of these ${fint(ns.length)} agents; a path two named counts twice`} />
   );
 }
 
@@ -629,7 +628,7 @@ function LoneRow({ n, on, onPick, inFold, keys }: {
         <Ver n={n} />
         <SurfaceChip s={n.surface} detail={n.surface_detail} />
         <span className="al-flags">
-          <Outside n={w?.outside_writes ?? 0} tip="distinct paths written or deleted outside its start folder, as its commands mention them (guessed from the text)" />
+          <Outside n={w?.outside_writes ?? 0} tip="paths written or deleted outside its start folder, guessed from its commands" />
           <Tags n={n} />
         </span>
       </span>
@@ -843,10 +842,7 @@ function composition(t: CascadeTree, agents: CascadeNode[]): string {
 }
 
 const SPARE_TIP =
-  '`claude bg-spare`: sessions that `claude daemon` starts ahead of need, so that the next ' +
-  'background session starts at once. Nobody claimed these: they ran nothing, so they are the ' +
-  'daemon’s, not agents, and are neither drawn nor counted as subagents. A spare that was ' +
-  'claimed is drawn as the session it became.';
+  'sessions `claude daemon` starts ahead of need; unclaimed, they ran nothing and are not counted as agents';
 
 /** The spares a tree's daemon started that nobody claimed, which are not drawn. */
 function Spares({ t }: { t: CascadeTree }) {
@@ -1020,8 +1016,8 @@ function unserved(n: CascadeNode | undefined, cap: number | null | undefined): s
     }
     return 'no directory was recorded for what it ran';
   }
-  return `no blast radius was served for this agent: the service sends the ${cap ? fint(cap) + ' ' : ''}busiest ` +
-    'agents’ (reducers.workspace.max_agents), and every one that wrote outside its start folder';
+  return `no blast radius was sent for this agent: only the ${cap ? fint(cap) + ' ' : ''}busiest ` +
+    'agents’ are, and those of every one that wrote outside its start folder';
 }
 
 /** One agent's blast radius, opened from its card (roadmap note 35.3). */
@@ -1274,7 +1270,7 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
       <div className="rowlabel">
         agents by type · {win}
         {capped && (
-          <span className="q-mark" data-tip={`counted over the ${fint(trees.length)} trees the service sent, of ${fint(allTrees)} in the window (reducers.cascades.top_trees)`}>
+          <span className="q-mark" data-tip={`counted over the ${fint(trees.length)} trees the service sent, of ${fint(allTrees)} in the window`}>
             {' '}· in the {fint(trees.length)} trees sent
           </span>
         )}
@@ -1291,7 +1287,7 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
         <div className="grid wide">
           <Panel
             title="Agents and their subagents"
-            ask={[{ panel: 'cascades', keys: ['summary', 'trees', 'role_census', 'workspace.summary'] }]}
+            ask={[{ panel: 'cascades', keys: ['summary', 'trees', 'workspace.summary'] }]}
             id="sec-agent-trees"
             p={c}
             span
@@ -1302,8 +1298,7 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
             <div className="amd">
               <div className="al-list" onKeyDown={walk}>
                 {capped && (
-                  <div className="al-note" data-tip={'reducers.cascades.top_trees: the trees with the most levels of agents go first, ' +
-                    'then those with the most agents, then the most processes. The rest are counted, not sent.'}>
+                  <div className="al-note" data-tip="the deepest first, then the most agents, then the most processes; the rest are counted, not sent">
                     {fint(trees.length)} of {fint(allTrees)} trees: the service sends the deepest {fint(trees.length)}
                   </div>
                 )}

@@ -134,9 +134,6 @@ class RanksTest(NoonCase):
         self.assertNotIn("chain_runs", t["ranks"])
         self.assertEqual(set(t["ranks"]), set(t["rank_meaning"]))
 
-    def test_a_recency_share_counts_sessions_not_timestamps(self):
-        self.assertEqual(self.p["trajectories"]["dominant_user_share_pct"]["recent"], 50.0)
-
 
 class SeamTest(unittest.TestCase):
     """The child exits in one hour, the shell that reaped it in the next."""

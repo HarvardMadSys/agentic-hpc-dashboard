@@ -189,8 +189,8 @@ CODE_FILES = ("normalize.py", "export.py", "redact.py", "procindex.py", "roles.p
 # built view (ask.py), and the other feeds and the paths (the eBPF roots are
 # fingerprinted as resolved) -- so a checkout moved, a node-tier path changed,
 # anonymization switched, or another agent set to answer, keeps its hours.
-CONFIG_IGNORED = ("server", "panels", "ingest", "rebuild", "export", "clock", "anonymize", "ui",
-                  "ask", "history")
+CONFIG_IGNORED = ("server", "panels", "ingest", "rebuild", "clock", "anonymize", "ui", "ask",
+                  "history")
 LIVE_IGNORED = ("window_min", "window_presets_min", "event_tail", "submit_tail",
                 "backfill_hours")
 

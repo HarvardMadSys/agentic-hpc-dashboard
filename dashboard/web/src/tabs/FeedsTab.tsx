@@ -151,7 +151,7 @@ function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
           <tr>
             <SortTh s={s} k="host" first="asc">{nodes.one}</SortTh>
             <SortTh s={s} k="status" first="asc">status</SortTh>
-            <SortTh s={s} k="beat" num tip="the collector writes a heartbeat (residency_totals) every minute">last heartbeat</SortTh>
+            <SortTh s={s} k="beat" num tip="the collector writes a heartbeat every minute">last heartbeat</SortTh>
             <SortTh s={s} k="since">running since</SortTh>
             <SortTh s={s} k="restarts" num tip="starts after the first one, in the files read">restarts</SortTh>
             <SortTh s={s} k="lost" num tip="kernel events its last finished run could not keep up with">events lost, last run</SortTh>
@@ -170,7 +170,7 @@ function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
                   {h.synthetic && (
                     <>
                       {' '}
-                      <span className="pill synthetic" data-tip={`written by the demo (rc_dashboard/demo), not by a collector: nothing from this ${nodes.one} was measured`}>
+                      <span className="pill synthetic" data-tip={`written by the demo, not a collector: nothing from this ${nodes.one} was measured`}>
                         fake
                       </span>
                     </>
@@ -204,7 +204,7 @@ function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
                     <div key={r}>{r}</div>
                   ))}
                   {h.limits.map((r) => (
-                    <div key={r} className="nm" data-tip={`a limit of this ${nodes.one}’s kernel: true of every run until the kernel changes, so it does not change the status`}>
+                    <div key={r} className="nm" data-tip={`a limit of this ${nodes.one}’s kernel; it does not change the status`}>
                       {`limit: ${r}`}
                     </div>
                   ))}
@@ -439,10 +439,7 @@ export const FeedsTab = memo(function FeedsTab({
         header={<span className="pill">{hosts.length ? `${nodes.count(hosts.length)} · ${summary}` : `no ${nodes.many}`}</span>}
       >
         {col.error && <div className="err">{col.error}</div>}
-        <p className="paths" style={{ marginTop: 0 }}>
-          Judged from what each collector writes: a start record, a heartbeat every minute, and a stop record with
-          why it stopped and how many kernel events it lost. Click a {nodes.one} for its runs, probes, and files.
-        </p>
+        <p className="paths" style={{ marginTop: 0 }}>Click a {nodes.one} for its runs, probes, and files.</p>
         {hosts.length > 0 && <Collectors hosts={hosts} now={now} />}
         {nodeTier && nodeTier.status !== 'ok' && (
           <p className="paths">
@@ -466,7 +463,7 @@ export const FeedsTab = memo(function FeedsTab({
 
       <Panel title="Startup read" feed="/api/feeds">
         <p className="paths" style={{ marginTop: 0 }}>
-          On every start the service reads the history behind the newest record back into the live charts.
+          What the service read back into the live charts at start-up.
         </p>
         <Backfill b={(col.data?.backfill ?? (feeds.data?.ebpf?.backfill as Record<string, unknown> | undefined)) as Record<string, unknown> | null} />
       </Panel>

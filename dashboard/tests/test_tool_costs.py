@@ -74,14 +74,14 @@ class ToolCostTest(unittest.TestCase):
 class PerAgentTypeTest(unittest.TestCase):
     """The Agents tab's "nothing mixes types": each agent type's tools alone."""
 
-    def test_each_agent_type_has_its_own_mix_tools_and_head(self):
+    def test_each_agent_type_has_its_own_mix_and_tools(self):
         out = reduce([ex("git", 1), ex("git", 2), ex("python", 3, cpu=5.0, atype="codex"),
                       ex("vim", 4, atype=None, cls="human")]).result()
         self.assertEqual(set(out["by_agent_type"]), {"claude_code", "codex"})
         cc, cx = out["by_agent_type"]["claude_code"], out["by_agent_type"]["codex"]
         self.assertEqual((cc["by"]["calls"], cx["by"]["calls"]), (2, 1))
         self.assertEqual([t["tool"] for t in cx["tools"]], ["python"])
-        self.assertEqual([h["tool"] for h in cc["head"]], ["git"])
+        self.assertEqual([t["tool"] for t in cc["tools"]], ["git"])
         self.assertEqual(cx["n_tools"], 1)
         # the class still holds both, and no type key leaks in as a class
         self.assertEqual(out["by_class"]["agent"]["calls"], 3)

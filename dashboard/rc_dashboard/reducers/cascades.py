@@ -48,7 +48,7 @@ import re
 import time
 
 from ..procindex import MAX_HOPS, _start, users_conflict
-from . import add_counts, max_of, min_of, pct
+from . import max_of, min_of
 from ..redact import redact
 from ..roles import agent_version, js_launcher, subcommand
 from .sandbox import session_state
@@ -149,19 +149,9 @@ class CascadeReducer:
         self.later = {}
         self.n_held = 0
         self.dropped = 0
-        self.census = collections.Counter()      # (agent_type, role) -> exits
-        self.census_cpu = collections.Counter()
 
     def feed(self, rec):
         role = rec.get("_role")
-        if role is None:
-            return
-        # exits: a `truncated` record is a process still running at a collector
-        # stop, which its exit after the restart counts again
-        if rec.get("event") == "exit":
-            k = (rec.get("agent_type"), role)
-            self.census[k] += 1
-            self.census_cpu[k] += rec.get("cpu_s") or 0.0
         if role not in NODE_ROLES or rec.get("pid") is None:
             return
         e = rec.get("_ts_epoch")
@@ -250,8 +240,6 @@ class CascadeReducer:
             if n["exited"] or n["duration_s"] is not None:
                 cur["exited"], cur["duration_s"] = n["exited"], n["duration_s"]
         self.dropped += o.dropped
-        add_counts(self.census, o.census)
-        add_counts(self.census_cpu, o.census_cpu)
 
     def _held(self, key, user, start, t):
         """The held node of the process a record (its user, start and time) is
@@ -415,15 +403,11 @@ class CascadeReducer:
         # verdict for the session the agent owns, read from the same reducer.
         boxed = self.sb.agent_calls() if self.sb is not None else {}
 
-        trees, edges, vias = [], collections.Counter(), collections.Counter()
+        trees = []
         depth_hist, fan_hist = collections.Counter(), collections.Counter()
         for key, n in live.items():
-            if n["parent"] is not None:
-                p = live[(n["host"], n["parent"])]
-                edges[(_label(p), _label(n))] += 1
-                vias[n["via"]] += 1
-                continue
-            trees.append(self._tree(key, live, kids, by_pid, homes, views, boxed))
+            if n["parent"] is None:
+                trees.append(self._tree(key, live, kids, by_pid, homes, views, boxed))
         for t in trees:
             if t["n_agents"]:
                 depth_hist[str(t["agent_depth"])] += 1
@@ -460,15 +444,7 @@ class CascadeReducer:
             },
             "depth_hist": dict(depth_hist),
             "fanout_hist": dict(fan_hist),
-            "edges": [{"parent": p, "child": c, "n": k}
-                      for (p, c), k in edges.most_common()],
-            "edge_via": dict(vias),
             "trees": with_agents[:self.top_n],
-            "role_census": [
-                {"agent_type": at, "role": role, "n": k,
-                 "cpu_s": round(self.census_cpu[(at, role)], 2),
-                 "pct": pct(k, sum(self.census.values()))}
-                for (at, role), k in self.census.most_common()],
             "buffer": {"nodes": self.n_held, "cap": self.max_nodes,
                        "dropped": self.dropped,
                        # later processes on a pid a node holds, not drawn (basis.reused)
@@ -813,10 +789,6 @@ def _home(n, acc):
     if acc is not None and acc.cwd0:
         return acc.cwd0, "first_call"
     return None, None
-
-
-def _label(n):
-    return "%s %s" % (n.get("agent_type") or "?", n["role"])
 
 
 def _rel(path, anchor):

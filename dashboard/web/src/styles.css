@@ -1445,8 +1445,7 @@ table.faults tr.section td {
 }
 /* Only a scroll box's own header sticks. A table opened inside one of its rows
  * keeps its header in place; pinned, it sat on top of the outer one. */
-.scroller.vscroll td thead th,
-.stream td thead th {
+.scroller.vscroll td thead th {
   position: static;
   box-shadow: none;
   border-bottom: 1px solid var(--rule);
@@ -1724,37 +1723,12 @@ tbody tr:last-child td {
   background: var(--crimson-wash);
 }
 
-.stream {
-  max-height: 460px;
-  overflow-y: auto;
-  overflow-x: auto;
-  overscroll-behavior: contain;
-}
-.stream table {
-  font-size: 13px;
-}
-.stream td {
-  padding: 4px 9px 4px 0;
-  white-space: nowrap;
-}
 /* a command line in a table: one line, cut, the whole of it on hover (Cmd.tsx) */
 td.cmd-cut {
   max-width: 560px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.stream td.arg {
-  white-space: nowrap;
-  max-width: 430px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.stream thead th {
-  position: sticky;
-  top: 0;
-  background: var(--surface);
-  z-index: 1;
 }
 .dot {
   width: 7px;
@@ -1877,47 +1851,6 @@ td.cmd-cut {
   border-top: 1px solid var(--rule);
 }
 
-/* basis / notes: a collapsible affordance, never body text */
-details.basis {
-  font-size: 12.5px;
-  color: var(--muted);
-  border-top: 1px solid var(--rule);
-  padding-top: 7px;
-  margin-top: auto;
-}
-details.basis > summary {
-  cursor: pointer;
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 11.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  list-style: none;
-}
-details.basis > summary::-webkit-details-marker {
-  display: none;
-}
-details.basis > summary::before {
-  content: '\203a\00a0';
-}
-details.basis[open] > summary::before {
-  content: '\2039\00a0';
-}
-details.basis .body {
-  margin-top: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  color: var(--ink-2);
-  line-height: 1.5;
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 12px;
-}
-details.basis .body b {
-  color: var(--muted);
-  font-weight: 500;
-}
-
 /* coverage badge: coverage is part of the number */
 .cov {
   font-size: 11px;
@@ -1937,66 +1870,6 @@ details.basis .body b {
   font-size: 12.5px;
   color: var(--muted);
   font-style: normal;
-}
-
-/* ------------------------------------------------------------- filter bar */
-.fbar {
-  background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  padding: 11px 13px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.fgrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 8px 10px;
-}
-.fld {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-.fld label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  font-family: 'IBM Plex Mono', monospace;
-}
-.fld input,
-.fld select {
-  font-family: 'IBM Plex Mono', monospace;
-  font-size: 13px;
-  padding: 4px 6px;
-  border: 1px solid var(--edge);
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--ink);
-  min-width: 0;
-  width: 100%;
-}
-.fld input:focus,
-.fld select:focus {
-  border-color: var(--crimson);
-}
-.fbar .row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-.fbar .count {
-  font-size: 12.5px;
-  font-family: 'IBM Plex Mono', monospace;
-  color: var(--ink-2);
-}
-.fbar .count b {
-  color: var(--ink);
 }
 
 /* ------------------------------------------------------------- ribbon cell */
@@ -3104,22 +2977,7 @@ td.host-by {
   padding-left: 4px;
 }
 
-/* Network bytes: the per-class table and the endpoint list side by side, the
-   list under the table when the panel is too narrow for both (NetEndpoints.tsx) */
-.net-split {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px 32px;
-  align-items: flex-start;
-}
-.net-class {
-  flex: 0 1 440px;
-  min-width: 0;
-}
-.net-ends {
-  flex: 1 1 520px;
-  min-width: 0;
-}
+/* Network bytes: the endpoint list (NetEndpoints.tsx) */
 .net-ends-ctl {
   display: flex;
   flex-wrap: wrap;
@@ -3426,8 +3284,7 @@ th.sortable:focus-visible {
   .linkbtn {
     padding: 6px 0;
   }
-  details.more > summary,
-  details.basis > summary {
+  details.more > summary {
     padding: 6px 0;
   }
   .wininput {

@@ -1,7 +1,7 @@
 # Container images
 
-Three images, each from a Dockerfile here, each built from the repository root as the
-build context:
+Three images, each from a Dockerfile here, each built with the repository root as the build
+context:
 
 | image | Dockerfile | what | published by |
 |---|---|---|---|
@@ -18,8 +18,8 @@ build context:
   `<branch>-<YYYYMMDD>-<sha>` (immutable); a push to `develop` builds nothing
 * `main` → also `edge`
 
-`latest` exists only once a `vX.Y.Z` tag has been pushed, and none has yet; until then pull
-`edge`, main's newest build, as the examples below do.
+No `vX.Y.Z` tag has been pushed yet, so there is no `latest`: pull `edge`, main's newest
+build, as the examples below do.
 
 ## The collector
 
@@ -52,11 +52,11 @@ On a 5.14 or later kernel, set `kernel.task_delayacct=1` too. EL8's 4.18 has no 
 its delay accounting is on by default ([`packaging/rpm`](../packaging/rpm/README.md#dependencies-and-kernel-settings)).
 
 - The entrypoint ([`collector/entrypoint.sh`](collector/entrypoint.sh)) `exec`s
-  `ebpf_trace.py` **in the foreground**, as the container's main process. It deliberately does
-  *not* use `ebpfm.sh start`'s `systemd-run` escape from a login node's capped user slice:
-  a container has no such slice, and no host systemd to ask. `docker stop` sends the SIGTERM
-  that the collector answers by writing every process still running as `truncated`.
-- The other commands are reachable as arguments:
+  `ebpf_trace.py` **in the foreground**, as the container's main process, not through
+  `ebpfm.sh start`, whose `systemd-run` escapes a login node's capped user slice: a container
+  has no such slice, and no host systemd to ask. `docker stop` sends the SIGTERM that the
+  collector answers by writing every process still running as `truncated`.
+- The other commands are arguments:
   `docker run --rm … ghcr.io/harvardmadsys/agentic-hpc-dashboard/collector:edge ebpfm check`,
   or `… ebpfm features`.
 - The collector writes **only** to its output folders (`/var/log/ebpfm` for the eBPF tier,
@@ -80,8 +80,7 @@ docker build -f docker/demo/Dockerfile -t rc-dashboard-demo .
 docker run --rm -p 8080:8080 rc-dashboard-demo          # http://127.0.0.1:8080
 ```
 
-The real service over a synthetic feed it writes itself: no collector, no cluster, no root,
-and every page says *fake data*. The feed is written afresh inside the container at each
+No collector, no cluster, no root. The feed is written afresh inside the container at each
 start, two days of it, and every window is built from it before the port opens, so a cold
 start takes a while. The page is built in a Node 22 stage, and the service runs on
 Python 3.13. Ask LLM is off: the image has no agent CLI, and a public demo must not spend

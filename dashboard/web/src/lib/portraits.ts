@@ -257,10 +257,9 @@ export function leveragePoints(row: UserRow, fleet: UsersFleet | null | undefine
     k: 'agents',
     label: 'agents',
     text: types.length === 1 ? plural(n, `${agentLbl(types[0][0])} session`) : `${plural(n, 'session')}: ${agentsPhrase(row.agent_types)}`,
-    tip: 'one session is one agent run: an agent process seen at the root of its tree, its rows on two days together',
   });
   const where = wherePhrase(row.surfaces, n);
-  if (where) out.push({ k: 'where', label: 'driven from', text: where, tip: 'read off each agent’s own command line' });
+  if (where) out.push({ k: 'where', label: 'driven from', text: where });
   const a = l.autonomy;
   if (a) {
     const lead = a.bypassed
@@ -270,7 +269,7 @@ export function leveragePoints(row: UserRow, fleet: UsersFleet | null | undefine
       k: 'freedom',
       label: 'freedom',
       text: lead + (a.auto ? `; ${fint(a.auto)} in auto mode` : ''),
-      tip: 'approval at launch, off the agent’s own command line. A settings file, and a switch made mid-session, are not seen, so “no bypass flag” is not “asks first”',
+      tip: '“no bypass flag” is not “asks first”: a settings file or a mid-session switch is not seen',
     });
   }
   const others = !!fleet && fleet.users > 1;
@@ -293,7 +292,7 @@ export function leveragePoints(row: UserRow, fleet: UsersFleet | null | undefine
       k: 'uses',
       label: 'used for',
       text: `${shown.map((x) => `${USE_VERB[x.id]} ${pctWords(x.pct)}`).join(' · ')}${more > 0 ? ` · +${more} more` : ''}, of ${plural(l.actions, 'action')}`,
-      tip: 'an action is a tool call that does something, counted by what it does; waiting (sleep, ps, a polling loop) and tool calls whose command was not recorded are left out. Read from commands: the agent’s own Read and Edit tools leave none',
+      tip: 'an action is a tool call that does something; waiting and unrecorded tool calls are left out',
     });
   }
   if (l.waiting) {
@@ -308,7 +307,7 @@ export function leveragePoints(row: UserRow, fleet: UsersFleet | null | undefine
     const bits = [`${plural(sl.jobs, 'Slurm job')} submitted${sl.rejected ? `, ${fint(sl.rejected)} refused` : ''}`];
     if (sl.queries) bits.push(`the queue checked ${plural(sl.queries, 'time')}${sl.queries_per_job != null ? ` (${fint(sl.queries_per_job)} a job)` : ''}`);
     if (sl.polling_sessions) bits.push(`polled for ${dur(sl.polling_s)} in ${plural(sl.polling_sessions, 'session')}`);
-    out.push({ k: 'hpc', label: 'on the cluster', text: bits.join('; '), tip: 'their agent sessions at the scheduler, as the HPC tab folds them' });
+    out.push({ k: 'hpc', label: 'on the cluster', text: bits.join('; ') });
   }
   const w = row.words;
   const said = [
@@ -318,7 +317,7 @@ export function leveragePoints(row: UserRow, fleet: UsersFleet | null | undefine
   ].filter((x): x is string => !!x);
   if (said.length) {
     const list = said.length < 3 ? said.join(' and ') : `${said.slice(0, -1).join(', ')} and ${said[said.length - 1]}`;
-    out.push({ k: 'output', label: 'leaves behind', text: `${list}, in the agents’ own words`, tip: 'text the agents wrote in their commands: git commit -m, gh pr create --title, an entry written to a log or plan file' });
+    out.push({ k: 'output', label: 'leaves behind', text: `${list}, in the agents’ own words`, tip: 'text the agents wrote into their commands' });
   }
   if (l.project) {
     out.push({
@@ -327,7 +326,7 @@ export function leveragePoints(row: UserRow, fleet: UsersFleet | null | undefine
       text: l.project.mostly
         ? `mostly ${l.project.name} (${fint(l.project.n)} of ${plural(l.project.of, 'session')})`
         : `${row.projects.map(([p, k]) => `${p} ${fint(k)}`).join(' · ')}${row.projects_total > row.projects.length ? ` · +${fint(row.projects_total - row.projects.length)} more` : ''}`,
-      tip: 'the folder each session’s agent was started in, or, when that is a home folder or named for a person, the folder its commands change into most',
+      tip: 'the folder each session’s agent was started in, or the one its commands moved into most',
     });
   }
   if (l.when) {
@@ -336,7 +335,7 @@ export function leveragePoints(row: UserRow, fleet: UsersFleet | null | undefine
       label: 'when',
       text: `busiest ${hourSpan(l.when.busiest)}${tz ? ` ${tz}` : ''}${
         l.when.night_pct != null ? `; ${pctWords(l.when.night_pct)} of active minutes between 00:00 and 06:00` : ''}`,
-      tip: 'by the minutes in which one of their agents began a tool call, in the service’s time zone',
+      tip: 'by active minutes, in the service’s time zone',
     });
   }
   return out;

@@ -186,7 +186,7 @@ class Look:
 
 def label(minutes):
     """`90m`, `6h`, `24h`, `7d` -- the same string the picker shows, made once
-    here so the page and the export header cannot disagree about what to call it.
+    here so the page and the service cannot disagree about what to call it.
 
     A day stays `24h` rather than becoming `1d`: this dashboard's whole prior
     vocabulary is "the 24-hour window", and renaming the default view while
@@ -338,7 +338,7 @@ class ViewFilter:
 
     @classmethod
     def from_params(cls, params):
-        """From query params, in `/api/events`'s vocabulary: `user`, `agent_type`,
+        """From query params, in the filters' vocabulary: `user`, `agent_type`,
         each repeatable or comma-separated (`export.parse_filters`)."""
         f = parse_filters({k: params.get(k) for k in ("user", "agent_type")})
         users, types = f.get("user") or (), f.get("agent_type") or ()

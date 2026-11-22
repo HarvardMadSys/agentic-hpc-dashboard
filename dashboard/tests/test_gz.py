@@ -25,8 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rc_dashboard import clock, gz                      # noqa: E402
 from rc_dashboard.aggregator import Aggregator          # noqa: E402
 from rc_dashboard.export import (dated_dirs, feed_files, iter_lines_reverse,  # noqa: E402
-                                 make_predicate, parse_filters, resume_plan, scan,
-                                 seek_to_epoch, window_plan, window_scan)
+                                 resume_plan, seek_to_epoch, window_plan, window_scan)
 from rc_dashboard.feedfile import host_of               # noqa: E402
 from rc_dashboard.normalize import Normalizer           # noqa: E402
 from rc_dashboard.tail import FileTailSource, read_back  # noqa: E402
@@ -505,34 +504,6 @@ class CompressedUnderTheTail(FeedCase):
         self.compress("h1.exits.jsonl")
         agg.poll_once()
         self.assertEqual(self.events(agg), dict(NONE, agent=20, human=10))
-
-
-class BoundedScan(CompressedFeed):
-    """`/api/events` and `/api/export` read no further than their window."""
-
-    def setUp(self):
-        super().setUp()
-        old = "2000-01-01"
-        self.append("h1.exits.jsonl", [exit_rec(946700000 + i, pid=i) for i in range(3000)],
-                    day=old)
-        os.makedirs(os.path.join(self.zroot, old))
-        self.write_gz("h1.exits.jsonl", os.path.join(self.zroot, old), day=old)
-        shutil.rmtree(os.path.join(self.root, old))
-
-    def run_scan(self, newest_first):
-        f = parse_filters({"from": [str(self.now - 3600)], "event": ["exit"]})
-        return list(scan([self.zroot], Normalizer(self.cfg()), make_predicate(f),
-                         limit=5, newest_first=newest_first))
-
-    def test_a_day_outside_the_window_is_not_read_to_its_end(self):
-        for newest_first in (True, False):
-            got = self.run_scan(newest_first)
-            self.assertEqual(len(got), 5)
-            # every page waited on the whole old day before the bound
-            self.assertLess(got[-1][1], 50, newest_first)
-            ts = [r["_ts_epoch"] for r, _, _ in got]
-            self.assertTrue(all(t >= self.now - 3600 for t in ts))
-            self.assertEqual(ts, sorted(ts, reverse=newest_first))
 
 
 class PinnedClock(CompressedFeed):

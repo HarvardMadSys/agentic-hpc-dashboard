@@ -103,11 +103,11 @@ export function DayByDay({ P, cls, who }: { P: Panels; cls: Cls[]; who: Who | nu
       emptyWhat={t._error ? `the days could not be read: ${t._error}` : 'the live tier holds no record yet'}
       header={
         <span className="wrapctl" style={{ gap: 6 }}>
-          <span className="pill" data-tip={`every day the service holds (${fint((t.retention_minutes ?? 0) / 1440)} days of retention), not the window picked above${t.tz ? `; days start at midnight, ${t.tz}` : ''}`}>
+          <span className="pill" data-tip={`not the window picked above${t.tz ? `; days start at midnight, ${t.tz}` : ''}`}>
             {span}
           </span>
           {filtered && (
-            <span className="pill stale" data-tip="the day-by-day counts come from the live tier, which the user and agent-type filter does not narrow">
+            <span className="pill stale" data-tip="the user and agent-type filter does not narrow these counts">
               everyone, not the filter
             </span>
           )}
@@ -138,7 +138,7 @@ export function DayByDay({ P, cls, who }: { P: Panels; cls: Cls[]; who: Who | nu
           <thead>
             <tr>
               <SortTh s={s} k="day" first="desc">day</SortTh>
-              <SortTh s={s} k="held" num tip="minutes of the day the collector wrote any record in, of the minutes the service could hold">minutes held</SortTh>
+              <SortTh s={s} k="held" num tip="minutes with any record, of the minutes the service could hold">minutes held</SortTh>
               {have.map((c) => (
                 <SortTh key={c} s={s} k={`u:${c}`} num className="cls" style={{ color: CLS_COL[c] }}
                   tip={`accounts that ran something as ${CLS_LBL[c] ?? c} that day`}>

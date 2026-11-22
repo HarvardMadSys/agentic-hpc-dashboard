@@ -2,61 +2,37 @@
 
 **Status: the dashboard's history store.** `rc_dashboard.feedparquet` writes a typed,
 columnar copy of the eBPF tier's day-files and reads every record back from it exactly.
-The dashboard makes such a copy of every sealed day-file in the background. It answers a
-selective read or a time search of a sealed file from that copy, using the file's own
-offsets ([History in Parquet](../../dashboard/README.md#history-in-parquet)).
-The collector does not change. This is the "columnar copy of sealed days" that [schema 9's
-proposal](../feed-format-v9/README.md) left open (its §4.3 and open question 5), built for
-the feed as it is today: FAS's login nodes write schema 7, the collector in this repo
-writes schema 8, and both convert.
+The dashboard keeps such a copy of every sealed day-file and answers selective reads and time
+searches of the file from it, at the file's own offsets
+([History in Parquet](../../dashboard/README.md#history-in-parquet)). It is the columnar copy
+of sealed days that [schema 9's proposal](../feed-format-v9/README.md) left open, built for the
+feed as it is, with no change to the collector: schema 7 (FAS's login nodes) and schema 8 (this
+repo's collector) both convert.
 
 Every number here comes from the FAS mirror (8 login nodes, the 7 sealed days
 2026-11-09 to 2026-11-15) unless noted otherwise. The data names real users and
 commands, so this page gives aggregates only.
 
-## In short
-
-- **One table per record kind**: `exit` (with `truncated`), `conn`, `netio`, `residency`,
-  `residency_totals`, `submit`, `meta`, `stop`. A table's columns are the keys of its
-  records, in the collector's order, with types taken from the code that writes them.
-  Nested blocks stay nested (structs, lists of structs, maps).
-- **Lossless**: all 179,448,351 records of a week (8 hosts, 56 host-days) read back the
-  same as in the day-file, type for type and in the same key order (`verify`). None of
-  them needed `_extra`.
-- **Small**: a third the size of the sealed `.jsonl.gz` (6.11 GB vs 18.32 GB for a week
-  of 8 hosts) and 1.5 % of the JSON itself. An `exit` row is 35 bytes.
-- **Fast to query**: counting a day's 17 M exits by class takes DuckDB 0.03 s on the
-  tables, against 28 s for a parallel orjson scan of the `.gz`. A week's p99 tool-call
-  duration per agent type, over 145 M exits, takes 0.8 s.
-- **What the dashboard reads from it**: one user's exits on a sealed day in 14-15 s
-  instead of 220-440 s from the `.gz`, and a session's records in a 17 GB day-file in
-  2.8 s instead of 30-43 s.
-
 ## Running it
 
-The dashboard does this itself for the sealed days it reads (`history.py`). To convert
-a capture of your own by hand (pyarrow is one of the dashboard's dependencies):
+The dashboard converts the sealed days it reads on its own (`history.py`). By hand, on a capture
+of your own:
 
 ```bash
 cd dashboard
-uv run python -m rc_dashboard.feedparquet convert --out /path/to/pq \
-    /scratch/marthen/rc-dashboard/data/mirror/*      # the roots feeds.ebpf.roots lists
-uv run python -m rc_dashboard.feedparquet verify  --out /path/to/pq \
-    /scratch/marthen/rc-dashboard/data/mirror/*      # every record, rebuilt and compared
+uv run python -m rc_dashboard.feedparquet convert --out /path/to/pq ROOT...   # the roots feeds.ebpf.roots lists
+uv run python -m rc_dashboard.feedparquet verify  --out /path/to/pq ROOT...   # every record, rebuilt and compared
 uv run python -m rc_dashboard.feedparquet schema --markdown
 ```
 
-- It reads what the dashboard reads: `.jsonl`, plain or `.gz` (a plain file before its
-  `.gz`), through `feedfile`.
-- Today's day-files are skipped (they are still being written) unless `--include-today`.
-- A day-file whose source has not changed since its manifest (its name, size, mtime and
-  inode) is skipped while that manifest is this version's and every table it names is still
-  the size it was written, so a cron job can run it every night; otherwise, or with
-  `--force`, it is converted again.
-  `--days N` and `--day D` narrow it, `--jobs` sets the processes (one per day-file).
-- Output is written beside its final name and renamed into place, files `0640` and
-  directories `0750`, as the collector writes the day-files: the tables hold what those
-  hold.
+- It reads what the dashboard reads (`feedfile`): `.jsonl`, plain or `.gz`, a plain file before
+  its `.gz`. Today's day-files, still being written, are skipped unless `--include-today`.
+- A day-file is skipped while its manifest is this version's, names the source as it is (name,
+  size, mtime, inode), and every table it names is still the size it was written, so a cron job
+  can run it every night; otherwise, or with `--force`, it is converted again. `--days N` and
+  `--day D` narrow it, and `--jobs` sets the processes (one per day-file).
+- Output is written beside its final name and renamed into place, files `0640` and directories
+  `0750`, as the collector writes the day-files: the tables hold what those hold.
 
 ### Layout
 
@@ -69,16 +45,13 @@ pq/_manifest/day=<YYYY-MM-DD>/<host>.<stream>.json   the source (name, size, mti
                                                      object); records per table, seconds
 ```
 
-Each table is a directory and `day` is a Hive partition. A file holds one source
-day-file's records for that table (from `<host>.exits` or `<host>.snapshot`), so each
-sealed file's copy is made, checked and replaced independently. Every row carries `_off`,
-the byte offset of its line in the uncompressed day-file (delta-packed, so it costs under
-a byte per row). With it, a row can be found in the file, and a range of the file can be
-found in the table. This is what lets the dashboard read a sealed file from its copy at
-the file's own offsets (`replica.py`). Every file also carries its host (the `host`
-column) and its provenance (the `rcfeed` entry in the footer), so it can be used on its
-own. A day is removed from the copy the same way it is removed from the feed, by deleting
-its directories.
+Each table is a directory and `day` a Hive partition. A file holds one source day-file's records
+for that table, so each sealed file's copy is made, checked and replaced on its own. Every row
+carries `_off`, the byte offset of its line in the uncompressed day-file (delta-packed, under a
+byte a row), so a row can be found in the file and a range of the file in the table: this is how
+the dashboard reads a sealed file from its copy at the file's own offsets (`replica.py`). Every
+file also carries its host (`host`) and provenance (the footer's `rcfeed` entry), so it stands
+alone. A day leaves the copy as it leaves the feed: delete its directories.
 
 ```sql
 -- DuckDB
@@ -86,16 +59,9 @@ SELECT agent_type, count(*), sum(cpu_s)
 FROM read_parquet('pq/exit/*/*.parquet', hive_partitioning = true)
 WHERE day >= '2026-11-12' AND actor3 = 'agent'
 GROUP BY ALL;
-
-SELECT e.provider, sum(e.tx_bytes + e.rx_bytes)
-FROM read_parquet('pq/netio/*/*.parquet'), UNNEST(endpoints) AS t(e)
-GROUP BY ALL;
 ```
 
 ```python
-import polars as pl                       # or pyarrow.dataset.dataset("pq/exit", partitioning="hive")
-pl.scan_parquet("pq/exit/**/*.parquet").group_by("actor3").len().collect()
-
 from rc_dashboard import feedparquet      # the records themselves, exactly as the day-file had them
 for rec in feedparquet.records("pq/exit/day=2026-11-15/<host>.exits.parquet"):
     ...
@@ -103,67 +69,44 @@ for rec in feedparquet.records("pq/exit/day=2026-11-15/<host>.exits.parquet"):
 
 ## The schema
 
-### Tables
-
-| table | events | one row per | rows, 2026-11-15, 8 hosts |
-|---|---|---|---:|
-| `exit` | `exit`, `truncated` | process end; `truncated` for a process still alive at the collector's stop | 17,142,727 |
-| `conn` | `conn` | standing external socket per residency tick | 2,138,107 |
-| `netio` | `netio` | process that moved bytes, per tick | 1,675,063 |
-| `residency` | `residency` | live agent tree per tick | 660,883 |
-| `residency_totals` | `residency_totals` | host per tick | 11,515 |
-| `submit` | `submit` | `sbatch`/`salloc`/`srun` | 18,316 |
-| `meta` | `meta` | collector start | 0 (one in the 7 days) |
-| `stop` | `stop` | collector stop | 0 |
-| `other` | anything else | an event kind no table names (pre-6 `tcp`, a future `session`) | 0 |
-
-Records are routed by `event`, not by stream, so a capture from before the
-exits/snapshot split reads the same.
-
-### Types
+One table per record kind: `exit` (with `truncated`), `conn`, `netio`, `residency`,
+`residency_totals`, `submit`, `meta`, `stop`, and `other` for an event kind no table names (a
+pre-6 `tcp`, a future `session`). Records are routed by `event`, not by stream, so a capture from
+before the exits/snapshot split reads the same. A table's columns are the keys of its records,
+in the collector's order, with types taken from the code that writes them:
 
 - **Integers** are int32 where the kernel bounds them (pids, ports, exit codes, signals,
-  depths, a process's threads, `args_len`) and int64 everywhere else. On FAS, pids reach
-  4,194,303 and a socket's `rx_bytes` reaches 1.66 TB.
-- **Floats** are float64 and hold exactly what the collector wrote. The collector rounds
-  at the source (`duration_s` to 4 places, `peak_rss_mb` to 2), and no field ever mixes
-  ints and floats, so no column needs a wider or narrower type to be exact.
-- **`ts` and `start`** are local, naive strings with one-second granularity. They are
-  stored as timestamps with no zone (Parquet's `isAdjustedToUTC=false`), in `ms` because
-  Parquet has no seconds unit. **`ts_epoch`** stays a float, because it is the
-  authoritative time, as it is in the feed.
-- **Nested blocks keep their shape**: `io`, `conns`, `net_endpoints` are structs, endpoint
-  and peer lists are lists of structs, and objects whose keys are data are maps, in their
-  own order: `map<string, int64>` for counts (`by_command`, `providers`, `state_counts`,
-  `perf_seen`, ...), `map<string, string>` for `sysctl` and `features_rejected`, and maps of
-  structs for `by_actor3`, `by_agent_type` and `tcp_open_ext_by_actor3`. The blocks of
-  `meta` and `stop` with no fixed shape (`config`, `btf_offs`,
-  `output`, `unsafe_dirs`) are JSON text.
+  depths, a process's threads, `args_len`) and int64 everywhere else.
+- **Floats** are float64, exactly what the collector wrote: it rounds at the source
+  (`duration_s` to 4 places, `peak_rss_mb` to 2).
+- **`ts` and `start`** are local, naive strings with one-second granularity, stored as
+  timestamps with no zone (Parquet's `isAdjustedToUTC=false`), in `ms` because Parquet has no
+  seconds unit. **`ts_epoch`** stays a float: it is the authoritative time, as in the feed.
+- **Nested blocks keep their shape**: structs, lists of structs, and maps, in their own order,
+  for objects whose keys are data. The blocks of `meta` and `stop` with no fixed shape
+  (`config`, `btf_offs`, `output`, `unsafe_dirs`) are JSON text.
 - **Null means what it means in the feed** (not measured, not applicable), never "this
   record had no such key": that is `_absent`.
 
 ### `_absent` and `_extra`
 
-Two columns at the end of every table make the copy exact without a registry of past
-schemas:
+Two columns at the end of every table make the copy exact without a registry of past schemas:
 
-- **`_absent`** lists the keys of the record's event that this record did not have. It is
-  null when the record had them all. A schema-7 record lacks `args_redacted`, so its
-  `_absent` reads `["args_redacted"]`, and a reader can tell "no such field then" apart
-  from "nothing was masked". A few keys are written only when they hold something
-  (`netio.overflow`, `net_endpoints.overflow` and `.unaccounted`, `conns.peers_overflow`,
-  and the demo's `synthetic`). For those keys, absent and null mean the same thing, and
-  nothing is recorded.
-- **`_extra`** is a JSON object holding whatever a column cannot hold exactly: a key that
-  no table names (schema 9's `pk`, pre-7's `comm`), a value of a different type from its
-  column's (an int where a float is written, since `1` would read back as `1.0`), a value
-  out of range, text that is not UTF-8, a time string in another format, or a nested
-  block of another shape. It is null on every row that has none of these, which on FAS is
-  every row.
+- **`_absent`** lists the keys of the record's event that this record did not have, and is
+  null when it had them all. A schema-7 record lacks `args_redacted`, so its `_absent` reads
+  `["args_redacted"]`, and a reader can tell "no such field then" from "nothing was masked".
+  For the few keys written only when they hold something (`netio.overflow`,
+  `net_endpoints.overflow` and `.unaccounted`, `conns.peers_overflow`, and the demo's
+  `synthetic`), absent and null mean the same, and nothing is recorded.
+- **`_extra`** is a JSON object holding whatever a column cannot hold exactly: a key no table
+  names (schema 9's `pk`, pre-7's `comm`), a value of another type than its column's (an int
+  where a float is written, since `1` would read back as `1.0`), a value out of range, text that
+  is not UTF-8, a time string in another format, or a nested block of another shape. It is null
+  on every row that has none of these.
 
-`feedparquet.records()` rebuilds a record from a row. It takes the event's keys in order,
-minus those that `_absent` names, each from its column or from `_extra`, and then adds
-any key in `_extra` that no table names.
+`feedparquet.records()` rebuilds a record from a row: the event's keys in order, minus those
+`_absent` names, each from its column or from `_extra`, then any key in `_extra` that no table
+names.
 
 ### Columns
 
@@ -470,17 +413,16 @@ From profiling every field of every record of 2026-11-15 (8 hosts, 21.6 M record
   record. Schema 8's shapes come from the demo generator, whose output the tests convert
   too.
 - **No field mixes ints and floats**, and no line fails to parse. The only keys ever
-  absent are the three written only when set.
+  absent are ones written only when set.
 - **Some columns are constant on FAS** (`pgrp` and `sid` 0, `swapin_wait_s` 0.0,
   `fork_only` false, `conns.accepted` 0, `cpu_scope` `process`, `dstate_src` `stat`).
   Dictionary pages make them free, and they vary elsewhere, so they stay.
-- **Ranges that set types**: `args` reaches 119,710 characters (schema 7 does not cap
-  it), `args_len` 412,675 and `min_flt` 704 M, and endpoint lists reach the cap of 256
-  entries.
-- **Values to know about**: `duration_s` can be negative (-0.0083). On FAS, `conn.age_s`
-  is sometimes an epoch, 1.79e9 (schema 7's wall-clock `age_s` on EL8's Python 3.6,
-  fixed in schema 8). `netio.interval_s` and `residency.age_s` reach -3,600 s. The copy
-  keeps all of these as written.
+- **Ranges that set types**: pids reach 4,194,303, a socket's `rx_bytes` 1.66 TB, `args`
+  119,710 characters (schema 7 does not cap it), `args_len` 412,675 and `min_flt` 704 M, and
+  endpoint lists reach the cap of 256 entries.
+- **Values to know about**: `duration_s` can be negative (-0.0083); `conn.age_s` is sometimes
+  an epoch, 1.79e9 (schema 7's wall-clock `age_s` on EL8's Python 3.6); `netio.interval_s` and
+  `residency.age_s` reach -3,600 s. The copy keeps all of these as written.
 
 ## Measured
 
@@ -488,30 +430,27 @@ From profiling every field of every record of 2026-11-15 (8 hosts, 21.6 M record
 
 The dashboard's history store (`history.py`: a file per day-file, 128 Ki-row groups,
 8 processes) converted the 7 sealed days 2026-11-10 to 2026-11-16 of the same 8 hosts
-(112 day-files, 18.39 GB of `.gz`, 182,151,599 records) in 701 s, or 260 k records a
-second. The result was 6.22 GB in 337 files, 33.8 % of the `.gz` (version 1, below, came
-to 33.4 % for 2026-11-09 to 2026-11-15). A process held up to 0.8 GB (0.66 to 0.80 GB
-resident across the 8, measured in a running service mid-conversion).
+(112 day-files, 18.39 GB of `.gz`, 182,151,599 records) in 701 s, 260 k records a second.
+The result was 6.22 GB in 337 files, 33.8 % of the `.gz`. A process held 0.66 to 0.80 GB
+resident (measured in a running service mid-conversion).
 
-Below are the reads the dashboard makes from the store, each in a fresh process, compared
-with the same reads of the `.gz`. Both ways give the same answers.
+The reads the dashboard makes from the store, each in a fresh process, against the same reads
+of the `.gz`, with the same answers both ways:
 
 | | from the `.gz` | from the replicas |
 |---|---:|---:|
-| one user's exits on one sealed day, 500 rows, either order (the week's 128 day-files planned, as `/api/events` plans them) | 222-444 s | 13.6-15.4 s |
 | a session's key search through the busiest day-file (17.4 GB inflated) | 30-43 s | 2.8 s |
 | a time search in that file: the first, then each after | 12.3 s, then 0.1 s | 0.17 s, then 0.06 ms |
 
 The `.gz` side inflates each file it places in full, to learn its size and build its
-seek index. For the events query, that is the whole week: 367 GB.
+seek index.
 
 ### Version 1
 
 All 56 sealed host-days of the mirror (8 hosts, 2026-11-09 to 2026-11-15, 179,448,351
-records), converted with the defaults at the time: a file per host-day and 1 Mi-row
-groups.
+records), converted with a file per host-day and 1 Mi-row groups.
 
-### Size
+#### Size
 
 | | `.jsonl.gz` (the sealed feed) | Parquet | |
 |---|---:|---:|---:|
@@ -520,8 +459,8 @@ groups.
 | **all** | **18.32 GB** | **6.11 GB** | **33.4 %** |
 
 Compared with the JSON itself, 2026-11-15 is 45.1 GB as written, 2.19 GB gzipped and
-694 MB as Parquet, which is 1.5 % of the JSON. Every day's Parquet lands between 31.7 %
-and 34.0 % of its gzip.
+694 MB as Parquet, 1.5 % of the JSON. Every day's Parquet lands between 31.7 % and 34.0 % of
+its gzip.
 
 | table | rows | Parquet | per row |
 |---|---:|---:|---:|
@@ -538,37 +477,32 @@ Where the bytes go, on boslogin06's 2026-11-15 (2.0 M exits):
 - **`exit`**: `net_endpoints` 16 % (schema 7 still counts the NFS client's RPCs as the
   calling process's traffic, so most exits list NFS servers), `args` 12 %, `ts_epoch`
   7 %, `conns` 6 %, `ppid` 5.5 %, `duration_s` 4 %, `pid` 4 %. The 30-column identity
-  block is 36 % of the file. 22 points of that are `args`, `pid` and `ppid`, which are
-  specific to each process. The other 27 columns are half of an `exit` line in JSON, but
-  take 15 % here.
+  block is 36 % of the file, 22 points of it `args`, `pid` and `ppid`, which are specific to
+  each process; the other 27 columns, half of an `exit` line in JSON, take 15 % here.
 - **`netio`**: the endpoint lists 55 %; identity 35 % (15 % without `args`/`pid`/`ppid`).
 - **`conn`**: its socket counters, each 5-11 %; identity 24 %.
 - **`residency`**: `top_procs` 49 %, `age_s` 14 %, `cpu_s` 12 %; identity 6 %.
 
-### Converting
+#### Converting
 
 Conversion costs 31 CPU-µs per record: parsing the JSON 12, building rows 8.5, building
 Arrow arrays 8-9.5, gunzip 3, writing 2.5 (300,000 `exit` records, Python 3.12, orjson
 3.13, pyarrow 26). The week took 7.4 minutes with 16 processes (`--jobs 16`), one
 host-day per process, with the largest process using 3.6 GB.
 
-### Exact
+#### Exact
 
-`verify` read every record of the same 56 host-days from both its day-file and its
-table, and compared the two. All 179,448,351 were the same, type for type, and every one
-was in its own key order. There were 0 rows with `_extra` and 0 malformed lines. The run
-took 12.8 minutes with 16 processes. A second conversion with the final code gave the
-same 337 files, table for table, as the first.
+`verify` read every record of the 56 host-days from both its day-file and its table, and
+compared the two: all 179,448,351 were the same, type for type, each in its own key order, with
+0 rows needing `_extra` and 0 malformed lines. The run took 12.8 minutes with 16 processes. A
+second conversion gave the same 337 files, table for table. The synthetic schema-8 feed
+(`docs/feed-format-v9/prototype.py demo --truncated`, with `truncated`, `meta` and `stop`
+records) also reads back the same, but for one block's key order (Caveats).
 
-The synthetic schema-8 feed (`docs/feed-format-v9/prototype.py demo --truncated`, with
-`truncated`, `meta` and `stop` records) also reads back the same, apart from one
-difference in key order: the demo writes `by_agent_type`'s `users` and `autonomous` in
-the opposite order from the collector.
+#### Asking it
 
-### Asking it
-
-DuckDB 2.0 (16 threads) over the tables, compared with the way the analysis scripts read
-the feed today (orjson over the `.gz` in 8 processes). The page cache was warm for both.
+DuckDB 2.0 (16 threads) over the tables, against the way the analysis scripts read the feed
+(orjson over the `.gz` in 8 processes), the page cache warm for both:
 
 | question | DuckDB on Parquet | orjson on `.jsonl.gz` |
 |---|---:|---:|
@@ -578,73 +512,65 @@ the feed today (orjson over the `.gz` in 8 processes). The page cache was warm f
 | exits by day and `actor3`, the week (144.5 M rows) | 0.10 s | |
 | p99 `duration_s` of agent tool calls by `agent_type`, the week | 0.8 s | |
 
-The first two queries read two or three of the 76 columns. A JSON reader has to parse
-every key of every line to get them.
+The first two queries read two or three columns, where a JSON reader parses every key of every
+line.
 
 ## Choices
 
 - **A table per record kind, not per stream.** The snapshot stream mixes seven kinds with
-  little in common; one table each gives every table a fixed set of columns and no
-  column that is null by construction. `exit` and `truncated` share one, as they share
-  the exits stream: both end a process's life, and `event` tells them apart.
-- **Identity stays on every row.** Schema 9 moves the 30-key identity block into a
-  `procs` stream because JSON repeats it on every tick. In columns, most of that
-  repetition is gone, because dictionary pages hold each distinct `cwd` or
-  `session_uuid` once per row group. Apart from `args`, `pid` and `ppid`, what is left
-  is 6 % of `residency`, 15 % of `netio` and 19 % of `conn`, about 150 MB of the week's
-  6.1 GB. In return, every table can be read on its own, with no join and no process key
-  (which schemas 7 and 8 do not have) needed to put a process back together.
+  little in common; a table each gives every table a fixed set of columns and none null by
+  construction. `exit` and `truncated` share one, as they share the exits stream: both end a
+  process's life, and `event` tells them apart.
+- **Identity stays on every row.** Schema 9 moves the 30-key identity block into a `procs`
+  stream because JSON repeats it on every tick. In columns most of that repetition is gone,
+  since dictionary pages hold each distinct `cwd` or `session_uuid` once per row group: apart
+  from `args`, `pid` and `ppid`, what is left is 6 % of `residency`, 15 % of `netio` and 19 % of
+  `conn`, about 150 MB of the week's 6.1 GB. In return every table reads on its own, with no
+  join and no process key (which schemas 7 and 8 do not have) to put a process back together.
 - **Nested blocks stay nested.** Endpoints, peers and top processes are lists of structs
   inside their row, not child tables, so a row is still a record. `UNNEST` (DuckDB),
   `explode` (Polars) or `list_flatten` (pyarrow) gives the child table when you want it.
-- **Exact, then convenient.** Every column holds what the collector wrote, in its type.
-  Nothing is derived, renamed or converted to other units here, so a question about the
-  data is a question about the feed. Schema 9's cleanups (bytes instead of MB, an epoch
-  `start`) belong in the collector; made there, they would reach this copy on their own.
+- **Exact, then convenient.** Every column holds what the collector wrote, in its type: nothing
+  is derived, renamed or converted to other units, so a question about the data is a question
+  about the feed. Schema 9's cleanups (bytes instead of MB, an epoch `start`) belong in the
+  collector, and would reach this copy on their own.
 - **Rows in file order.** File order is time order to within the collector's 250 ms exit
   hold, so row-group statistics on `ts_epoch` can skip by time, and the day-file's order
   is kept without a sequence column.
-- **A file per source day-file (version 2), and each row's offset.** Version 1 wrote one
-  file per host-day, with both streams' records together. The dashboard's store needs
-  each sealed file's copy to stand for that one file: to be current or stale along with
-  it, and to say where in the file each record lies.
 - **zstd 9, 1 Mi-row groups, dictionary pages, with `pid`/`ppid` delta-packed and
-  `ts_epoch` byte-stream-split** in the tables keyed by process. The dashboard's store
-  writes 128 Ki-row groups instead. An hour of a busy node's exits fills one or two of
-  those, so a read of an hour's span decodes no more than that, for the 5-8 % in size
-  that smaller groups cost. Measured on one FAS host-day: zstd 9 is 5 % smaller than
-  zstd 3, and zstd 19 is another 10 % smaller at eight times the encoding time (use
-  `--zstd-level 19` for an archive). Groups of 128 Ki or 256 Ki rows cost 5-8 %, and a
-  larger dictionary page limit costs 9 %. The three encodings save 10.5 % of `exit` and
-  4 % of `netio` and `residency`. They are left off `conn`, where they cost 1 % because
-  its sockets repeat with the same pid every tick.
+  `ts_epoch` byte-stream-split** in the tables keyed by process. The dashboard's store writes
+  128 Ki-row groups instead: an hour of a busy node's exits fills one or two, so a read of an
+  hour's span decodes no more than that. Measured on one FAS host-day: zstd 9 is 5 % smaller
+  than zstd 3, and zstd 19 another 10 % smaller at eight times the encoding time
+  (`--zstd-level 19` for an archive). Groups of 128 Ki or 256 Ki rows cost 5-8 %, and a larger
+  dictionary page limit 9 %. The three encodings save 10.5 % of `exit` and 4 % of `netio` and
+  `residency`; they are left off `conn`, where they cost 1 % because its sockets repeat with
+  the same pid every tick.
 
 ## Caveats
 
 - **Integers past 64 bits**: the day-files are read as the dashboard reads them
   (`fastjson`), and orjson reads such an integer as a float, so the copy has the float
   (in `_extra`). The collector writes no such value.
-- **Key order**: a record comes back in its event's order; a key `_extra` holds that no
-  table names comes back last. On FAS every record comes back in its own order. The
-  demo generator writes `by_agent_type`'s `users` and `autonomous` the other way round
-  from the collector; those come back in the collector's order.
-- **What is not kept**: a line that does not parse or is not a JSON object, counted in the
-  manifest as `malformed`, as every reader of the feed counts it (a blank line is kept out
-  too, and not counted); where each lies, and whether it is blank, unparseable or JSON but not
-  an object, is (`nonrec`), so every offset stays the file's. A last line with no newline,
-  the torn end of a live file, ends the read; its offset is `partial`. The dashboard stands a copy in for its file only when the
-  file has no last line still being written and no line that is JSON but not an object.
+- **Key order**: a record comes back in its event's order, and a key only `_extra` holds comes
+  back last. The demo generator writes `by_agent_type`'s `users` and `autonomous` the other way
+  round from the collector; they come back in the collector's order.
+- **What is not kept**: a line that does not parse or is not a JSON object (counted in the
+  manifest as `malformed`, as every reader of the feed counts it), and a blank line (not
+  counted); `nonrec` keeps where each lies and what it was, so every offset stays the file's. A
+  last line with no newline, the torn end of a live file, ends the read at `partial`. The
+  dashboard stands a copy in for its file only when the file has neither such a last line nor a
+  line that is JSON but not an object.
 - **The node tier** is not covered: its 36-key snapshots have no `event` and would land
-  in `other`. If node-tier data is wanted, a table of its own is the next step.
+  in `other`.
 
 ## Open questions
 
-1. **Keep or replace the `.gz`.** Because the copy is exact, it could replace the sealed
-   JSONL at rest, at a third of the size. The cautious order is to keep both until
-   `verify` has run clean for a while.
-2. **Whole-range reads.** The dashboard's backfill and hour reductions still read the
-   JSONL, because building a record from a row in Arrow costs more than orjson's parse
-   of a line. Reducers that read columns instead of records would take those reads from
-   the copy too.
-3. **A node-tier table**, and whether to add `pk`/`ppk` columns when schema 9 lands
-   (until then, schema 9's keys arrive in `_extra`, losslessly).
+1. **Keep or replace the `.gz`.** The copy is exact, so it could replace the sealed JSONL at
+   rest, at a third of the size; the cautious order is to keep both until `verify` has run
+   clean for a while.
+2. **Whole-range reads.** The dashboard's backfill and hour reductions read the JSONL, because
+   building a record from a row in Arrow costs more than orjson's parse of a line. Reducers that
+   read columns instead of records would take those reads from the copy too.
+3. **A node-tier table**, and whether to add `pk`/`ppk` columns when schema 9 lands (until
+   then, schema 9's keys arrive in `_extra`, losslessly).

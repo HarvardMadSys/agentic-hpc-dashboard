@@ -9,8 +9,6 @@ cumulative reaped-descendant CPU and is therefore re-counted at every ancestor
 level; analyze/common.py:364 measures the naive `cpu_s + child_cpu_s` sum
 inflating login CPU 1.83x pooled and UNEVENLY by class (agent 1.57x, human
 2.03x, human-vscode 2.38x), which would invert an agent-vs-human comparison.
-`schedstat_ratio` (cpu_s / sched_run_s, median) is emitted so any future
-regression in that basis is visible on the dashboard itself.
 
 `series` puts the same quantities on a time axis, in fixed-width wall-clock
 bins sized to the window (`bin_for`). Two kinds, kept apart because they mean
@@ -20,8 +18,8 @@ different things:
   whole-life counters land in the bin it exited in, so a six-hour agent drops
   six hours of CPU into one bin. Exact for the short tool calls that are nearly
   every record, lumpy for long-lived roots, and the payload says so.
-* **Sampled** -- resident memory, live processes and D-state processes per
-  class, from `residency_totals`, which every host emits each residency tick.
+* **Sampled** -- resident memory per class, from `residency_totals`, which
+  every host emits each residency tick.
   This is state at a moment, not a sum at exit, so it is averaged over a host's
   ticks in a bin and then added across hosts.
 """
@@ -40,6 +38,9 @@ NFS_IO_FIELDS = ("ops_s", "rd_kb_s", "rd_rtt_ms", "rd_exe_ms", "rd_retrans",
 # Per-bin sums by exit time. Each is nullable, so each keeps its own present
 # count: a bin whose records all lacked schedstat is null, not 0 s of wait.
 SERIES_FIELDS = ("cpu_s", "sched_wait_s", "dstate_wait_s", "maj_flt")
+# Of those, the ones served per class: D-state is summed only to say which bins
+# measured it, which the stall lines need (`series`).
+CLASS_SERIES_FIELDS = ("cpu_s", "sched_wait_s", "maj_flt")
 # The same, from the record's `io` block: bytes through read()/write() and bytes
 # that reached the disk, each process's own (its reaped children's taken off:
 # own_io.py). Null for another user's process (/proc/<pid>/io is theirs), so a
@@ -50,7 +51,7 @@ IO_SERIES_FIELDS = ("rchar_mb", "rd_mb", "wchar_mb", "wr_mb")
 # collector kept none, like the rest.
 NET_SERIES_FIELDS = (("net_tx_mb", "net_tx_bytes"), ("net_rx_mb", "net_rx_bytes"))
 # Per-class state from a residency tick, `residency_totals.by_actor3`.
-TICK_FIELDS = ("rss_mb", "n_procs", "d_state")
+TICK_FIELDS = ("rss_mb",)
 # Round wall-clock widths; the first that keeps a window under SERIES_MAX_BINS
 # wins, so 1 h is per minute, 24 h per 10 min and 7 d per hour -- a few hundred
 # points at any window rather than ten thousand at the widest.
@@ -84,7 +85,7 @@ class ResourceReducer:
         self.cfg = cfg
         self.classes = list(classes)
         self.bin_s = bin_for(window_s)
-        # bin -> class -> {"n", "sum": {field: total}, "has": {field: present}}
+        # bin -> class -> {"sum": {field: total}, "has": {field: present}}
         self.bins = {}
         # bin -> tool -> D-state seconds; only stalled records, so it stays sparse
         self.stall_bins = {}
@@ -108,7 +109,6 @@ class ResourceReducer:
             "delays": {k: Acc() for k in DELAY_FIELDS},
             "dstate": {"events": 0, "wait": Acc(), "episodes": Acc(), "max_s": 0.0,
                        "src": collections.Counter(), "n_with": 0},
-            "ratio": [],
         })
         self.stall_by_tool = collections.defaultdict(
             lambda: {"n": 0, "wait_s": 0.0, "episodes": 0, "max_s": 0.0})
@@ -161,8 +161,7 @@ class ResourceReducer:
         a3 = rec["_a3"]
         slot = by.get(a3)
         if slot is None:
-            slot = by[a3] = {"n": 0, "sum": {}, "has": {}}
-        slot["n"] += 1
+            slot = by[a3] = {"sum": {}, "has": {}}
         io = dict(zip(self.own.fields, own)) if own else {}
         sums, has = slot["sum"], slot["has"]
         for k in SERIES_FIELDS:
@@ -227,8 +226,6 @@ class ResourceReducer:
                 c["oncpu_aside"] += 1
             else:
                 c["q_oncpu"].add(min(1.0, run / dur))
-        if cpu and cpu > 1.0 and run:
-            c["ratio"].append(cpu / run)
         faults = c["faults"]
         for k in FAULT_FIELDS:
             faults[k].add(rec.get(k))
@@ -329,7 +326,6 @@ class ResourceReducer:
                 if d is None:
                     dst[cls] = slot
                     continue
-                d["n"] += slot["n"]
                 add_counts(d["sum"], slot["sum"])
                 add_counts(d["has"], slot["has"])
         for b, tools in o.stall_bins.items():
@@ -369,7 +365,6 @@ class ResourceReducer:
             d["episodes"].merge(od["episodes"])
             d["max_s"] = max(d["max_s"], od["max_s"])
             add_counts(d["src"], od["src"])
-            m["ratio"].extend(c["ratio"])
         for tool, v in o.stall_by_tool.items():
             m = self.stall_by_tool[tool]
             m["n"] += v["n"]
@@ -387,13 +382,11 @@ class ResourceReducer:
     def result(self):
         by_class = {}
         for cls, c in self.cls.items():
-            ratios = sorted(c["ratio"])
             by_class[cls] = {
                 "events": c["events"],
                 "cpu_s": round(c["cpu_s"], 2),
                 "sched_run_s": c["sched_run"].as_dict(),
                 "sched_wait_s": c["sched_wait"].as_dict(),
-                "schedstat_ratio": (round(ratios[len(ratios) // 2], 3) if ratios else None),
                 "quants": {"cpu_s": c["q_cpu"].as_dict(),
                            "peak_rss_mb": c["q_rss"].as_dict(),
                            "sched_wait_s": c["q_wait"].as_dict(),
@@ -450,7 +443,7 @@ class ResourceReducer:
         """
         held = set(self.bins) | set(self.tick_bins)
         out = {"bin_s": self.bin_s, "t": [], "by_class": {}, "stall_by_tool": {},
-               "stall_other": [], "resident": {}, "resident_hosts": [],
+               "stall_other": [], "resident": {},
                "skipped": dict(self.series_skipped, clipped_bins=0)}
         if not held:
             return out
@@ -462,13 +455,11 @@ class ResourceReducer:
         out["t"] = [b * self.bin_s for b in idx]
 
         exit_cls = sorted({c for b in idx for c in self.bins.get(b, ())})
-        fields = SERIES_FIELDS + IO_SERIES_FIELDS + tuple(k for k, _f in NET_SERIES_FIELDS)
+        fields = CLASS_SERIES_FIELDS + IO_SERIES_FIELDS + tuple(k for k, _f in NET_SERIES_FIELDS)
         for c in exit_cls:
-            row = {"n": []}
-            row.update((k, []) for k in fields)
+            row = {k: [] for k in fields}
             for b in idx:
                 s = self.bins.get(b, {}).get(c)
-                row["n"].append(s["n"] if s else None)
                 for k in fields:
                     row[k].append(round(s["sum"][k], 3) if s and s["has"].get(k) else None)
             out["by_class"][c] = row
@@ -494,7 +485,6 @@ class ResourceReducer:
             out["resident"][c] = {k: [] for k in TICK_FIELDS}
         for b in idx:
             hosts = self.tick_bins.get(b)
-            out["resident_hosts"].append(len(hosts) if hosts else None)
             for c in tick_cls:
                 for k in TICK_FIELDS:
                     out["resident"][c][k].append(

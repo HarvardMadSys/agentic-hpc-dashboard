@@ -15,7 +15,7 @@ good on a pinned clock, whose day-files cannot change, and for `TTL_LIVE`
 seconds on a live feed.
 
 Nothing here is part of a window build, so changing it rebuilds no window
-(`snapshots.CODE_FILES`). The filters are `/api/events`' own
+(`snapshots.CODE_FILES`). The filters are the shared grammar's
 (`export.parse_filters` and `make_predicate`), plus the two a blast-radius row
 needs: `apid` (the agent pids whose processes count, on one `host`) and `cwd`
 (a directory: processes that ran in it or below it). With names masked, a host,

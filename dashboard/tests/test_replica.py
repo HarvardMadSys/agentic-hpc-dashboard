@@ -237,69 +237,6 @@ class ReplicaTest(unittest.TestCase):
                     found += len(got["gz"]) - 1
         self.assertGreater(found, 100, "the reads found the keys' records")
 
-    def test_an_events_read_stops_and_counts_as_the_line_read(self):
-        """`export._matching` of a filtered events query, from the replica and
-        from the `.gz`: the same records in the same order, and `scanned` the
-        same by each record handed on and at the end -- the replica stopping at
-        the very record the line read stops at, past the far bound, though
-        records come out of time order by more than the slack around it."""
-        from rc_dashboard import export
-        rng = random.Random(9)
-        lines = []
-        t = T0
-        for i in range(700):
-            t += rng.uniform(0, 12)
-            r = rng.random()
-            if r < 0.03:
-                lines.append("")
-                continue
-            if r < 0.05:
-                lines.append('{"event": "exit", "user": "ann", "ts_epoch": %d' % i)
-                continue
-            rec = full(rng.choice(("exit", "exit", "truncated", "conn", "residency",
-                                   "submit")), i)
-            rec["user"] = rng.choice(("ann", "bob", "cy"))
-            late = rng.random() < 0.04                 # a line far out of time order
-            rec["ts_epoch"] = t - (rng.uniform(150, 400) if late else 0)
-            if rng.random() < 0.03:
-                del rec["ts_epoch"]                    # timed by its `ts` string only
-            lines.append(json.dumps(rec))
-        path, rep = self.make(lines)
-        cfg = configmod.Config(configmod.defaults(), {}, None)
-        span = t - T0
-        reads = 0
-        # A healthy replica is never taken for a broken one: a read that raised
-        # part way would go on from the file all the same, the records and the
-        # counts unchanged, and only the store would know -- letting the replica
-        # go and converting the file again, at every query.
-        broken = []
-        try:
-            for events in (None, {"exit"}, {"truncated"}, {"exit", "truncated"},
-                           {"exit", "conn"}, {"submit"}):
-                for frm, to in ((None, None), (T0 + span * 0.3, None),
-                                (None, T0 + span * 0.6), (T0 + span * 0.4, T0 + span * 0.5)):
-                    f = {"event": events, "user": {"ann"},
-                         "from": None if frm is None else repr(frm),
-                         "to": None if to is None else repr(to)}
-                    pred = export.make_predicate(f)
-                    self.assertIsNotNone(pred.where)
-                    for newest_first in (True, False):
-                        got = {}
-                        for name in ("gz", "replica"):
-                            rp.install((lambda p: rep) if name == "replica" else None,
-                                       lambda p, r, e: broken.append(repr(e)))
-                            st = {"scanned": 0}
-                            seen = [(ts, r, st["scanned"]) for ts, r in export._matching(
-                                path, Normalizer(cfg), pred, newest_first, st)]
-                            got[name] = seen + [("end", st["scanned"])]
-                        self.assertEqual(got["replica"], got["gz"],
-                                         (events, frm, to, newest_first))
-                        reads += len(got["gz"]) > 1
-        finally:
-            rp.install(None)
-        self.assertGreater(reads, 20, "the reads found records")
-        self.assertEqual(broken, [])
-
     def broken(self, path, rep, after):
         """`rep` installed for `path`, its ranged reads raising once `after`
         records are handed on, as a table damaged part way through does; and
@@ -318,13 +255,12 @@ class ReplicaTest(unittest.TestCase):
         self.addCleanup(rp.install, None)
         return failures
 
-    def test_a_build_or_an_events_read_its_replica_fails_part_way_goes_on_from_the_file(self):
+    def test_a_build_its_replica_fails_part_way_goes_on_from_the_file(self):
         """A table that raises in the middle of a read -- damaged with its size
         intact, or gone since the replica was taken -- costs the read nothing:
         it goes on from the file, from where the replica left it, the records
         the same as a read of the file alone, each once; and the store is told.
-        Before, it raised out of the window build or the events query, on every
-        retry."""
+        Before, it raised out of the window build, on every retry."""
         from rc_dashboard import export
         path, rep = self.make(feed_lines(13, n=600))
         cfg = configmod.Config(configmod.defaults(), {}, None)
@@ -344,21 +280,6 @@ class ReplicaTest(unittest.TestCase):
             failures = self.broken(path, rp.Replica(self.out, rep.man), after)
             self.assertEqual(window(), want, after)
             self.assertEqual([p for p, _r, _e in failures], [path], after)
-
-        # an events query (`export._matching`), either way through the file
-        pred = export.make_predicate({"event": {"exit"}, "user": {"ann"}})
-        for newest_first in (True, False):
-            rp.install(None)
-            want = list(export._matching(path, Normalizer(cfg), pred, newest_first,
-                                         {"scanned": 0}))
-            self.assertGreater(len(want), 10)
-            for after in (0, 3, len(want) // 2):
-                failures = self.broken(path, rp.Replica(self.out, rep.man), after)
-                got = list(export._matching(path, Normalizer(cfg), pred, newest_first,
-                                            {"scanned": 0}))
-                self.assertEqual([(ts, r["pid"]) for ts, r in got],
-                                 [(ts, r["pid"]) for ts, r in want], (newest_first, after))
-                self.assertEqual(len(failures), 1)
 
     def test_a_key_search_its_replica_fails_part_way_goes_on_in_the_gz(self):
         """The inspector's key search in this process (`proctree._key_stream`):

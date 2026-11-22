@@ -4,7 +4,7 @@
 in the same order), and `exit_record` is `_exit_record` plus the `conns` and
 `net_endpoints` blocks `_write_exit` adds. Every record also carries
 `"synthetic": true`, which no collector writes: it is how the service, and
-anyone reading an export, can tell a demo record from a measured one.
+anyone reading a copy of the files, can tell a demo record from a measured one.
 
 The costs a process is given (`costs`) are drawn per command from ranges that
 look like a login node's, log-uniformly: they make the panels' shapes

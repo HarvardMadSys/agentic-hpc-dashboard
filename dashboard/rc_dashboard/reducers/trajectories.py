@@ -25,9 +25,7 @@ by `max_sessions`: past it, whole sessions go, the least recently active first
 
 "Top" is SEVEN rankings, not one: by processes, CPU, memory, disk I/O, network,
 distinct tools, and recency.  A single ranking is dominated by one poll loop
-and one mega-user -- CLAUDE.md records one user at ~81% of agent submissions --
-so each list ships with `dominant_user_share_pct`, letting the panel state its
-own concentration instead of implying a fleet-wide pattern.
+and one mega-user -- CLAUDE.md records one user at ~81% of agent submissions.
 
 Disk I/O is each process's OWN. The collector reads `task->signal->ioac`, which
 the kernel also credits with the I/O of every child the process reaped
@@ -39,17 +37,6 @@ shell above it. Here a process's figure loses what its children carried
 every panel that sums disk bytes shares: own_io.py), so a sum over any set of
 processes counts each byte once. Network bytes and peak memory are per process
 already.
-
-Each row also carries `drift`: two process-level proxies for an agent leaving the
-task it started on. Neither sees the model's context; both are labelled proxies.
-
-* cwd drift -- the share of the session's processes whose cwd lies outside the
-  agent's launch directory (the agent process's own cwd, else the first call's).
-  The collector reads cwd at exec for tagged processes (each tool-call shell) and
-  inherits it otherwise, so a `cd` inside one shell command is not seen.
-* tool-mix drift -- Jensen-Shannon divergence (base 2, 0..1) between the purpose
-  mix of the first and the last third of the session's processes. Null below
-  MIN_DRIFT_N processes: a third of a handful is noise, not a finding.
 
 Each row also carries `phases`: what its session was doing, as a handful of
 labelled stretches read from the commands it ran, and `n_calls`, its calls.
@@ -143,7 +130,6 @@ import math
 import os
 import re
 import time
-from array import array
 from operator import itemgetter
 
 from ..anonymize import HOME_PATTERNS
@@ -181,9 +167,6 @@ MAX_SEQ_RUNS = 400          # matches extract_trajectories.MAX_SEQ_RUNS
 # Tool calls that only wait on something else: polling the process table
 # (ps, pgrep, sleep loops) and polling the scheduler (squeue, sacct).
 WAIT_PURPOSES = frozenset({"poll", "slurm_mon"})
-MIN_DRIFT_N = 30            # processes; below this the thirds are noise
-DRIFT_CAP = 100000          # per-session processes kept for drift; past it, flagged
-MAX_CWDS = 200000           # distinct cwds interned per window; past it, unmeasured
 _NO_PARENT = (None, 0, 1)   # a ppid that names no process that started it
 MAX_PREVIEWS = 200000       # masked command previews interned per reducer; past it, none
 MAX_TAGSETS = 200000        # tag sets (names, words) interned per reducer; past it, none
@@ -218,7 +201,7 @@ class Session:
                  "tools", "chain", "purpose", "first", "last", "rss", "rd", "wr", "tx", "rx",
                  "sandbox", "approval", "ancestry", "autonomous", "truncated", "no_ts",
                  "users", "pids", "tree_root", "chain_t", "purpose_t",
-                 "ev_t", "ev_p", "ev_c", "drift_cut", "wait", "over", "pover",
+                 "first_cwd", "first_cwd_t", "cwd_seen", "wait", "over", "pover",
                  "phase", "past_due")
 
     def __init__(self, rec):
@@ -254,12 +237,12 @@ class Session:
         self.no_ts = False
         self.users = {}
         self.pids = []
-        # One entry per process, in arrival order, for drift: its time, its
-        # purpose id and its cwd id (0 = not measured), interned by the reducer.
-        self.ev_t = array("d")
-        self.ev_p = array("H")
-        self.ev_c = array("I")
-        self.drift_cut = False
+        # The first cwd of its processes that is not `/`, and its time: the folder
+        # its project is named for when the agent's own is not known
+        # (`cwd_anchor`); and whether any process's cwd was recorded at all.
+        self.first_cwd = None
+        self.first_cwd_t = None
+        self.cwd_seen = False
         self.wait = 0            # tool calls spent waiting (WAIT_PURPOSES), exact
         # Calls a full chain dropped, by tool (and by purpose): never shown, but
         # what lets two halves of a session merge into the chain one pass
@@ -603,13 +586,9 @@ def merge_session(a, b, params=None):
         a.tree_root = b.tree_root
     for u, c in b.users.items():
         a.users[u] = a.users.get(u, 0) + c
-    room = DRIFT_CAP - len(a.ev_p)
-    if len(b.ev_p) > room or b.drift_cut:
-        a.drift_cut = True
-    if room > 0:
-        a.ev_t.extend(b.ev_t[:room])
-        a.ev_p.extend(b.ev_p[:room])
-        a.ev_c.extend(b.ev_c[:room])
+    if a.first_cwd is None:
+        a.first_cwd, a.first_cwd_t = b.first_cwd, b.first_cwd_t
+    a.cwd_seen = a.cwd_seen or b.cwd_seen
     return due_dropped
 
 
@@ -692,32 +671,12 @@ def fold(parts, sid, kv, params=None):
         for u, c in p.users.items():
             m.users[u] = m.users.get(u, 0) + c
     m.pids = [pid for p in parts for pid in p.pids][:8]
-    ev = sorted(itertools.chain.from_iterable(zip(p.ev_t, p.ev_p, p.ev_c) for p in parts),
-                key=lambda x: x[0])
-    m.ev_t = array("d", (x[0] for x in ev))
-    m.ev_p = array("H", (x[1] for x in ev))
-    m.ev_c = array("I", (x[2] for x in ev))
-    m.drift_cut = any(p.drift_cut for p in parts)
+    # the earliest first cwd of the parts, the first part's on a tie
+    firsts = [(p.first_cwd_t, i, p.first_cwd) for i, p in enumerate(parts)
+              if p.first_cwd is not None]
+    m.first_cwd_t, _, m.first_cwd = min(firsts) if firsts else (None, None, None)
+    m.cwd_seen = any(p.cwd_seen for p in parts)
     return m
-
-
-def jsd(a, b):
-    """Jensen-Shannon divergence, base 2, between two count maps: 0 same, 1 disjoint."""
-    na, nb = sum(a.values()), sum(b.values())
-    out = 0.0
-    for k in set(a) | set(b):
-        p, q = a.get(k, 0) / na, b.get(k, 0) / nb
-        m = (p + q) / 2
-        if p:
-            out += 0.5 * p * math.log2(p / m)
-        if q:
-            out += 0.5 * q * math.log2(q / m)
-    return out
-
-
-def under(path, anchor):
-    """`path` is `anchor` or below it -- `/a/proj-old` is NOT under `/a/proj`."""
-    return path == anchor or path.startswith(anchor.rstrip("/") + "/")
 
 
 def _agent_key(s):
@@ -786,10 +745,6 @@ class TrajectoryReducer:
         # live view re-folds every few seconds, and between two reads only
         # the sessions at work have changed
         self._group_cache = {}
-        # Interned per window, so a session's drift arrays hold small ints.
-        self._purpose_id, self._purposes = {}, []
-        self._cwd_id, self._cwds = {None: 0}, [None]
-        self.cwd_overflow = 0
         # (host, pid) -> [MB read, MB written] its exited children carried, for
         # its own exit to give back (`own_io`): the join every panel that sums
         # disk bytes holds one of (own_io.py), here over disk bytes alone.
@@ -1564,27 +1519,14 @@ class TrajectoryReducer:
         return own[0] or 0.0, own[1] or 0.0
 
     def _track(self, s, rec):
-        if len(s.ev_p) >= DRIFT_CAP:
-            s.drift_cut = True
-            return
-        e = rec.get("_ts_epoch")
-        s.ev_t.append(e if e is not None else (s.ev_t[-1] if s.ev_t else 0.0))
-        p = rec.get("_purpose") or "other"
-        pid = self._purpose_id.get(p)
-        if pid is None:
-            pid = self._purpose_id[p] = len(self._purposes)
-            self._purposes.append(p)
-        s.ev_p.append(pid)
+        """The session's first cwd that is not `/` (`cwd_anchor`), in arrival order."""
         c = rec.get("cwd") or None
-        cid = self._cwd_id.get(c)
-        if cid is None:
-            if len(self._cwds) >= MAX_CWDS:
-                self.cwd_overflow += 1          # reported in `fold`, read as unmeasured
-                cid = 0
-            else:
-                cid = self._cwd_id[c] = len(self._cwds)
-                self._cwds.append(c)
-        s.ev_c.append(cid)
+        if c is None:
+            return
+        s.cwd_seen = True
+        if s.first_cwd is None and c != "/":
+            e = rec.get("_ts_epoch")
+            s.first_cwd, s.first_cwd_t = c, e if e is not None else (s.last or 0.0)
 
     # ----------------------------------------------------------------- merge
     # A window is merged from saved hour states (`hours`). What crosses an
@@ -1661,16 +1603,12 @@ class TrajectoryReducer:
         Sessions merge key by key (`merge_session`): a session spanning two
         hours is one session, its counts added and its chains joined as one
         pass would have built them. The joins across hours (`reaped`, the
-        pending entries, `calls_at`) are carried instead (above). The purpose,
-        cwd, preview, and tag set ids are each state's own, and are renumbered
-        into this one's.
+        pending entries, `calls_at`) are carried instead (above). The preview
+        and tag set ids are each state's own, and are renumbered into this
+        one's.
         """
-        pmap = array("H", (self._intern_purpose(p) for p in o._purposes))
-        cmap = array("I", (self._intern_cwd(c) for c in o._cwds))
-        # a cwd the window could no longer intern is counted per process, as
-        # `_track` counts it
-        lost = {i for i, c in enumerate(cmap) if i and not c}
-        # a preview likewise, per call, as `_intern_preview` counts it
+        # a preview the window could no longer intern is counted per call, as
+        # `_intern_preview` counts it
         vmap = [0] + [self._intern_shown(t, False) for t in o._previews[1:]]
         vsame = all(i == v for i, v in enumerate(vmap))
         vlost = {i for i, v in enumerate(vmap) if i and not v}
@@ -1679,10 +1617,6 @@ class TrajectoryReducer:
         tsame = all(i == v for i, v in enumerate(tmap))
         tlost = {i for i, v in enumerate(tmap) if i and not v}
         for sid, s in o.sessions.items():
-            s.ev_p = array("H", (pmap[i] for i in s.ev_p))
-            if lost:
-                self.cwd_overflow += sum(1 for i in s.ev_c if i in lost)
-            s.ev_c = array("I", (cmap[i] for i in s.ev_c))
             if not (vsame and tsame):
                 if vlost:
                     self.preview_overflow += sum(1 for c in s.phase.calls if c[PREV] in vlost)
@@ -1709,7 +1643,6 @@ class TrajectoryReducer:
             self._shed()
         self.evicted += o.evicted
         self.fed += o.fed
-        self.cwd_overflow += o.cwd_overflow
         self.own.merge(o.own)
         self.pend.evicted += o.pend.evicted
         self.pend.refused += o.pend.refused
@@ -1729,72 +1662,20 @@ class TrajectoryReducer:
         self.phase_unread += o.phase_unread
         self.phase_ungrouped += o.phase_ungrouped
 
-    def _intern_purpose(self, p):
-        pid = self._purpose_id.get(p)
-        if pid is None:
-            pid = self._purpose_id[p] = len(self._purposes)
-            self._purposes.append(p)
-        return pid
-
-    def _intern_cwd(self, c):
-        cid = self._cwd_id.get(c)
-        if cid is None:
-            if len(self._cwds) >= MAX_CWDS:
-                return 0
-            cid = self._cwd_id[c] = len(self._cwds)
-            self._cwds.append(c)
-        return cid
-
-    def drift(self, s, anchor=None):
-        """The two drift proxies for one session (see the module docstring).
-
-        `anchor` is the agent's launch directory when the caller knows it and it
-        is not `/`; the first measured call's cwd otherwise, and
-        `cwd_anchor_src` says which.
-        """
-        n = len(s.ev_p)
-        d = {"n": n, "capped": s.drift_cut, "min_n": MIN_DRIFT_N,
-             "mix_jsd": None, "mix_first": None, "mix_last": None}
-        if n >= MIN_DRIFT_N:
-            k = n // 3
-            a = collections.Counter(s.ev_p[:k])
-            b = collections.Counter(s.ev_p[n - k:])
-            d["mix_jsd"] = round(jsd(a, b), 3)
-            d["mix_first"] = [[self._purposes[i], pct(c, k)] for i, c in a.most_common(3)]
-            d["mix_last"] = [[self._purposes[i], pct(c, k)] for i, c in b.most_common(3)]
-        cw = [c for c in s.ev_c if c]
-        d["cwd_coverage_pct"] = pct(len(cw), n) if n else None
-        if not cw:
-            d.update(cwd_anchor=None, cwd_anchor_src=None, cwd_outside_pct=None,
-                     cwd_distinct=0, cwd_top=[], cwd_first=None, cwd_last=None)
-            return d
-        names = self._cwds
-        anchor, src = self.cwd_anchor(s, anchor)
-        cnt = collections.Counter(cw)
-        outside = sum(k for c, k in cnt.items() if not under(names[c], anchor))
-        d.update(cwd_anchor=anchor, cwd_anchor_src=src,
-                 cwd_outside_pct=pct(outside, len(cw)), cwd_distinct=len(cnt),
-                 cwd_top=[[names[c], k] for c, k in cnt.most_common(5)],
-                 cwd_first=names[cw[0]], cwd_last=names[cw[-1]])
-        return d
-
     def cwd_anchor(self, s, anchor=None):
-        """`(anchor, src)`, the directory a session's cwd drift is measured from
-        and where it came from, as `drift` reports them: `anchor`, the agent's
-        launch directory, when the caller knows it and it is not `/` (src
-        `agent`); else the first measured call's cwd that is not `/`, or `/`
-        when every one was (`first_call`). `(None, None)` when no call's cwd
-        was recorded."""
-        if not any(s.ev_c):
+        """`(anchor, src)`, the directory a session's project is named for
+        (`project_of`) and where it came from: `anchor`, the agent's launch
+        directory, when the caller knows it and it is not `/` (src `agent`);
+        else the first call's cwd that is not `/`, or `/` when every one was
+        (`first_call`). `(None, None)` when no call's cwd was recorded."""
+        if not s.cwd_seen:
             return None, None
         if anchor == "/":
-            # IDE-hosted agents run at `/`, under which every path is inside:
-            # 0% by construction is not a measurement, so anchor on the work.
+            # IDE-hosted agents run at `/`, which names no project: anchor on the work.
             anchor = None
         if anchor:
             return anchor, "agent"
-        names = self._cwds
-        return next((names[c] for c in s.ev_c if c and names[c] != "/"), "/"), "first_call"
+        return s.first_cwd or "/", "first_call"
 
     def rooted(self, s):
         """Whether an agent process was seen at the session's root.
@@ -2082,7 +1963,6 @@ class TrajectoryReducer:
             # how many collector session keys this row folds together, and how
             # the least certain of them was attributed (procindex.VIA)
             "fragments": n_keys, "owner_via": via,
-            "drift": self.drift(s, self.anchor_of(s)),
             "actor3": s.cls, "agent_type": s.agent_type,
             "n_events": s.n, "cpu_s": round(s.cpu, 3),
             # a session can span users (a root helper inside a user's tree), so
@@ -2119,20 +1999,17 @@ class TrajectoryReducer:
         now = now or time.time()
         self._evict(now)
         cutoff = now - self.window_s
-        folded, vias = self.folded()
+        folded = self.folded()[0]
         meta = {s.sid: (via, k) for s, via, k in folded}
         live = [s for s, _, _ in folded
                 if (s.last or 0) >= cutoff and s.kt in self.rankable]
-        ranks, rows, dom = {}, {}, {}
+        ranks, rows = {}, {}
         keyf = {"events": lambda s: s.n, "cpu_s": lambda s: s.cpu,
                 "peak_rss_mb": lambda s: s.rss,
                 "io_mb": lambda s: s.rd + s.wr,
                 "net_mb": lambda s: s.tx + s.rx,
                 "distinct_tools": lambda s: len(s.tools),
                 "recent": lambda s: s.last or 0}
-        # what a user's share of a list is a share OF: the ranked quantity, or
-        # for recency (a time, not an amount) the sessions listed
-        weight = dict(keyf, recent=lambda s: 1)
         # Recency lists real sessions only (`rooted`): a status-bar probe runs
         # every minute, and a tool call still running is a key of its own
         # until its shell's exit says whose it is -- either would hold the top.
@@ -2144,14 +2021,6 @@ class TrajectoryReducer:
             ranks[r] = [s.sid for s in top]
             for s in top:
                 rows.setdefault(s.sid, self._row(s, *meta[s.sid]))
-            if top:
-                byu = collections.Counter()
-                for s in top:
-                    byu[s.user] += weight[r](s)
-                tot = sum(byu.values())
-                dom[r] = pct(byu.most_common(1)[0][1], tot) if tot else 0.0
-            else:
-                dom[r] = None
         by_cls = collections.Counter(s.cls for s, _, _ in folded)
         return {
             "window": {"minutes": self.window_s // 60,
@@ -2160,42 +2029,7 @@ class TrajectoryReducer:
             "rank_by": "recent", "rank_meaning": RANK_MEANING,
             "ranks": ranks, "rows": rows,
             "by_class_counts": dict(by_cls), "by_key_type": dict(self.by_kt),
-            "fold": {"raw_sessions": len(self.sessions), "sessions": len(folded),
-                     "by_via": dict(vias), "cwd_overflow": self.cwd_overflow,
-                     "index": self.procs.result() if self.procs is not None else None},
-            "dominant_user_share_pct": dom,
             "summary": self.summary(live),
-            "buffer": {"sessions": len(self.sessions), "evicted": self.evicted,
-                       "reaped": len(self.own.reaped), "reaped_evicted": self.own.evicted,
-                       # children a parent could not have reaped (own_io.py): dropped
-                       "reaped_rejected": self.own.rejected,
-                       # figures short of their children's, shown as 0
-                       "reaped_clamped": self.own.clamped,
-                       # groups dropped from a pid past own_io.PER_PID
-                       "reaped_crowded": self.own.crowded,
-                       # groups held for an exit that says it reaped none
-                       "reaped_unreaped": self.own.unreaped,
-                       # the phases' joins and bounds, every one counted
-                       "phase_pending": len(self.pend.entries),
-                       "phase_pending_evicted": self.pend.evicted,
-                       "phase_pending_refused": self.pend.refused,
-                       "phase_pending_refused_records": self.pend.refused_records,
-                       "phase_call_index": len(self.calls_at),
-                       "phase_call_index_evicted": self.calls_at_evicted,
-                       "phase_past_due_evicted": self.past_due_evicted,
-                       "phase_exited": len(self.exited),
-                       "phase_exited_evicted": self.exited_evicted,
-                       "phase_late_routed": self.late_routed,
-                       "phase_late_unplaced": self.late_unplaced,
-                       "phase_late_no_start": self.late_no_start,
-                       "phase_late_hops_out": self.late_hops_out,
-                       "phase_late_maybe_evicted": self.late_maybe_evicted,
-                       "phase_untimed": self.phase_untimed,
-                       "phase_reparented": self.phase_reparented,
-                       "phase_unread": self.phase_unread,
-                       "phase_ungrouped": self.phase_ungrouped,
-                       "preview_overflow": self.preview_overflow,
-                       "phase_tag_overflow": self.tag_overflow},
             "basis": {
                 "sessionize": "session_key='apid:<agent_pid>'; absent -> sess (cgroup "
                               "session-(\\d+)\\.scope) -> tty as user@tty -> usr "

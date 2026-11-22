@@ -31,7 +31,7 @@ from rc_dashboard.reducers import trajectories as trajmod               # noqa: 
 from rc_dashboard.reducers.phase_log import (FLAGS, OPEN, PAST, PREV, SEEN, TAGS,   # noqa: E402
                                              PhaseLog)
 from rc_dashboard.windows import PanelView                              # noqa: E402
-from test_sessions import HOME, SNAP, cfg, ranked, rec, reduce          # noqa: E402
+from test_sessions import HOME, SNAP, cfg, ranked, rec, reduce, reduced   # noqa: E402
 from test_traj_phases import (T0, bash8, fed, quiet_t0, root8, row_of, s8,   # noqa: E402
                               seam)
 
@@ -128,9 +128,9 @@ class TagsTest(unittest.TestCase):
 
     def test_the_bound_counts_what_it_drops(self):
         with mock.patch.object(trajmod, "MAX_TAGSETS", 2):
-            payload = reduce([root8(T0)]
-                             + [bash8(T0 + 5 * i, 201 + i, "cat f%d.py" % i) for i in range(4)])
-        self.assertEqual(payload["trajectories"]["buffer"]["phase_tag_overflow"], 3)
+            view = reduced([root8(T0)]
+                           + [bash8(T0 + 5 * i, 201 + i, "cat f%d.py" % i) for i in range(4)])
+        self.assertEqual(view.reducers["trajectories"].tag_overflow, 3)
 
     def test_names_survive_the_hour_merge_and_a_pickle(self):
         # Hour one names a.py, the test, and the commit; hour two the test again, c.py, nothing,
@@ -282,11 +282,10 @@ class TagsTest(unittest.TestCase):
             merged = view.reducers["trajectories"]
             hour2 = snapshots.restore(fresh(), pickle.loads(saved[1]))["trajectories"]
             self.assertEqual(hour2.tag_overflow, 1)
-            payload = TM.materialize(view)
+            TM.materialize(view)
         self.assertEqual(ids_of(one), [1, 2, 1, 0, 0])
         self.assertEqual(ids_of(merged), ids_of(one))
         self.assertEqual((one.tag_overflow, merged.tag_overflow), (2, 2))
-        self.assertEqual(payload["trajectories"]["buffer"]["phase_tag_overflow"], 2)
         self.assertEqual(tag_sets(merged), tag_sets(one))
         self.assertTrue(consistent(merged))
 
@@ -303,6 +302,12 @@ def configured(phases=None, tasks=None):
 def row_after(recs, **thresholds):
     """The one agent row of a reducer fed `recs`, as the page lists it."""
     return row_of(fed(recs, configured(**thresholds)).result())
+
+
+def anchor_of(traj, row):
+    """The folder `row`'s project is named for (`cwd_anchor`)."""
+    s = next(s for s, _via, _k in traj.folded()[0] if s.sid == row["sid"])
+    return traj.cwd_anchor(s, traj.anchor_of(s))[0]
 
 
 class Live:
@@ -556,8 +561,9 @@ class RowTasksTest(unittest.TestCase):
     def test_the_project_is_the_launch_folder(self):
         recs = [root8(T1)] + [bash8(T1 + 60 * i, 201 + i, cmd)
                               for i, cmd in enumerate(["ls", "ls -la", "ls src"])]
-        row = row_of(reduce(recs))
-        self.assertEqual(row["drift"]["cwd_anchor"], HOME + "/proj")
+        view = reduced(recs)
+        row = row_of(view.payload)
+        self.assertEqual(anchor_of(view.reducers["trajectories"], row), HOME + "/proj")
         self.assertEqual(row["phases"]["headline"], "proj")
         self.assertEqual(labels(row["phases"]["tasks"]), ["Read proj"])
 
@@ -608,8 +614,9 @@ class RowTasksTest(unittest.TestCase):
         cmds = ["cd /home/alice/proj/wt && ls", "cd /home/alice/proj/wt && ls -la",
                 "cd /home/alice/proj/wt && ls src"]
         recs = [root8(T1)] + [bash8(T1 + 60 * i, 201 + i, cmd) for i, cmd in enumerate(cmds)]
-        row = row_of(reduce(recs))
-        self.assertEqual(row["drift"]["cwd_anchor"], HOME + "/proj")
+        view = reduced(recs)
+        row = row_of(view.payload)
+        self.assertEqual(anchor_of(view.reducers["trajectories"], row), HOME + "/proj")
         self.assertEqual(row["phases"]["headline"], "proj")
 
     def test_a_row_whose_only_folder_is_the_users_home_has_no_project(self):
@@ -653,7 +660,7 @@ class RowTasksTest(unittest.TestCase):
         self.assertEqual(row_of(live.traj.result())["phases"]["headline"], "alpha")
         live.feed([root8(T1 + 200, cwd=HOME + "/beta")])
         row = row_of(live.traj.result())
-        self.assertEqual(row["drift"]["cwd_anchor"], HOME + "/beta")
+        self.assertEqual(anchor_of(live.traj, row), HOME + "/beta")
         self.assertEqual(row["phases"]["headline"], "beta")
 
     def test_without_a_launch_folder_the_project_is_the_folder_cd_into_most(self):

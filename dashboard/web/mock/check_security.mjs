@@ -60,13 +60,14 @@ test('on the fixture, each check says what it found, and the one with no panel s
   const c = byKey(S.securityChecks(FIX, ALL));
   assert.equal(c['launch:bypassed'].state, 'flag');
   assert.match(c['launch:bypassed'].what, /^2 agent sessions launched with a bypass flag$/);
-  // the Sandbox tab's plate prints the same share: pc() rounds a share of 10% or more to a whole one
+  // the share of the sessions it can judge, as the approval table under it: pc() rounds a share of
+  // 10% or more to a whole one
   assert.match(c['launch:bypassed'].note, /^12% of the 17 agent sessions whose launch flags are readable · it acts without asking$/);
   assert.equal(c['launch:auto'].state, 'flag');
   assert.match(c['launch:auto'].what, /^7 agent sessions launched in auto mode$/);
   assert.equal(c['sandbox:not'].state, 'flag');
   assert.match(c['sandbox:not'].what, /^708 agent tool calls not sandboxed$/);
-  // the same share as the Sandbox plate: sandboxed of the known, a failed start counted as not
+  // the same share as the tool-call table under it: sandboxed of the known, a failed start counted as not
   assert.match(c['sandbox:not'].note, /^5\.3% of the 778 agent tool calls whose outcome is known ran sandboxed · 6 agent sessions had none sandboxed$/);
   assert.equal(c['sandbox:failed'].state, 'flag');
   assert.match(c['sandbox:failed'].what, /^29 agent sandboxes failed to start$/);
