@@ -164,5 +164,20 @@ jobs:
       - name: "check: css"
         run: npm run check:css
 
+      - name: "check: shares"
+        run: npm run check:shares
+
+      - name: "check: panels"
+        run: npm run check:panels
+
+      - name: "check: live"
+        run: npm run check:live
+
+      - name: "check: lookup"
+        run: npm run check:lookup
+
+      - name: "check: procexit"
+        run: npm run check:procexit
+
       - name: Build
         run: npm run build
