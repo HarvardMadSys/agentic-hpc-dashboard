@@ -304,6 +304,12 @@ def row_after(recs, **thresholds):
     return row_of(fed(recs, configured(**thresholds)).result())
 
 
+def anchor_of(traj, row):
+    """The folder `row`'s project is named for (`cwd_anchor`)."""
+    s = next(s for s, _via, _k in traj.folded()[0] if s.sid == row["sid"])
+    return traj.cwd_anchor(s, traj.anchor_of(s))[0]
+
+
 class Live:
     """A reducer set fed in steps, as a live view is."""
 
@@ -555,8 +561,9 @@ class RowTasksTest(unittest.TestCase):
     def test_the_project_is_the_launch_folder(self):
         recs = [root8(T1)] + [bash8(T1 + 60 * i, 201 + i, cmd)
                               for i, cmd in enumerate(["ls", "ls -la", "ls src"])]
-        row = row_of(reduce(recs))
-        self.assertEqual(row["drift"]["cwd_anchor"], HOME + "/proj")
+        view = reduced(recs)
+        row = row_of(view.payload)
+        self.assertEqual(anchor_of(view.reducers["trajectories"], row), HOME + "/proj")
         self.assertEqual(row["phases"]["headline"], "proj")
         self.assertEqual(labels(row["phases"]["tasks"]), ["Read proj"])
 
@@ -607,8 +614,9 @@ class RowTasksTest(unittest.TestCase):
         cmds = ["cd /home/alice/proj/wt && ls", "cd /home/alice/proj/wt && ls -la",
                 "cd /home/alice/proj/wt && ls src"]
         recs = [root8(T1)] + [bash8(T1 + 60 * i, 201 + i, cmd) for i, cmd in enumerate(cmds)]
-        row = row_of(reduce(recs))
-        self.assertEqual(row["drift"]["cwd_anchor"], HOME + "/proj")
+        view = reduced(recs)
+        row = row_of(view.payload)
+        self.assertEqual(anchor_of(view.reducers["trajectories"], row), HOME + "/proj")
         self.assertEqual(row["phases"]["headline"], "proj")
 
     def test_a_row_whose_only_folder_is_the_users_home_has_no_project(self):
@@ -652,7 +660,7 @@ class RowTasksTest(unittest.TestCase):
         self.assertEqual(row_of(live.traj.result())["phases"]["headline"], "alpha")
         live.feed([root8(T1 + 200, cwd=HOME + "/beta")])
         row = row_of(live.traj.result())
-        self.assertEqual(row["drift"]["cwd_anchor"], HOME + "/beta")
+        self.assertEqual(anchor_of(live.traj, row), HOME + "/beta")
         self.assertEqual(row["phases"]["headline"], "beta")
 
     def test_without_a_launch_folder_the_project_is_the_folder_cd_into_most(self):

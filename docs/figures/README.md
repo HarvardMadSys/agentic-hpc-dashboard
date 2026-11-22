@@ -899,7 +899,7 @@ and for how the page draws them
   record (`_approval`, `_surface`); the process index; for running, the live tier's roots and tree
   ticks.
 - **Computation:** `TrajectoryReducer.feed` per exit: a `Session` per collector key (host, day,
-  class, key) with counts, CPU, run-length chains of tools and of purposes (400 runs), drift arrays,
+  class, key) with counts, CPU, run-length chains of tools and of purposes (400 runs), its first cwd,
   each process's own disk bytes (BUILD), and its call log (`_phase`, bottom up): an agent's direct
   children, or, in a session no agent runs, the jobs its terminals' shells ran, known by each
   record's `pgrp` and `sid`. At read (`result`), sessions idle past the longer of 2 h and the window
@@ -908,7 +908,7 @@ and for how the page draws them
   the window's sessions (recency over rooted ones only); each listed session gets a row (`_row`)
   with its phase block (SE-3). `Aggregator._running_rows` marks the newest row of each agent whose
   root's records arrived in the last 600 s, with its tree's census.
-- **Cost:** per record, a few adds, a run-length push, the drift arrays and the phase join (pending
+- **Cost:** per record, a few adds, a run-length push and the phase join (pending
   entries up to `pend_max`, 50,000; a record of a session no agent runs whose groups were not kept
   is counted, `phase_ungrouped`, and joins nothing). Per read, under the aggregator's lock: the fold
   of every held key when anything changed ("half a second to most of one" at 24 h on rtx6000a,
@@ -1436,8 +1436,7 @@ See [Is each collector OK?](../../dashboard/README.md#is-each-collector-ok). No 
 What the service computes and serves but no figure draws: each costs its reducer's work, and some
 reach Ask LLM's snapshot or a panel's basis note.
 
-- **`trajectories`' `drift`** (cwd drift and the purpose mix's Jensen-Shannon divergence, per row),
-  `by_key_type` and `by_class_counts`.
+- **`trajectories`' `by_key_type` and `by_class_counts`**.
 
 ## What is slow
 

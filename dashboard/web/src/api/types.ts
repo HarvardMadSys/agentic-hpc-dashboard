@@ -943,7 +943,6 @@ export interface TrajRow {
   /** collector session keys folded into this row; 1 when nothing was folded */
   fragments?: number;
   owner_via?: OwnerVia | null;
-  drift?: Drift;
   host: string;
   user: string;
   actor3: string | null;
@@ -1246,28 +1245,6 @@ export interface TrajNav {
 }
 
 /* ---------------------------------------------------------- agents (cascades) */
-
-/** Two process-level proxies for an agent leaving its task, carried by
- *  trajectory rows (`rc_dashboard/reducers/trajectories.py: drift`). Neither
- *  sees the context. The Agents page does not use them: it shows where an
- *  agent worked instead (`Workspace`). */
-export interface Drift {
-  n: number;
-  capped: boolean;
-  min_n: number;
-  /** Jensen-Shannon divergence, first vs last third of the purpose mix; null below min_n */
-  mix_jsd: number | null;
-  mix_first: [string, number][] | null;
-  mix_last: [string, number][] | null;
-  cwd_coverage_pct: number | null;
-  cwd_anchor: string | null;
-  cwd_anchor_src: 'agent' | 'first_call' | null;
-  cwd_outside_pct: number | null;
-  cwd_distinct: number;
-  cwd_top: [string, number][];
-  cwd_first: string | null;
-  cwd_last: string | null;
-}
 
 export type CascadeRole = 'agent' | 'infra' | 'client';
 export type CascadeVia = 'ancestor' | 'spawned_by' | 'same_user_daemon' | 'tree_root';
