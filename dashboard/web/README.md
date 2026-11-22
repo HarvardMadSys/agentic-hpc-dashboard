@@ -66,6 +66,7 @@ npm run check:security # a security check with no panel behind it says "not chec
 npm run check:hpc    # abnormal Slurm activity is worded from the service's thresholds, and never none of a panel not judged
 npm run check:io     # the per-tool disk chart keeps the heaviest on each counter, a 0 as 0, one scale
 npm run check:tabs   # sessions are the Agents tab's last part, a user's open under their portrait, and every link to one lands
+npm run check:internal # a per-process distribution of all 0s reads "not measured", never 0; a measured 0 stays 0
 npm run preview      # serve dist/ locally (no API)
 ```
 
@@ -122,7 +123,8 @@ Research-integrity constraints: breaking one is a reporting error, not a styling
    **fake data** pill.
 6. **Coverage is part of the number**: `<Coverage>`, `<AccumCell>` and `<QuantCells>` print
    `coverage_pct` beside every value that has one, and an accumulator or quantile with `n: 0`
-   reads **`not measured`**, never `0`.
+   reads **`not measured`**, never `0`, as does a quantile the service flags `all_zero` (every
+   value exactly 0: a counter the collector could not fill), in Internal's distributions too.
 7. **Data only**: a panel holds its title, its feed and the chart or table. Every `notes`,
    `basis`, `cpu_basis`, `scope` or `dedup.rule` string goes in `<Basis>`, collapsed at the
    panel's foot, or in a `data-tip`.

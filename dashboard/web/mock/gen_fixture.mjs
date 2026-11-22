@@ -14,6 +14,7 @@
  *   - a feed whose lag_s exceeds its own max_age_s (stale)
  *   - rate bins that are `null` (gaps), including one long outage
  *   - accumulators with `n: 0, coverage_pct: 0` ("not measured", never 0)
+ *   - a quantile whose every value is exactly 0 (`all_zero`: not measured, never 0)
  *   - an `exited before read` (key `denied`) slice, distinct from `unsandboxed`,
  *     and a session whose every sandbox attempt failed
  *   - a trajectory list dominated by one user
@@ -232,6 +233,17 @@ const quant = (n, spine, coverage = 100, sampled = false) => ({
   sampled,
   sample_n: sampled ? 250_000 : null,
   coverage_pct: coverage,
+});
+/* A field on every record and exactly 0 on every one: a counter the collector could not fill, sent
+ * as 0s. The service flags it (`Quant.as_dict`, rc_dashboard/reducers/__init__.py), and the page
+ * reads it as not measured. */
+const allZero = (n, coverage = 100) => ({
+  ...quant(n, [0, 0, 0, 0, 0, 0, 0, 0], coverage),
+  p1: 0,
+  min: 0,
+  zero_pct: 100,
+  all_zero: true,
+  suspect: 'every value is exactly 0 -- treat as not measured, not as a measured zero',
 });
 const accum = (total, n, coverage) => ({
   total,
@@ -481,7 +493,11 @@ function resources(nowEpoch) {
       sched_wait_s: accum(wait, Math.round((events * cov) / 100), cov),
       quants: {
         cpu_s: quant(events, [0.001, 0.002, 0.006, 0.028, 0.184, 4.82, 3_118.4, 0.019], 100, events > 2_000_000),
-        peak_rss_mb: quant(events, [1.8, 2.9, 5.4, 18.2, 84.6, 1_218.4, 41_882.6, 42.1], 96.8),
+        /* the IDE's peak memory is 0 on every exit, as in a capture whose collector read
+           mm->hiwater_rss after the kernel had cleared task->mm: not measured, never 0 MB */
+        peak_rss_mb: c === 'ide'
+          ? allZero(events, 96.8)
+          : quant(events, [1.8, 2.9, 5.4, 18.2, 84.6, 1_218.4, 41_882.6, 42.1], 96.8),
         sched_wait_s: quant(Math.round((events * cov) / 100), [0.0002, 0.0008, 0.004, 0.026, 0.188, 3.42, 188.6, 0.041], cov),
         duration_s: quant(events, [0.004, 0.008, 0.021, 0.14, 1.82, 118.4, 88_442.6, 2.84], 100),
         on_cpu_frac: quant(Math.round((events * cov) / 100), [0.004, 0.018, 0.11, 0.42, 0.78, 0.98, 1.0, 0.26], cov),

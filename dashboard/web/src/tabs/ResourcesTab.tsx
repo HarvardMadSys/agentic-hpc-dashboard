@@ -219,7 +219,11 @@ function DistTable({ byClass, have, on }: { byClass: Resources['by_class']; have
                     const isMax = k === 'max' && top;
                     return (
                       <td key={c + k} className={`num${i === 0 ? ' g0' : ''}`} style={tint(c)}>
-                        {v == null ? DASH : isMax ? <span className="term" data-tip={maxTip(top)}>{f(v)}</span> : f(v)}
+                        {q?.all_zero ? (
+                          // every value exactly 0: a counter the collector could not fill, not a
+                          // measured 0. Said once, as QuantCells says it, and a dash for the rest.
+                          i === 0 ? <span className="nm" data-tip={q.suspect ?? undefined}>not measured</span> : DASH
+                        ) : v == null ? DASH : isMax ? <span className="term" data-tip={maxTip(top)}>{f(v)}</span> : f(v)}
                       </td>
                     );
                   });
