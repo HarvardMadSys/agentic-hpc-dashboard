@@ -393,8 +393,9 @@ class TestRun(Rig):
     def test_roots(self):
         out = self.run_pull("roots")
         self.assertEqual(out.splitlines(), [
-            "RC_DASH_EBPF_ROOTS=%s/ebpf/n1:%s/ebpf/n2" % (self.mirror, self.mirror),
-            "RC_DASH_NODE_ROOTS=%s/node/n1:%s/node/n2" % (self.mirror, self.mirror)])
+            "RC_DASH_EBPF_ROOTS=%s/ebpf/*" % self.mirror,
+            "RC_DASH_NODE_ROOTS=%s/node/*" % self.mirror,
+            "RC_DASH_TRANSPORT_FILES=%s/.state/*.json" % self.mirror])
 
     def test_without_the_node_tier_its_root_is_named_missing(self):
         """Empty, the dashboard would look in its default places, this host's own
@@ -465,6 +466,249 @@ class TestSettings(unittest.TestCase):
         self.assertIn("ControlPath", s.ssh())
         s = self.load("FLEET_HOSTS=a\nFLEET_MIRROR=/%s\n" % ("x" * 39))
         self.assertNotIn("ControlPath", s.ssh())
+
+
+RSYNC_STUB = """#!/bin/bash
+# rsync as a node that cannot be reached: log the source asked for, and fail.
+for a in "$@"; do case $a in *:*/) echo "$a" >> "$RSYNC_LOG" ;; esac; done
+echo "rsync: connection unexpectedly closed" >&2
+exit 12
+"""
+
+
+class StubRig(unittest.TestCase):
+    """pull.py with a stand-in rsync that fails at once: what a pass asks for, and what
+    the loop and `status` make of it, with no rsync installed."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pull-stub-")
+        self.mirror = os.path.join(self.tmp, "mirror")
+        self.rsync = os.path.join(self.tmp, "rsync")
+        with open(self.rsync, "w") as fh:
+            fh.write(RSYNC_STUB)
+        os.chmod(self.rsync, 0o755)
+        self.rsync_log = os.path.join(self.tmp, "rsync.log")
+        self.conf = os.path.join(self.tmp, "fleet.env")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def settings(self, hosts, **over):
+        vals = {"FLEET_HOSTS": hosts, "FLEET_RSYNC": self.rsync, "FLEET_SSH_KEY": "",
+                "FLEET_EBPF_SOURCE": "ebpfm", "FLEET_NODE_SOURCE": "ebpfm-login",
+                "FLEET_MIRROR": self.mirror, "FLEET_FREE_MIN_GB": "0", "FLEET_INTERVAL_S": "5"}
+        vals.update(over)
+        with open(self.conf, "w") as fh:
+            for k, v in vals.items():
+                fh.write('%s="%s"\n' % (k, v))
+
+    def run_pull(self, *args, code=0):
+        p = subprocess.run([sys.executable, SCRIPT, "--config", self.conf] + list(args),
+                           env=dict(os.environ, RSYNC_LOG=self.rsync_log),
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, timeout=60)
+        self.assertEqual(p.returncode, code, p.stdout + p.stderr)
+        return p.stdout + p.stderr
+
+    def asked(self):
+        if not os.path.exists(self.rsync_log):
+            return []
+        with open(self.rsync_log) as fh:
+            return fh.read().split()
+
+    def state(self, name, **st):
+        d = os.path.join(self.mirror, ".state")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, name + ".json"), "w") as fh:
+            json.dump(st, fh)
+
+
+class TestNodesAndFolders(StubRig):
+    def test_each_node_is_asked_for_its_own_folders(self):
+        """A mixed fleet: an rrsync key's relative folders on one node, the RPM's full
+        paths on another, no node tier on a third."""
+        self.settings("a b=admin@10.0.0.2:/scratch/ebpfm:/scratch/ebpfm-login c:ebpfm:")
+        self.run_pull("once", code=1)
+        asked = self.asked()
+        self.assertIn("a:ebpfm/", asked)
+        self.assertIn("a:ebpfm-login/", asked[asked.index("a:ebpfm/"):] + ["a:ebpfm-login/"])
+        self.assertIn("admin@10.0.0.2:/scratch/ebpfm/", asked)
+        self.assertNotIn("admin@10.0.0.2:ebpfm/", asked)
+        self.assertIn("c:ebpfm/", asked)
+        self.assertNotIn("c:ebpfm-login/", asked)
+
+    def test_a_node_is_one_line_to_add(self):
+        with open(self.conf, "w") as fh:
+            fh.write('FLEET_HOSTS=\nFLEET_HOSTS+=" a"\nFLEET_HOSTS+=" b=10.0.0.2:x"\n'
+                     "FLEET_MIRROR=%s\n" % self.mirror)
+        self.assertEqual(self.run_pull("check").strip(), "2 node(s): a b")
+
+    def test_no_node_named_is_its_own_exit(self):
+        """rc-pull waits for its nodes (4), apart from a wrong file (2)."""
+        self.settings("")
+        self.assertIn("names no node", self.run_pull("check", code=4))
+        self.run_pull("roots", code=4)
+        self.run_pull("loop", code=4)
+        self.settings("a", FLEET_DAYS="x")
+        self.run_pull("check", code=2)
+
+    def test_roots_glob_over_the_copy(self):
+        self.settings("a b:ebpfm:")
+        out = self.run_pull("roots")
+        self.assertIn("RC_DASH_EBPF_ROOTS=%s/ebpf/*\n" % self.mirror, out)
+        self.assertIn("RC_DASH_NODE_ROOTS=%s/node/*\n" % self.mirror, out)
+        self.assertIn("RC_DASH_TRANSPORT_FILES=%s/.state/*.json\n" % self.mirror, out)
+        out = self.run_pull("roots", "--per-node")
+        self.assertIn("RC_DASH_EBPF_ROOTS=%s/ebpf/a:%s/ebpf/b\n" % (self.mirror, self.mirror), out)
+        self.assertIn("RC_DASH_NODE_ROOTS=%s/node/a\n" % self.mirror, out)
+        self.settings("a:ebpfm: b:ebpfm:")
+        self.assertIn("RC_DASH_NODE_ROOTS=%s/node-tier-not-pulled\n" % self.mirror,
+                      self.run_pull("roots"))
+
+
+class TestStatus(StubRig):
+    def test_a_node_with_no_good_pass_for_three_intervals_is_stale(self):
+        """rc-pull stopped (a fleet.env typo ends it for good) left every node's last
+        state `ok`, and status said ok, exit 0, for days."""
+        now = time.time()
+        self.settings("n1 n2 n3 n4", FLEET_INTERVAL_S="60")
+        self.state("n1", ok=True, ok_epoch=now - 3 * 86400 - 7200, attempt_epoch=now - 3 * 86400,
+                   tiers={"ebpf": {"bytes": 0}})
+        self.state("n2", ok=True, ok_epoch=now - 30, attempt_epoch=now - 30,
+                   tiers={"ebpf": {"bytes": 1234}})
+        self.state("n3", ok=False, ok_epoch=now - 7200, attempt_epoch=now - 7000,
+                   error="listing failed (rsync exit 255): Permission denied (publickey)")
+        out = self.run_pull("status", code=1)
+        self.assertRegex(out, r"n1\s+STALE\s+last ok 3d 2h ago\s+no pass for 3d 2h: is rc-pull running")
+        self.assertRegex(out, r"n2\s+ok\s+last ok \d+s ago\s+1234 B appended in the last pass")
+        self.assertRegex(out, r"n3\s+FAILED\s+last ok 2h 0m ago\s+listing failed .*Permission denied"
+                              r".*last tried 1h 56m ago: is rc-pull running")
+        self.assertRegex(out, r"n4\s+never\s+last ok never\s+no pass recorded")
+
+    def test_stale_threshold(self):
+        now = time.time()
+        self.settings("n1", FLEET_INTERVAL_S="60")
+        self.state("n1", ok=True, ok_epoch=now - 600, attempt_epoch=now - 600, tiers={})
+        self.assertIn("STALE", self.run_pull("status", code=1))
+        self.assertRegex(self.run_pull("status", "--stale", "15m"), r"n1\s+ok")
+        self.run_pull("status", "--stale", "soon", code=2)
+
+    def test_json(self):
+        now = time.time()
+        self.settings("n1 n2", FLEET_INTERVAL_S="60")
+        self.state("n1", ok=True, ok_epoch=now - 10, attempt_epoch=now - 10, tiers={},
+                   file_hosts=["login01"])
+        doc = json.loads(self.run_pull("status", "--json", code=1))
+        self.assertEqual(doc["stale_after_s"], 180)
+        rows = {r["host"]: r for r in doc["nodes"]}
+        self.assertEqual((rows["n1"]["state"], rows["n1"]["ok"], rows["n1"]["file_hosts"]),
+                         ("ok", True, ["login01"]))
+        self.assertEqual((rows["n2"]["state"], rows["n2"]["ok"]), ("never", False))
+
+    def test_the_state_file_says_what_the_dashboard_needs(self):
+        """The dashboard reads these files (RC_DASH_TRANSPORT_FILES): which copy, how
+        often, and the pass."""
+        self.settings("n1")
+        self.run_pull("once", code=1)
+        with open(os.path.join(self.mirror, ".state", "n1.json")) as fh:
+            st = json.load(fh)
+        self.assertEqual((st["host"], st["kind"], st["interval_s"], st["ok"]), ("n1", "rsync", 5, False))
+        self.assertIn("rsync exit 12", st["error"])
+        self.assertEqual(st["file_hosts"], [])
+        for k in ("attempt_epoch", "ok_epoch", "target"):
+            self.assertIn(k, st)
+
+    def test_ages(self):
+        self.assertEqual([pull.fmt_age(x) for x in (0, 42, 303, 11520, 266400)],
+                         ["0s", "42s", "5m 3s", "3h 12m", "3d 2h"])
+
+
+class TestReload(StubRig):
+    def test_sighup_starts_and_stops_nodes(self):
+        """A node added to fleet.env starts, and one taken out stops, with no restart of
+        the loop: `systemctl reload rc-pull`."""
+        self.settings("n1")
+        p = subprocess.Popen([sys.executable, SCRIPT, "--config", self.conf, "loop"],
+                             env=dict(os.environ, RSYNC_LOG=self.rsync_log),
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             universal_newlines=True)
+        state_dir = os.path.join(self.mirror, ".state")
+
+        def wait_for(path, newer_than=0):
+            deadline = time.time() + 30
+            while not (os.path.exists(path) and os.stat(path).st_mtime > newer_than):
+                self.assertLess(time.time(), deadline, "%s never written" % path)
+                time.sleep(0.1)
+
+        try:
+            wait_for(os.path.join(state_dir, "n1.json"))
+            self.settings("n1 n2")
+            p.send_signal(signal.SIGHUP)
+            wait_for(os.path.join(state_dir, "n2.json"))
+            self.settings("n2")
+            p.send_signal(signal.SIGHUP)
+            time.sleep(1.5)
+            t_gone = os.stat(os.path.join(state_dir, "n1.json")).st_mtime
+            wait_for(os.path.join(state_dir, "n2.json"), newer_than=time.time())
+            self.assertEqual(os.stat(os.path.join(state_dir, "n1.json")).st_mtime, t_gone,
+                             "n1 was taken out and still passes")
+            # a file that does not load keeps every node as it was
+            with open(self.conf, "a") as fh:
+                fh.write("FLEET_HOST=typo\n")
+            p.send_signal(signal.SIGHUP)
+            time.sleep(1)
+            self.assertIsNone(p.poll(), "a bad reload ended the loop")
+            p.send_signal(signal.SIGTERM)
+            out, _ = p.communicate(timeout=30)
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.communicate()
+        self.assertEqual(p.returncode, 0, out)
+        self.assertIn("1 node(s) | +n2", out.replace("reloaded %s: 2 node(s) | +n2" % self.conf,
+                                                     "1 node(s) | +n2"))
+        self.assertIn("-n1", out)
+        self.assertIn("every node stays as it was", out)
+        self.assertIn("did you mean FLEET_HOSTS", out)
+
+
+class TestAliases(unittest.TestCase):
+    def load(self, text):
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as fh:
+            fh.write(text)
+        try:
+            return pull.load(fh.name)
+        finally:
+            os.unlink(fh.name)
+
+    def test_the_name_every_kit_uses(self):
+        self.assertEqual(self.load("FLEET_HOSTS=a\nFREE_MIN_GB=5\n").free_min, 5 * (1 << 30))
+        self.assertEqual(self.load("FLEET_HOSTS=a\nFREE_MIN_GB=5\nFLEET_FREE_MIN_GB=5\n").free_min,
+                         5 * (1 << 30))
+        with self.assertRaises(pull.ConfigError) as cm:
+            self.load("FLEET_HOSTS=a\nFREE_MIN_GB=5\nFLEET_FREE_MIN_GB=7\n")
+        self.assertIn("settle on one", str(cm.exception))
+
+    def test_entries(self):
+        s = self.load('FLEET_HOSTS="a b=10.0.0.2:/scratch/ebpfm c:ebpfm: d=root@[fe80::1]:x:y"\n'
+                      "FLEET_USER=pull\n")
+        self.assertEqual(s.hosts, {"a": "pull@a", "b": "pull@10.0.0.2", "c": "pull@c",
+                                   "d": "root@[fe80::1]"})
+        self.assertEqual(s.sources_for("a"), {"ebpf": "/var/log/ebpfm", "node": "/var/log/ebpfm-login"})
+        self.assertEqual(s.sources_for("b"), {"ebpf": "/scratch/ebpfm", "node": "/var/log/ebpfm-login"})
+        self.assertEqual(s.sources_for("c"), {"ebpf": "ebpfm"})
+        self.assertEqual(s.sources_for("d"), {"ebpf": "x", "node": "y"})
+        for text, why in (('FLEET_HOSTS="b=host:"\n', "no eBPF-tier folder"),
+                          ('FLEET_HOSTS="b=host:-x"\n', "no spaces"),
+                          ('FLEET_HOSTS="b=:x"\n', "not NAME"),
+                          ('FLEET_HOSTS="b=h:x:y:z"\n', "not NAME")):
+            with self.assertRaises(pull.ConfigError) as cm:
+                self.load(text)
+            self.assertIn(why, str(cm.exception), text)
+
+    def test_no_node_is_its_own_error(self):
+        with self.assertRaises(pull.NoNodes):
+            self.load("FLEET_HOSTS=\n")
 
 
 class TestParts(unittest.TestCase):

@@ -2,12 +2,25 @@
 """pull.py: copy each fleet node's collector day-files to the dashboard's host, with rsync.
 
     pull.py [--config FILE] once     one pass over every node, then exit: 1 if a node failed
-    pull.py [--config FILE] loop     each node on its own, a pass every FLEET_INTERVAL_S
-    pull.py [--config FILE] status   each node's last pass, from the mirror's state folder
-    pull.py [--config FILE] roots    the dashboard's RC_DASH_EBPF_ROOTS and RC_DASH_NODE_ROOTS
+    pull.py [--config FILE] loop     each node on its own, a pass every FLEET_INTERVAL_S;
+                                     SIGHUP reads FILE again and starts or stops nodes
+    pull.py [--config FILE] status [--stale DURATION] [--json]
+                                     each node's last pass, from the mirror's state folder:
+                                     exit 1 if one FAILED, never ran, or is STALE (no good
+                                     pass for 3 x FLEET_INTERVAL_S, or DURATION)
+    pull.py [--config FILE] roots [--per-node]
+                                     the dashboard's RC_DASH_EBPF_ROOTS, RC_DASH_NODE_ROOTS
+                                     (a glob over the copy's nodes) and RC_DASH_TRANSPORT_FILES
+    pull.py [--config FILE] check    the nodes FILE names: exit 0, 4 if it names none, 2 if
+                                     it is wrong
 
-FILE (default /etc/rc-dashboard/fleet.env) holds KEY=VALUE lines; fleet.env.example
-explains each key. Every node keeps writing its own files, and this copies them: node
+Exit 2 for a wrong FILE, 3 when another pull.py holds the copy, 4 when FILE names no node
+(rc-pull.service starts again on none of them).
+
+FILE (default /etc/rc-dashboard/fleet.env) holds KEY=VALUE lines, and KEY+=VALUE to add to
+a list (as bash reads `FLEET_HOSTS+=" node03"`); fleet.env.example explains each key. A node
+may name its own source folders, for a fleet whose nodes differ:
+FLEET_HOSTS+=" node03=10.0.0.13:/scratch/ebpfm:/scratch/ebpfm-login". Every node keeps writing its own files, and this copies them: node
 NAME's eBPF tier into MIRROR/ebpf/NAME/<day>/, its node tier into MIRROR/node/NAME/<day>/,
 in the collector's own layout. The dashboard reads each MIRROR/<tier>/NAME as one root
 (`roots`), exactly as it would read the node's own folder.
@@ -80,6 +93,11 @@ SSH_OPTS = ["-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
             "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=4",
             "-o", "LogLevel=ERROR"]
 
+# A FLEET_HOSTS entry: NAME[=TARGET][:EBPF_SOURCE[:NODE_SOURCE]], a v6 TARGET in brackets.
+ENTRY_RE = re.compile(r"^(?P<name>[^=:\s]+)"
+                      r"(?:=(?P<target>[^:\[\]\s]*\[[0-9A-Fa-f:.%]+\]|[^:\s\[\]]+))?"
+                      r"(?::(?P<ebpf>[^:\s]*)(?::(?P<node>[^:\s]*))?)?\Z")
+
 DEFAULTS = {
     "FLEET_HOSTS": "",
     "FLEET_USER": "",
@@ -104,6 +122,10 @@ class ConfigError(Exception):
     pass
 
 
+class NoNodes(ConfigError):
+    """FLEET_HOSTS names no node: the copy waits for its nodes (exit 4)."""
+
+
 class PullError(Exception):
     pass
 
@@ -126,7 +148,8 @@ def say(msg):
 
 def parse_env(path):
     """KEY=VALUE lines, as a systemd EnvironmentFile or `. file` reads them: `#` starts a
-    comment line, and a value may be quoted. No $-expansion."""
+    comment line, and a value may be quoted. No $-expansion. KEY+=VALUE adds VALUE to
+    KEY's list, as bash does (`FLEET_HOSTS+=" node03"`), so a node is one line to add."""
     vals = {}
     with open(path) as fh:
         for n, line in enumerate(fh, 1):
@@ -139,9 +162,12 @@ def parse_env(path):
                 raise ConfigError("%s:%d: not KEY=VALUE: %r" % (path, n, line))
             k, v = line.split("=", 1)
             k, v = k.strip(), v.strip()
+            add = k.endswith("+")
+            if add:
+                k = k[:-1].rstrip()
             if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
                 v = v[1:-1]
-            vals[k] = v
+            vals[k] = (vals.get(k, "") + " " + v).strip() if add else v
     return vals
 
 
@@ -156,12 +182,33 @@ def _int(vals, key, lo, hi):
     return n
 
 
+# The names every kit gives the same setting (deploy/README.md, "Settings"), taken here
+# beside FLEET_*: one of them set two different ways is refused.
+ALIASES = {"FREE_MIN_GB": "FLEET_FREE_MIN_GB"}
+
+
+def _nearest(key, names):
+    """The known name `key` is one slip from, or None."""
+    import difflib
+    got = difflib.get_close_matches(key, names, n=1, cutoff=0.8)
+    return got[0] if got else None
+
+
 class Settings(object):
     def __init__(self, vals):
         unknown = sorted(k for k in vals if k.startswith("FLEET_") and k not in DEFAULTS)
         if unknown:
+            hints = ["%s (did you mean %s?)" % (k, _nearest(k, DEFAULTS)) if _nearest(k, DEFAULTS)
+                     else k for k in unknown]
             raise ConfigError("unknown setting(s) %s: fleet.env.example lists them all"
-                              % ", ".join(unknown))
+                              % ", ".join(hints))
+        vals = dict(vals)
+        for alias, key in ALIASES.items():
+            if alias in vals:
+                if key in vals and vals[key] != vals[alias]:
+                    raise ConfigError("%s=%r and %s=%r say two things; settle on one"
+                                      % (key, vals[key], alias, vals[alias]))
+                vals.setdefault(key, vals[alias])
         v = dict(DEFAULTS)
         v.update({k: x for k, x in vals.items() if k in DEFAULTS})
         self.vals = v
@@ -184,10 +231,8 @@ class Settings(object):
             raise ConfigError("FLEET_FREE_MIN_GB=%r is not a number" % v["FLEET_FREE_MIN_GB"])
         self.sources = {}
         for tier, key in TIERS:
-            src = v[key].rstrip("/")
+            src = _source(v[key], key)
             if src:
-                if not PLAIN_PATH.match(src) or src.startswith("-"):
-                    raise ConfigError("%s=%r: no spaces, quotes, or backslashes" % (key, v[key]))
                 self.sources[tier] = src
         if "ebpf" not in self.sources:
             raise ConfigError("FLEET_EBPF_SOURCE is empty: the eBPF tier is the one feed the "
@@ -195,17 +240,26 @@ class Settings(object):
         for key in ("FLEET_SSH_KEY", "FLEET_MIRROR", "FLEET_USER", "FLEET_DOMAIN"):
             if v[key] and not PLAIN_PATH.match(v[key]):
                 raise ConfigError("%s=%r: no spaces, quotes, or backslashes" % (key, v[key]))
+        self.node_sources = {}
         self.hosts = self._hosts(v)
 
     def _hosts(self, v):
         """{name: ssh target}. An entry is NAME, or NAME=TARGET for a node that ssh
-        reaches by another name: [user@]host, or a Host alias in ~/.ssh/config."""
+        reaches by another name: [user@]host, [user@][v6 address], or a Host alias in
+        ~/.ssh/config. Either may end in :EBPF_SOURCE[:NODE_SOURCE], that node's own
+        folders where the fleet's nodes differ (an rrsync key on some, full paths or an
+        RPM's /scratch/ebpfm on others); NODE_SOURCE empty: its node tier is not pulled.
+        Sets node_sources[name] = {tier: folder}."""
         out = {}
         for entry in v["FLEET_HOSTS"].replace(",", " ").split():
-            name, _, target = entry.partition("=")
-            if not NAME_RE.match(name):
+            m = ENTRY_RE.match(entry)
+            if not m:
+                raise ConfigError("FLEET_HOSTS: %r is not NAME[=TARGET][:EBPF_SOURCE"
+                                  "[:NODE_SOURCE]]" % entry)
+            if not NAME_RE.match(m.group("name")):
                 raise ConfigError("FLEET_HOSTS: %r is not a node name (letters, digits, "
-                                  ". _ -)" % name)
+                                  ". _ -)" % m.group("name"))
+            name, target = m.group("name"), m.group("target")
             if name in out:
                 raise ConfigError("FLEET_HOSTS names %s twice" % name)
             if not target:
@@ -215,9 +269,31 @@ class Settings(object):
             if not PLAIN_PATH.match(target) or target.startswith("-"):
                 raise ConfigError("FLEET_HOSTS: %r is not an ssh target" % target)
             out[name] = target
+            src = dict(self.sources)
+            if m.group("ebpf") is not None:
+                ebpf = _source(m.group("ebpf"), "FLEET_HOSTS (%s)" % name)
+                if not ebpf:
+                    raise ConfigError("FLEET_HOSTS: %s names no eBPF-tier folder after its ':'"
+                                      % name)
+                src["ebpf"] = ebpf
+            if m.group("node") is not None:
+                node = _source(m.group("node"), "FLEET_HOSTS (%s)" % name)
+                if node:
+                    src["node"] = node
+                else:
+                    src.pop("node", None)
+            self.node_sources[name] = src
         if not out:
-            raise ConfigError("FLEET_HOSTS names no node")
+            raise NoNodes("FLEET_HOSTS names no node: name them in %s (or `rc-deploy add-node`)"
+                          % "fleet.env")
         return out
+
+    def sources_for(self, name):
+        """{tier: folder on the node} for one node: its own, or the fleet's."""
+        return self.node_sources.get(name, self.sources)
+
+    def pulls_node_tier(self):
+        return any("node" in self.sources_for(n) for n in self.hosts)
 
     def ssh(self):
         """The remote shell rsync runs (`rsync -e`), as one string."""
@@ -239,16 +315,34 @@ class Settings(object):
     def root(self, tier, name):
         return os.path.join(self.mirror, tier, name)
 
-    def roots(self):
-        """The dashboard's two roots variables, as KEY=VALUE lines. With no node tier
-        pulled, its variable names a folder that is not there: left empty, the dashboard
-        would look in its default places, and could read this host's own collector."""
-        ebpf = ":".join(self.root("ebpf", n) for n in self.hosts)
-        if "node" in self.sources:
-            node = ":".join(self.root("node", n) for n in self.hosts)
+    def roots(self, per_node=False):
+        """The dashboard's settings for the copy, as KEY=VALUE lines: its two roots, a glob
+        over the copy's node folders that the dashboard expands again at every rescan, so
+        a node added to FLEET_HOSTS needs no restart of it (per_node: one root per node
+        named now, colon-separated, as before); and RC_DASH_TRANSPORT_FILES, each node's
+        state file, for the dashboard's status. With no node tier pulled, its variable
+        names a folder that is not there: left empty, the dashboard would look in its
+        default places, and could read this host's own collector."""
+        if per_node:
+            ebpf = ":".join(self.root("ebpf", n) for n in self.hosts)
+            node = ":".join(self.root("node", n) for n in self.hosts
+                            if "node" in self.sources_for(n))
         else:
+            ebpf = os.path.join(self.mirror, "ebpf", "*")
+            node = os.path.join(self.mirror, "node", "*")
+        if not self.pulls_node_tier():
             node = os.path.join(self.mirror, "node-tier-not-pulled")
-        return "RC_DASH_EBPF_ROOTS=%s\nRC_DASH_NODE_ROOTS=%s\n" % (ebpf, node)
+        return ("RC_DASH_EBPF_ROOTS=%s\nRC_DASH_NODE_ROOTS=%s\nRC_DASH_TRANSPORT_FILES=%s\n"
+                % (ebpf, node, os.path.join(self.state, "*.json")))
+
+
+def _source(raw, key):
+    """A source folder on the node, as rsync is given it: no trailing slash, no blanks,
+    quotes or backslashes, and not an option. Empty stays empty."""
+    src = raw.rstrip("/")
+    if src and (not PLAIN_PATH.match(src) or src.startswith("-")):
+        raise ConfigError("%s=%r: no spaces, quotes, or backslashes" % (key, raw))
+    return src
 
 
 def load(path):
@@ -480,31 +574,41 @@ class Puller(object):
             prune(root, self.s.keep_days, self.name, newest_days(remote, self.s.days))
         return {"files": len(remote), "appended": len(todo["append"]), "bytes": behind,
                 "fetched_gz": len(todo["fetch"]), "sealed": len(sealed),
-                "replaced": len(todo["replace"])}
+                "replaced": len(todo["replace"]),
+                "hosts": sorted({host_of(rel.split("/", 1)[1]) for rel in remote})}
 
     def pull(self):
-        """One pass over the node's tiers. Returns the state recorded for it."""
+        """One pass over the node's tiers. Returns the state recorded for it: the state
+        file the dashboard reads (RC_DASH_TRANSPORT_FILES) and `status` prints. Besides
+        the pass, it says what kind of copy this is, how often it runs, and the host names
+        the node's day-files carry (`file_hosts`), which may differ from its name here."""
         t0 = time.time()
-        state = {"host": self.name, "target": self.target, "attempt_epoch": t0}
+        state = {"host": self.name, "target": self.target, "attempt_epoch": t0,
+                 "kind": "rsync", "interval_s": self.s.interval, "file_hosts": []}
         try:
             free = disk_free(self.s.mirror)
             if free is not None and free < self.s.free_min:
                 raise PullError("paused: %.1f GB free where the copy is, under FLEET_FREE_MIN_GB"
                                 % (free / float(1 << 30)))
             tiers = {}
+            sources = self.s.sources_for(self.name)
             for tier, _key in TIERS:
-                if tier in self.s.sources and not self.stop.is_set():
+                if tier in sources and not self.stop.is_set():
                     try:
-                        tiers[tier] = self.pull_tier(tier, self.s.sources[tier])
+                        tiers[tier] = self.pull_tier(tier, sources[tier])
                     except Missing:
                         # The node tier is optional: a node may run the eBPF tier alone.
                         # The eBPF tier is the one feed the dashboard needs.
                         if tier == "ebpf":
                             raise
-                        tiers[tier] = {"missing": self.s.sources[tier]}
+                        tiers[tier] = {"missing": sources[tier]}
             if self.stop.is_set():
                 raise PullError("stopped")
-            state.update(ok=True, ok_epoch=time.time(), tiers=tiers, error=None)
+            hosts = set()
+            for r in tiers.values():
+                hosts.update(r.pop("hosts", ()))
+            state.update(ok=True, ok_epoch=time.time(), tiers=tiers, error=None,
+                         file_hosts=sorted(hosts))
         except (PullError, OSError) as e:
             state.update(ok=False, error=str(e))
         state["seconds"] = round(time.time() - t0, 3)
@@ -520,11 +624,27 @@ class Puller(object):
                     for t, r in sorted(state["tiers"].items()))))
         else:
             state["ok_epoch"] = prev.get("ok_epoch")
+            state["file_hosts"] = prev.get("file_hosts") or []
             if state["error"] != "stopped":
                 say("%s: FAILED: %s" % (self.name, state["error"]))
         if state.get("error") != "stopped":
             write_state(self.s, self.name, state)
         return state
+
+
+STREAM_SUFFIXES = (".exits", ".snapshot")
+
+
+def host_of(name):
+    """`<host>[.<stream>].jsonl[.gz]` -> `<host>`, as the dashboard names a day-file's
+    host: only a stream suffix it knows is cut, since a host name may hold dots."""
+    for ext in (".gz", ".jsonl"):
+        if name.endswith(ext):
+            name = name[:-len(ext)]
+    for suf in STREAM_SUFFIXES:
+        if name.endswith(suf):
+            return name[:-len(suf)]
+    return name
 
 
 def _last(err, n=3):
@@ -632,7 +752,8 @@ def prepare(s):
 def cmd_once(s):
     stop = threading.Event()
     pullers = [Puller(s, n, stop) for n in s.hosts]
-    _on_term(stop, pullers)
+    _on_term(stop, lambda: pullers)
+
     def one(p):
         try:
             return p.pull()
@@ -645,67 +766,181 @@ def cmd_once(s):
     return 0 if all(st["ok"] for st in states) else 1
 
 
-def cmd_loop(s):
-    stop = threading.Event()
-    pullers = [Puller(s, n, stop) for n in s.hosts]
-    _on_term(stop, pullers)
-    say("pulling %d node(s) every %d s into %s" % (len(pullers), s.interval, s.mirror))
+class Loop(object):
+    """`loop`: each node on its own thread, a pass every FLEET_INTERVAL_S. SIGHUP reads
+    the settings file again: a node added starts, a node taken out stops (its copy
+    stays), a node whose target or folders changed starts again, and the others take
+    the new settings at their next pass. A file that does not load keeps every node as
+    it was, and says why; a new FLEET_MIRROR needs a restart, since the copy and its
+    lock are where they are."""
 
-    def run(i, p):
+    def __init__(self, s, path):
+        self.s, self.path = s, path
+        self.stop = threading.Event()
+        self.reload_wanted = threading.Event()
+        self.nodes = {}                  # name -> (Puller, Thread)
+
+    def start(self, name, delay=0.0):
+        p = Puller(self.s, name, threading.Event())
+        t = threading.Thread(target=self.run, args=(p, delay), name=name)
+        t.daemon = True
+        self.nodes[name] = (p, t)
+        t.start()
+
+    def retire(self, name):
+        p, t = self.nodes.pop(name)
+        p.stop.set()
+        p.cancel()
+        return t
+
+    def run(self, p, delay):
         # Spread the first passes over the interval, so the nodes are not asked at once.
-        if stop.wait(s.interval * float(i) / len(pullers)):
+        if p.stop.wait(delay):
             return
-        while not stop.is_set():
+        while not p.stop.is_set():
             t0 = time.time()
             try:
                 p.pull()
             except Exception as e:      # noqa: BLE001 -- one node's surprise stops only it
                 say("%s: pass ended with %s: %s" % (p.name, type(e).__name__, e))
-            stop.wait(max(1.0, s.interval - (time.time() - t0)) + random.uniform(0, 1))
+            p.stop.wait(max(1.0, p.s.interval - (time.time() - t0)) + random.uniform(0, 1))
 
-    threads = [threading.Thread(target=run, args=(i, p), name=p.name)
-               for i, p in enumerate(pullers)]
-    for t in threads:
-        t.daemon = True
-        t.start()
-    while any(t.is_alive() for t in threads):
-        for t in threads:
-            t.join(0.5)
-    say("stopped")
-    return 0
+    def reload(self):
+        try:
+            new = load(self.path)
+        except ConfigError as e:
+            say("reload: %s; every node stays as it was" % e)
+            return
+        if new.mirror != self.s.mirror:
+            say("reload: FLEET_MIRROR is now %s; restart rc-pull to move the copy there. "
+                "Every node stays as it was" % new.mirror)
+            return
+        old, self.s = self.s, new
+        gone = [n for n in self.nodes if n not in new.hosts]
+        changed = [n for n in self.nodes if n in new.hosts and (
+            new.hosts[n] != old.hosts.get(n) or new.sources_for(n) != old.sources_for(n))]
+        added = [n for n in new.hosts if n not in self.nodes]
+        retired = [self.retire(n) for n in gone + changed]
+        for t in retired:
+            t.join(30)
+        for p, _t in self.nodes.values():
+            p.s = new                    # taken at its next pass
+        for i, n in enumerate(changed + added):
+            self.start(n, delay=new.interval * float(i) / max(1, len(changed + added)))
+        say("reloaded %s: %d node(s)%s%s%s" % (
+            self.path, len(self.nodes),
+            "".join(" | +%s" % n for n in added), "".join(" | -%s" % n for n in gone),
+            "".join(" | ~%s" % n for n in changed)))
+
+    def main(self):
+        def term(signum, _frame):
+            self.stop.set()
+            for p, _t in list(self.nodes.values()):
+                p.stop.set()
+                p.cancel()
+
+        signal.signal(signal.SIGTERM, term)
+        signal.signal(signal.SIGINT, term)
+        signal.signal(signal.SIGHUP, lambda *a: self.reload_wanted.set())
+        names = list(self.s.hosts)
+        say("pulling %d node(s) every %d s into %s" % (len(names), self.s.interval,
+                                                         self.s.mirror))
+        for i, n in enumerate(names):
+            self.start(n, delay=self.s.interval * float(i) / len(names))
+        while not self.stop.is_set():
+            if self.reload_wanted.is_set():
+                self.reload_wanted.clear()
+                self.reload()
+            self.stop.wait(0.5)
+        for _p, t in list(self.nodes.values()):
+            t.join(30)
+        say("stopped")
+        return 0
+
+
+def cmd_loop(s, path):
+    return Loop(s, path).main()
 
 
 def _on_term(stop, pullers):
     def handler(signum, _frame):
         stop.set()
-        for p in pullers:
+        for p in pullers():
             p.cancel()
     signal.signal(signal.SIGTERM, handler)
     signal.signal(signal.SIGINT, handler)
 
 
-def cmd_status(s):
+def fmt_age(seconds):
+    """`42s`, `5m 3s`, `3h 12m`, `3d 2h`: an age a person reads at a glance."""
+    s = int(max(0, seconds))
+    if s < 60:
+        return "%ds" % s
+    if s < 3600:
+        return "%dm %ds" % (s // 60, s % 60)
+    if s < 86400:
+        return "%dh %dm" % (s // 3600, s % 3600 // 60)
+    return "%dd %dh" % (s // 86400, s % 86400 // 3600)
+
+
+def parse_duration(text):
+    """`90`, `90s`, `15m`, `2h`, `1d`: seconds."""
+    m = re.match(r"^\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*\Z", str(text))
+    if not m:
+        raise ValueError("%r is not a duration such as 300, 15m, 2h or 1d" % text)
+    return float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
+def node_status(s, name, now, stale_s):
+    """One node's verdict from its state file: ok, STALE (no good pass for stale_s:
+    rc-pull is stopped, or every pass hangs), FAILED, or never."""
+    st = read_state(s, name)
+    row = {"host": name, "kind": "rsync", "ok": False, "last_ok_age_s": None,
+           "last_attempt_age_s": None, "error": None, "file_hosts": st.get("file_hosts") or [],
+           "bytes_last_pass": None}
+    if not st:
+        row.update(state="never", error="no pass recorded: is rc-pull running?")
+        return row
+    if st.get("ok_epoch"):
+        row["last_ok_age_s"] = round(now - st["ok_epoch"], 1)
+    if st.get("attempt_epoch"):
+        row["last_attempt_age_s"] = round(now - st["attempt_epoch"], 1)
+    if not st.get("ok"):
+        row.update(state="FAILED", error=st.get("error") or "no message")
+    elif row["last_ok_age_s"] is not None and row["last_ok_age_s"] > stale_s:
+        row.update(state="STALE", error="no pass for %s: is rc-pull running? "
+                                        "(systemctl status rc-pull)" % fmt_age(row["last_ok_age_s"]))
+    else:
+        row.update(state="ok", ok=True)
+        row["bytes_last_pass"] = sum(t.get("bytes", 0) for t in (st.get("tiers") or {}).values())
+    return row
+
+
+def cmd_status(s, stale_s=None, as_json=False):
     now = time.time()
-    rows = []
-    worst = 0
-    for name in s.hosts:
-        st = read_state(s, name)
-        if not st:
-            rows.append((name, "never", "-", "no pass recorded"))
-            worst = max(worst, 1)
-            continue
-        ok_at = st.get("ok_epoch")
-        age = "%ds ago" % (now - ok_at) if ok_at else "never"
-        if st.get("ok"):
-            behind = sum(t.get("bytes", 0) for t in (st.get("tiers") or {}).values())
-            rows.append((name, "ok", age, "%d B appended in the last pass" % behind))
-        else:
-            rows.append((name, "FAILED", age, st.get("error") or ""))
-            worst = max(worst, 1)
-    w = max(len(r[0]) for r in rows)
+    stale_s = stale_s if stale_s is not None else 3 * s.interval
+    rows = [node_status(s, n, now, stale_s) for n in s.hosts]
+    worst = 0 if all(r["ok"] for r in rows) else 1
+    if as_json:
+        print(json.dumps({"stale_after_s": stale_s, "nodes": rows}, sort_keys=True))
+        return worst
+    w = max(len(r["host"]) for r in rows)
     for r in rows:
-        print("%-*s  %-6s  last ok %-12s  %s" % (w, r[0], r[1], r[2], r[3]))
+        age = ("%s ago" % fmt_age(r["last_ok_age_s"])) if r["last_ok_age_s"] is not None else "never"
+        if r["ok"]:
+            detail = "%d B appended in the last pass" % r["bytes_last_pass"]
+        else:
+            detail = r["error"]
+            if r["state"] == "FAILED" and r["last_attempt_age_s"] is not None \
+                    and r["last_attempt_age_s"] > stale_s:
+                detail += " (last tried %s ago: is rc-pull running?)" % fmt_age(r["last_attempt_age_s"])
+        print("%-*s  %-6s  last ok %-12s  %s" % (w, r["host"], r["state"], age, detail))
     return worst
+
+
+def cmd_check(s):
+    print("%d node(s): %s" % (len(s.hosts), " ".join(sorted(s.hosts))))
+    return 0
 
 
 def main(argv=None):
@@ -713,25 +948,41 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default=os.environ.get("FLEET_CONFIG", DEFAULT_CONFIG),
                     help="the settings file (default %(default)s)")
-    ap.add_argument("command", choices=("once", "loop", "status", "roots"))
+    ap.add_argument("command", choices=("once", "loop", "status", "roots", "check"))
+    ap.add_argument("--stale", default=None, metavar="DURATION",
+                    help="status: a node with no good pass for this long is STALE "
+                         "(default 3 x FLEET_INTERVAL_S)")
+    ap.add_argument("--json", action="store_true", help="status: one JSON document")
+    ap.add_argument("--per-node", action="store_true",
+                    help="roots: one root per node named now, instead of a glob")
     args = ap.parse_args(argv)
     try:
         s = load(args.config)
+    except NoNodes as e:
+        sys.stderr.write("pull.py: %s\n" % e)
+        return 4
     except ConfigError as e:
         sys.stderr.write("pull.py: %s\n" % e)
         return 2
     if args.command == "roots":
-        sys.stdout.write(s.roots())
+        sys.stdout.write(s.roots(per_node=args.per_node))
         return 0
+    if args.command == "check":
+        return cmd_check(s)
     if args.command == "status":
-        return cmd_status(s)
+        try:
+            stale = parse_duration(args.stale) if args.stale is not None else None
+        except ValueError as e:
+            sys.stderr.write("pull.py: --stale: %s\n" % e)
+            return 2
+        return cmd_status(s, stale, args.json)
     os.umask(0o077)
     lock = prepare(s)
     if lock is None:
         sys.stderr.write("pull.py: another pull.py holds %s; not starting a second\n"
                          % os.path.join(s.state, "pull.lock"))
         return 3
-    return cmd_once(s) if args.command == "once" else cmd_loop(s)
+    return cmd_once(s) if args.command == "once" else cmd_loop(s, args.config)
 
 
 if __name__ == "__main__":
