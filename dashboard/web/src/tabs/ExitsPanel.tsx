@@ -112,7 +112,7 @@ export function ExitsPanel({ P, cls }: { P: Panels; cls: Cls[] }) {
       p={tm}
       span
       empty={!ex || !have.length}
-      emptyWhat={ex ? 'no process of the selected classes in the window' : 'this window was reduced before exits were counted: it is counted at its next build'}
+      emptyWhat={ex ? 'no process of the selected classes in the window' : 'this window was reduced before events were counted: it is counted at its next build'}
       header={
         <span className="wrapctl" style={{ gap: 6 }}>
           <Term tip={WHAT_COUNTS}><span className="nm">what counts</span></Term>

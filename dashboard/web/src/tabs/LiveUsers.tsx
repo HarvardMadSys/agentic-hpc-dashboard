@@ -616,7 +616,7 @@ function Stream({ events, depth, watched, cls, q, who, keep }: {
         </span>
         <HostPicker hosts={hosts} host={host} setHost={setHost} />
         {depth != null && (
-          <span className="nm" data-tip={`a filter picks among the newest exits of every ${nodes.one} and user, so it can show fewer than asked`}>
+          <span className="nm" data-tip={`a filter picks among the newest events of every ${nodes.one} and user, so it can show fewer than asked`}>
             {narrowed ? `${fint(on.length)} of ` : ''}the newest {fint(events.length)} exited processes held
             {events.length < depth ? ` (at most ${fint(depth)})` : ''}
           </span>
