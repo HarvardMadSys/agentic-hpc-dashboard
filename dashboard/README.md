@@ -307,7 +307,10 @@ three things instead of assuming them:
   replayed once the build is in. Past 20,000 held (`REPLAY_CAP`) the oldest is let go, kept only as
   where and when it was read, and judged at the replay like the rest: one the build did not read
   is lost, and counted in `replay_dropped`. The newest are the ones a build has not read, so those
-  are kept.
+  are kept. A build keeps at most 2,000,000 records let go (`LET_GO_CAP`, about 48 MB). Past that,
+  a record let go keeps nothing and is counted in `replay_dropped` as it goes, read or not, so the
+  count is an upper bound. While a build runs, `replay_hold` says how many records it holds whole
+  and how many it has let go: a build too slow for the tail shows as `let_go` climbing.
 
 Trajectory sessions are never evicted inside the window (`max(reducers.trajectories.idle_evict_s,
 window)`), so `reducers.trajectories.max_sessions` (150 000 keys per held window, ~6 KB each, ~950

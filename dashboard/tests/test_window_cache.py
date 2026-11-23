@@ -788,6 +788,76 @@ class SeamTest(CacheCase):
         self.assertEqual(self.calls(view), 22)          # the 2 the hold kept
         self.assertEqual(view.status()["replay_dropped"], 3)
 
+    def test_past_the_let_go_cap_a_record_let_go_is_counted_as_it_goes(self):
+        # test_a_full_hold_lets_go_of_what_the_build_read_and_keeps_what_it_did_not's
+        # build, keeping 5 of the 9 records it lets go: the other 4 keep
+        # nothing, so they are counted as dropped as they go -- the build read
+        # them, so the count is over -- and the build shows them while it runs.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+        seen = []
+
+        def more():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i)
+                                           for i in range(10)])
+            self.assertEqual(agg.poll_once(), 10)
+
+        def after():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                           for i in range(3)])
+            self.assertEqual(agg.poll_once(), 3)
+            seen.extend((st["replay_hold"], st["replay_dropped"])
+                        for st in agg.panels_by_window.status()["held"]
+                        if st["state"] == "building")
+        with mock.patch.object(windows, "REPLAY_CAP", 4), \
+                mock.patch.object(windows, "LET_GO_CAP", 5):
+            view = self.building(agg, before_plan=more, after_scan=after)
+        self.assertEqual(seen, [({"held": 4, "let_go": 9}, 4)])
+        self.assertEqual(self.calls(view), 33)          # what is fed is the same
+        st = view.status()
+        self.assertEqual((st["replay_dropped"], st["live_records"],
+                          st["live_skipped"]["already_read"], st["replay_hold"]),
+                         (4, 3, 6, None))
+
+    def test_whatever_is_kept_of_the_records_let_go_the_view_counts_the_same(self):
+        # test_every_record_held_is_fed_or_counted_whatever_the_cap's build: a
+        # record let go is never fed, kept or not, so the view counts what the
+        # one keeping them all counts, the tail's notices keep their decisions,
+        # and what it counts as dropped is at least as many.
+        def run(cap, keep):
+            self.root = os.path.join(self.tmp, "ebpf-%d-%d" % (cap, keep))
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i)
+                                           for i in range(20)])
+            agg = self.aggregator()
+
+            def more_then_cut():
+                self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i)
+                                               for i in range(5)])
+                self.assertEqual(agg.poll_once(), 5)
+                self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                                  for i in range(3)])
+
+            def noticed():
+                self.assertEqual(agg.poll_once(), 3)
+
+            def cut_again():
+                self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 30 + i, 700 + i)
+                                                  for i in range(2)])
+                self.assertEqual(agg.poll_once(), 2)
+            with mock.patch.object(windows, "REPLAY_CAP", cap), \
+                    mock.patch.object(windows, "LET_GO_CAP", keep):
+                view = self.building(agg, before_plan=more_then_cut, after_scan=noticed,
+                                     after_check=cut_again)
+            self.assertIsNone(view.status()["replay_hold"])
+            return self.calls(view), view.status()["replay_dropped"]
+        for cap in (1, 2, 4, 8):
+            calls, dropped = run(cap, 10 ** 6)
+            for keep in (0, 1, 3, 6, 8):
+                with self.subTest(cap=cap, keep=keep):
+                    got = run(cap, keep)
+                    self.assertEqual(got[0], calls)
+                    self.assertGreaterEqual(got[1], dropped)
+
     def test_every_record_held_is_fed_or_counted_whatever_the_cap(self):
         # test_a_file_cut_again_after_its_notices_were_checked_is_counted_once's
         # build -- held records, a cut noticed during it, another after its

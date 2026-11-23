@@ -34,10 +34,11 @@ service:
   `REPLAY_CAP` the oldest held record is let go, kept only as where and when it
   was read, and the replay counts it as dropped -- published as
   `replay_dropped` instead of quietly going missing -- only if the build did not
-  read it. The seam is drawn in bytes, not in time: a live record is one the build
-  already read when its line ends where the build stopped reading that file, or
-  before (`PanelView.seam`). Hosts lag one another, so a record older than the
-  newest one the build read can still be one it never saw.
+  read it; past `LET_GO_CAP` of them, as it goes, read or not. The seam is drawn
+  in bytes, not in time: a live record is one the build already read when its
+  line ends where the build stopped reading that file, or before
+  (`PanelView.seam`). Hosts lag one another, so a record older than the newest
+  one the build read can still be one it never saw.
 
 A user or agent-type filter is the same kind of thing as a window: a different
 set of records, so a different set of reducers, not a mask over the default
@@ -113,7 +114,17 @@ MIN_WINDOW_MIN = 5
 # past where they land -- it has not. Holding the newest past the cap instead
 # dropped exactly the records the build never saw. The replay counts a record
 # let go as dropped (`replay_dropped`) only if the live feed would have fed it.
+# The cap counts the tail's notices (`PanelView.restarted`) with the records; a
+# notice joins the hold even when it is full, and is moved out as it is, never
+# let go.
 REPLAY_CAP = 20000
+# What one build keeps of the records it lets go, 24 bytes each (`LetGo`): about
+# 48 MB. A build that crawls -- a slow filesystem, a huge filtered scan -- lets
+# go of records at the tail's rate for as long as it runs. Past this a record
+# let go keeps nothing and is counted in `replay_dropped` as it goes, whether
+# the build read it or not: the count is then an upper bound, and it climbs
+# while the build runs, the sign of a build too slow for the tail.
+LET_GO_CAP = 2000000
 
 # The build worker's queue entry for "reduce the hours closed since" (`hours`).
 HOURS_JOB = "_hours"
@@ -406,14 +417,18 @@ class LetGo:
     order they came. Of each, where the tail read it and its time: all
     `PanelView.replay` needs to tell whether the build read it. That is 24 bytes
     a record, where holding it kept the record and the raw one it was made from,
-    so a build that runs for minutes on a busy fleet holds what it is fed."""
+    so a build that runs for minutes on a busy fleet holds what it is fed. Past
+    `LET_GO_CAP` a record let go keeps nothing and only counts (`over`): it
+    comes after every record the run keeps, and was counted as dropped as it
+    went."""
 
-    __slots__ = ("src", "end", "ts")
+    __slots__ = ("src", "end", "ts", "over")
 
     def __init__(self):
         self.src = []               # (path, st_dev, st_ino), one per file read, shared
         self.end = array("q")       # the offset just past its line; -1 when not said
         self.ts = array("d")        # its time; NaN when it has none
+        self.over = 0               # let go past LET_GO_CAP: counted, not kept
 
     def add(self, rec, at):
         ts = rec.get("_ts_epoch")
@@ -422,11 +437,11 @@ class LetGo:
         self.ts.append(math.nan if ts is None else ts)
 
     def __len__(self):
-        return len(self.end)
+        return len(self.end) + self.over
 
     def __iter__(self):
-        """Each as `(ts, at)`, `at` what `PanelView._read_already` reads of the
-        tail's `(src, end, raw)`."""
+        """Each record kept, as `(ts, at)`, `at` what `PanelView._read_already`
+        reads of the tail's `(src, end, raw)`; not those past LET_GO_CAP."""
         for src, end, ts in zip(self.src, self.end, self.ts):
             yield (None if ts != ts else ts), (None if src is None else (src, end))
 
@@ -472,8 +487,9 @@ class PanelView:
         self.live_records = 0
         self.live_through = None        # newest ts ingested LIVE since the build
         self._replay = None             # deque while a build is in flight
-        # (the build's hold, [what was moved out of it in order]) once it is full:
-        # the tail's notices, and the records let go (`_make_room`, `held`)
+        # [the build's hold, [what was moved out of it in order], how many records
+        # let go it keeps] once it is full: the tail's notices, and the records
+        # let go (`_make_room`, `held`)
         self._held_out = None
         self._replaying = False         # feeding what was held, as the build installs
         # Where the reducers came from and what happened to the saved copy:
@@ -539,13 +555,14 @@ class PanelView:
 
     def _make_room(self):
         """The build's hold is full (REPLAY_CAP): move its oldest record out of
-        it, kept as where and when it was read (`LetGo`), and the tail's notices
-        before it as they are, in the order they came (`held`). Under the
-        aggregator's lock."""
+        it, kept as where and when it was read (`LetGo`) -- past LET_GO_CAP,
+        counted as dropped and nothing kept -- and the tail's notices before it
+        as they are, in the order they came (`held`). Under the aggregator's
+        lock."""
         q = self._replay
         out = self._held_out
         if out is None or out[0] is not q:
-            out = self._held_out = (q, [])
+            out = self._held_out = [q, [], 0]
         moved = out[1]
         while q:
             rec, at = q.popleft()
@@ -554,7 +571,12 @@ class PanelView:
                 continue
             if not moved or type(moved[-1]) is not LetGo:
                 moved.append(LetGo())
-            moved[-1].add(rec, at)
+            if out[2] < LET_GO_CAP:
+                moved[-1].add(rec, at)
+                out[2] += 1
+            else:
+                moved[-1].over += 1
+                self.replay_dropped += 1
             return
 
     def held(self, q):
@@ -649,9 +671,10 @@ class PanelView:
         A record let go when the hold was full (`LetGo`) is judged where it
         came, as the live feed judges a record, and not fed: passed over
         (`live_skipped`) if the build read it or it is older than the window,
-        and counted in `replay_dropped` if the live feed would have fed it.
-        `checked` counts entries in the order they came, the records let go
-        among them. Under the aggregator's lock."""
+        and counted in `replay_dropped` if the live feed would have fed it; one
+        let go past LET_GO_CAP was counted as it went. `checked` counts entries
+        in the order they came, the records let go among them. Under the
+        aggregator's lock."""
         held = held or {}
         entries = self.held(pending)
         self._held_out = None
@@ -680,6 +703,7 @@ class PanelView:
                         else:
                             self.replay_dropped += 1
                         i += 1
+                    i += e.over             # counted as dropped as they went
                     continue
                 rec, at = e
                 if rec is None:
@@ -878,6 +902,14 @@ class PanelView:
             return 0.0
         return max(0.0, self.live_through - self.covers_to)
 
+    def _hold(self):
+        q = self._replay
+        if q is None:
+            return None
+        out = self._held_out
+        moved = out[1] if out is not None and out[0] is q else ()
+        return {"held": len(q), "let_go": sum(len(e) for e in moved if type(e) is LetGo)}
+
     def status(self, now=None):
         now = now or time.time()
         drift = self.drift_s()
@@ -921,6 +953,12 @@ class PanelView:
             # what the live feed handed this view and it did not count, and why
             "live_skipped": dict(self.live_skipped),
             "replay_dropped": self.replay_dropped,
+            # While a build runs, what the tail read since it began and holds
+            # for it: whole (records and its notices), and the records let go
+            # past REPLAY_CAP so far, judged as it installs. A build too slow
+            # for the tail shows here as `let_go` climbing, and past LET_GO_CAP
+            # as `replay_dropped` climbing too. None with no build under way.
+            "replay_hold": self._hold(),
             "cache": dict(self.cache),
         }
         if drift is not None and drift > 0:
