@@ -105,11 +105,12 @@ slack() {       # post $1; the webhook URL is a secret, so curl reads it from a 
 err=$(mktemp)
 out=$(status --json 2>"$err")
 rc=$?
-if grep -q "invalid choice: 'status'" "$err" 2>/dev/null; then
-  rm -f "$err"
-  log "this release has no rc-dashboard status: nothing checked"
-  exit 0
-fi
+host=$(hostname -s 2>/dev/null || hostname)
+# A release from before `rc-dashboard status`: the copy below is still checked,
+# and reported on its own. Returning here once skipped it, so a fleet whose
+# pulls had all failed passed its hourly check.
+nostatus=0
+grep -q "invalid choice: 'status'" "$err" 2>/dev/null && nostatus=1
 # In a fleet, the copy itself too: a node FAILED, never pulled, or STALE (rc-pull is not
 # running) is crit, whatever the dashboard has read so far.
 copy=
@@ -125,6 +126,16 @@ bad = ["%s %s (%s)" % (r["host"], r["state"], r.get("error") or "") for r in d.g
 if bad:
     print("copy: " + "; ".join(bad))
 ' 2>/dev/null)
+fi
+if [ "$nostatus" = 1 ]; then
+  rm -f "$err"
+  if [ -n "$copy" ]; then
+    log "crit: $copy (this release has no rc-dashboard status: only the copy was checked)"
+    slack "*rc dashboard* on \`$host\`: crit: $copy"
+    exit 2
+  fi
+  log "this release has no rc-dashboard status: only the copy was checked, and it is ok"
+  exit 0
 fi
 summary=$(printf '%s' "$out" | "$VENV/bin/python" -c '
 import json, sys
@@ -143,7 +154,6 @@ for h in d.get("hosts") or []:
 print("%s %s" % (level, "; ".join(dict.fromkeys(parts))[:1500]))
 ' 2>/dev/null)
 parsed=$?
-host=$(hostname -s 2>/dev/null || hostname)
 if [ "$parsed" != 0 ]; then
   why=$(tail -n 1 "$err" 2>/dev/null | cut -c1-300)
   rm -f "$err"

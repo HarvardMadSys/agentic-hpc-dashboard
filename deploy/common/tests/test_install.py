@@ -687,15 +687,10 @@ class TestCheck(Rig):
         out = self.check("Traceback (most recent call last)", rc=1, code=3)
         self.assertIn("could not run rc-dashboard status (exit 1)", out)
 
-    def test_a_release_without_status_is_left_alone(self):
-        out = self.run_script("deploy/common/check.sh", DRY_SLACK="1",
-                              RC_STATUS_CMD="echo \"error: argument command: invalid choice: "
-                                            "'status'\" >&2; exit 2")
-        self.assertIn("nothing checked", out)
+    NO_STATUS = "echo \"error: argument command: invalid choice: 'status'\" >&2; exit 2"
 
-    def test_a_fleets_copy_that_stopped_is_crit(self):
-        """rc-pull dead: every node's last state says ok, days ago. pull.py status says
-        STALE, and the check says crit, whatever the dashboard has read."""
+    def fleet_with_copy(self, ok_epoch_ago):
+        """MODE=fleet, one node n1 whose last pull passed `ok_epoch_ago` seconds ago."""
         import time as _t
         with open(self.install_env) as fh:
             text = fh.read().replace("MODE=single", "MODE=fleet")
@@ -706,7 +701,29 @@ class TestCheck(Rig):
         with open(os.path.join(self.etc, "fleet.env"), "w") as fh:
             fh.write("FLEET_HOSTS=n1\nFLEET_MIRROR=%s\n" % mirror)
         with open(os.path.join(mirror, ".state", "n1.json"), "w") as fh:
-            json.dump({"ok": True, "ok_epoch": _t.time() - 86400, "attempt_epoch": _t.time() - 86400}, fh)
+            json.dump({"ok": True, "ok_epoch": _t.time() - ok_epoch_ago,
+                       "attempt_epoch": _t.time() - ok_epoch_ago}, fh)
+
+    def test_a_release_without_status_is_left_alone(self):
+        out = self.run_script("deploy/common/check.sh", DRY_SLACK="1", RC_STATUS_CMD=self.NO_STATUS)
+        self.assertIn("this release has no rc-dashboard status: only the copy was checked, "
+                      "and it is ok", out)
+        self.assertNotIn("slack", out)
+
+    def test_a_release_without_status_still_has_its_copy_checked(self):
+        """A release from before `rc-dashboard status` once returned before the copy was
+        looked at: a fleet whose pulls had all stopped passed its hourly check."""
+        self.fleet_with_copy(86400)
+        out = self.run_script("deploy/common/check.sh", code=2, DRY_SLACK="1",
+                              RC_STATUS_CMD=self.NO_STATUS)
+        self.assertIn("crit: copy: n1 STALE", out)
+        self.assertIn("only the copy was checked", out)
+        self.assertIn("slack (dry): *rc dashboard* on", out)
+
+    def test_a_fleets_copy_that_stopped_is_crit(self):
+        """rc-pull dead: every node's last state says ok, days ago. pull.py status says
+        STALE, and the check says crit, whatever the dashboard has read."""
+        self.fleet_with_copy(86400)
         out = self.check({"level": "ok", "why": [], "hosts": []}, code=2)
         self.assertIn("crit: copy: n1 STALE (no pass for 1d 0h: is rc-pull running?", out)
 
