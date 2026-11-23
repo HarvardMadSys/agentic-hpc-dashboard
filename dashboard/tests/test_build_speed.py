@@ -387,8 +387,13 @@ class MaterializeTest(unittest.TestCase):
     def test_stepwise_is_the_payload_materialize_makes(self):
         v = self.view()
         lock = threading.RLock()
-        whole = v.materialize()
-        step = v.materialize_stepwise(lock)
+        # Both at one instant: a payload says when it was made (a window's from and to,
+        # to the second), and two builds either side of a second's turn differ by that
+        # alone -- which once failed this test on a slow runner.
+        at = time.time()
+        with mock.patch("time.time", return_value=at):
+            whole = v.materialize()
+            step = v.materialize_stepwise(lock)
         self.assertEqual(json.loads(json.dumps(step, default=str)),
                          json.loads(json.dumps(whole, default=str)))
 
