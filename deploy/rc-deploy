@@ -472,7 +472,15 @@ def cmd_remove_node(args):
         nodes = vals.get("SOURCE_NODES", "").split()
         if name not in nodes:
             raise Refused("%s is not in SOURCE_NODES" % name)
-        set_line(path, "SOURCE_NODES", " ".join(n for n in nodes if n != name))
+        rest = [n for n in nodes if n != name]
+        if not rest:
+            # Refused before the file changes: render.py renders no deployment of no
+            # node, so an emptied SOURCE_NODES stopped deploy.sh with the receiver still
+            # copying the node, --purge-copy not reached, and every later deploy stopped.
+            raise Refused("%s is the only node in SOURCE_NODES, and a deployment streams from "
+                          "at least one: add its replacement first (add-node), or stop "
+                          "collecting altogether (uninstall)" % name)
+        set_line(path, "SOURCE_NODES", " ".join(rest))
         say("%s taken out of SOURCE_NODES in %s" % (name, path))
         run([kit_script(kit, "deploy.sh")], env={"SITE_ENV": path})
         if args.purge_copy:

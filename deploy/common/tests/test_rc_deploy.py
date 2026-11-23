@@ -227,6 +227,23 @@ class TestNodes(Rig):
         self.assertEqual([n for n in os.listdir(self.etc) if n.startswith(".")], [],
                          "no temporary file left beside it")
 
+    def test_the_last_hpc_node_is_refused_before_the_file_changes(self):
+        """An HPC deployment streams from at least one node (render.py): an emptied
+        SOURCE_NODES stopped deploy.sh with the settings already changed, the receiver
+        still copying the node, and every later deploy stopped too."""
+        os.unlink(self.site)
+        self.tool("init", "--yes", "--set", "NODES=login01", "--set", "ROOT_ON_NODES=no",
+                  "--set", "ROOT_ON_DASHBOARD=no", "--set", "DASH_SSH=alice@dash",
+                  "--set", "DASH_ROOT=/data/rc")
+        with open(self.site) as fh:
+            before = fh.read()
+        out = self.tool("remove-node", "login01", "--purge-copy", code=1)
+        self.assertIn("login01 is the only node in SOURCE_NODES", out)
+        self.assertIn("add-node", out)
+        self.assertNotIn("RUN ", out, "nothing deployed, nothing removed")
+        with open(self.site) as fh:
+            self.assertEqual(fh.read(), before)
+
     def test_hpc_nodes_go_into_site_env(self):
         os.unlink(self.site)
         self.tool("init", "--yes", "--set", "NODES=login01", "--set", "ROOT_ON_NODES=no",

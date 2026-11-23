@@ -250,7 +250,8 @@ ran with `HISTORY_DAYS=1`, `MAX_WINDOWS=1`, `MAX_SESSIONS=50000`, `DAY_CACHE=fal
 A node taken out of `SOURCE_NODES` (`deploy/rc-deploy remove-node login03`) has its link
 closed the same way; its copy stays in `DASH_ROOT/data/mirror/<node>`, and the dashboard
 shows its days, until you remove that folder (`remove-node --purge-copy`). Delete its key
-line on the node if its home is its own.
+line on the node if its home is its own. The last node is not taken out (a deployment streams
+from at least one): add its replacement first, or `rc-deploy uninstall` to stop collecting.
 
 ## Deploying a new version
 
