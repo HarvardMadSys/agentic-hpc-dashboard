@@ -31,13 +31,19 @@ RequiresMountsFor=/scratch
 [Service]
 Type=simple
 Slice=system.slice
-ExecStart=/usr/bin/env python3 @EBPFM_DIR@/ebpf_trace.py %H
+# No host argument: the tracer names its day-files with the short host name, as
+# ebpfm.sh and the node tier do (EBPFM_HOST overrides it for all three). Units
+# installed before collector versions were recorded passed the FULL host name
+# (systemd's H specifier), so a node whose kernel hostname is fully qualified
+# gets a second name in the dashboard from the reinstall on: its history splits
+# at that point.
+ExecStart=/usr/bin/env python3 @EBPFM_DIR@/ebpf_trace.py
 # All admin-tunable knobs AND the load-bearing EBPFM_MIN_UID live in
 # /etc/default/ebpfm. Its settings override Environment= ones whatever their
 # order (systemd.exec(5)), so an EBPFM_OUTPUT_DIR set there takes the place of
-# the package-substituted one below; RequiresMountsFor= above, and `ebpfm
-# status`/`tail`, which read their own environment, do not follow it. The
-# leading '-' makes a missing file non-fatal.
+# the package-substituted one below; `ebpfm status` and `tail` read the same
+# file (and this unit's process), but RequiresMountsFor= above does not follow
+# it. The leading '-' makes a missing file non-fatal.
 EnvironmentFile=-/etc/default/ebpfm
 Environment=EBPFM_OUTPUT_DIR=@EBPFM_OUTPUT_DIR@
 
@@ -49,6 +55,10 @@ Environment=EBPFM_OUTPUT_DIR=@EBPFM_OUTPUT_DIR@
 # the pollers it supervises.
 Restart=on-failure
 RestartSec=30
+# Exit 2 is the tracer's "python3-bcc not found": restarting cannot help, so the
+# unit stays failed with that message (systemctl status ebpfm) instead of
+# retrying every 30 s for ever.
+RestartPreventExitStatus=2
 TimeoutStopSec=60
 KillSignal=SIGTERM
 

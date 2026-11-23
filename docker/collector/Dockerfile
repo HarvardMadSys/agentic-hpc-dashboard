@@ -30,10 +30,21 @@ RUN dnf -y install \
 # so copying collector/ is sufficient — no repo context is required at runtime.
 COPY collector/ /opt/ebpfm/
 COPY docker/collector/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh /opt/ebpfm/ebpfm.sh
+# EBPFM_VERSION, when the build passes one, is the collector's version
+# (`ebpfm version`, and collector_version in the tracer's meta record); without
+# it the collector names itself by a hash of its code, as the image has no .git.
+# `ebpfm` on PATH, for `docker exec <container> ebpfm status`.
+ARG EBPFM_VERSION=
+RUN chmod +x /usr/local/bin/entrypoint.sh /opt/ebpfm/ebpfm.sh && \
+    rm -rf /opt/ebpfm/tests && \
+    ln -s /opt/ebpfm/ebpfm.sh /usr/local/bin/ebpfm && \
+    if [ -n "$EBPFM_VERSION" ]; then echo "$EBPFM_VERSION" > /opt/ebpfm/VERSION; fi
 
+# The image runs the eBPF tier alone, so `ebpfm check` and `ebpfm status` ask
+# only about that tier.
 ENV EBPFM_OUTPUT_DIR=/var/log/ebpfm \
-    EBPFM_NODE_OUTPUT_DIR=/var/log/ebpfm-login
+    EBPFM_NODE_OUTPUT_DIR=/var/log/ebpfm-login \
+    EBPFM_TIER=ebpf
 
 VOLUME ["/var/log/ebpfm", "/var/log/ebpfm-login"]
 

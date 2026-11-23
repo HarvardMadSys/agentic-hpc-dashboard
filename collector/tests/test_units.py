@@ -49,10 +49,14 @@ class Rig(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def run_sh(self, *args, script=SCRIPT, active="", **env):
+        # a settings file and a package of its own, so a host's /etc/default/ebpfm
+        # or an installed ebpfm-collector cannot change what a test sees
         e = dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"], STUB_LOG=self.log,
                  STUB_ACTIVE=active, EBPFM_UNIT_DIR=self.units, EBPFM_OUTPUT_DIR=self.out,
                  EBPFM_NODE_OUTPUT_DIR=self.node_out,
-                 EBPFM_PID_DIR=os.path.join(self.tmp, "run"), HOME=self.tmp)
+                 EBPFM_PID_DIR=os.path.join(self.tmp, "run"), HOME=self.tmp,
+                 EBPFM_DEFAULT_FILE=os.path.join(self.tmp, "default-ebpfm"),
+                 EBPFM_PACKAGED_UNIT=os.path.join(self.tmp, "no-package"))
         e.update(env)
         return subprocess.run(["bash", script] + list(args), env=e, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, universal_newlines=True, timeout=60)
@@ -76,7 +80,11 @@ class TestInstall(Rig):
         ebpf, node = self.unit("ebpfm.service"), self.unit("ebpfm-node.service")
         for text in (ebpf, node):
             self.assertNotIn("@EBPFM", text)
-        self.assertIn("ExecStart=/usr/bin/env python3 %s/ebpf_trace.py %%H" % _ROOT, ebpf)
+        # no host argument: the tracer's short name, as ebpfm.sh and the node tier use
+        self.assertIn("ExecStart=/usr/bin/env python3 %s/ebpf_trace.py\n" % _ROOT, ebpf)
+        self.assertNotIn("%H", ebpf)
+        self.assertIn("RestartPreventExitStatus=2", ebpf)
+        self.assertIn("RestartPreventExitStatus=2", node)
         self.assertIn("Environment=EBPFM_OUTPUT_DIR=%s" % self.out, ebpf)
         self.assertIn("ExecStart=/bin/bash %s/ebpfm.sh _node_daemon" % _ROOT, node)
         self.assertIn("Environment=EBPFM_NODE_OUTPUT_DIR=%s" % self.node_out, node)
