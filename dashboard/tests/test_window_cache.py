@@ -750,6 +750,82 @@ class SeamTest(CacheCase):
         self.assertEqual(self.calls(view), 11)
         self.assertEqual(view.status()["live_skipped"], {"already_read": 0, "before_window": 4})
 
+    def test_a_full_hold_lets_go_of_what_the_build_read_and_keeps_what_it_did_not(self):
+        # The review's case: past REPLAY_CAP the NEWEST held records were
+        # dropped, and they are the ones the build never read -- written after
+        # it read past where they land. The oldest it had read.
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+
+        def more():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i)
+                                           for i in range(10)])
+            self.assertEqual(agg.poll_once(), 10)       # held; the build reads them too
+
+        def after():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                           for i in range(3)])
+            self.assertEqual(agg.poll_once(), 3)        # held; the build is past them
+        with mock.patch.object(windows, "REPLAY_CAP", 4):
+            view = self.building(agg, before_plan=more, after_scan=after)
+        self.assertEqual(self.calls(view), 33)
+        self.assertEqual(self.events(agg)["agent"], 33)
+        st = view.status()
+        self.assertEqual((st["replay_dropped"], st["live_records"],
+                          st["live_skipped"]["already_read"]), (0, 3, 10))
+
+    def test_records_let_go_that_the_build_did_not_read_are_counted_as_dropped(self):
+        self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i) for i in range(20)])
+        agg = self.aggregator()
+
+        def after():
+            self.append("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                           for i in range(5)])
+            self.assertEqual(agg.poll_once(), 5)
+        with mock.patch.object(windows, "REPLAY_CAP", 2):
+            view = self.building(agg, after_scan=after)
+        self.assertEqual(self.events(agg)["agent"], 25)
+        self.assertEqual(self.calls(view), 22)          # the 2 the hold kept
+        self.assertEqual(view.status()["replay_dropped"], 3)
+
+    def test_every_record_held_is_fed_or_counted_whatever_the_cap(self):
+        # test_a_file_cut_again_after_its_notices_were_checked_is_counted_once's
+        # build -- held records, a cut noticed during it, another after its
+        # notices were checked -- with the hold capped anywhere: a record let go
+        # is judged where it came, as it would have been fed, so the view's
+        # count and the records it counts as dropped add up to the uncapped
+        # view's count, and the tail's notices keep their decisions.
+        for cap in (1, 2, 3, 4, 5, 6, 8, 11, 13, windows.REPLAY_CAP):
+            with self.subTest(cap=cap):
+                self.root = os.path.join(self.tmp, "ebpf-%d" % cap)
+                self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i)
+                                               for i in range(20)])
+                agg = self.aggregator()
+
+                def more_then_cut():
+                    self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i)
+                                                   for i in range(5)])
+                    self.assertEqual(agg.poll_once(), 5)
+                    self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                                      for i in range(3)])
+
+                def noticed():
+                    self.assertEqual(agg.poll_once(), 3)
+
+                def cut_again():
+                    self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 30 + i, 700 + i)
+                                                      for i in range(2)])
+                    self.assertEqual(agg.poll_once(), 2)
+                with mock.patch.object(windows, "REPLAY_CAP", cap):
+                    view = self.building(agg, before_plan=more_then_cut, after_scan=noticed,
+                                         after_check=cut_again)
+                dropped = view.status()["replay_dropped"]
+                self.assertEqual(self.calls(view) + dropped, 10)
+                # held: the 10 records and the tail's 2 notices, which count
+                # toward the hold but are never let go
+                if cap >= 12:
+                    self.assertEqual(dropped, 0)
+
 
 class SealedDayTest(CacheCase):
     """A window reads a sealed day from its replica (`history.py`): one whose

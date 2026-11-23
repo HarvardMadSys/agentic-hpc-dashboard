@@ -303,8 +303,11 @@ three things instead of assuming them:
   once the hour still open at its build has closed ("Disk I/O is each process's own").
 - **The seam.** A build reads the day-files while the tail advances through them, so a live record
   is skipped only if the build already read its line or it is older than the window's start
-  (`live_skipped`: `already_read`, `before_window`), and rows that overflow the replay buffer are
-  published as `replay_dropped`.
+  (`live_skipped`: `already_read`, `before_window`). What the tail reads during a build is held and
+  replayed once the build is in. Past 20,000 held (`REPLAY_CAP`) the oldest is let go, kept only as
+  where and when it was read, and judged at the replay like the rest: one the build did not read
+  is lost, and counted in `replay_dropped`. The newest are the ones a build has not read, so those
+  are kept.
 
 Trajectory sessions are never evicted inside the window (`max(reducers.trajectories.idle_evict_s,
 window)`), so `reducers.trajectories.max_sessions` (150 000 keys per held window, ~6 KB each, ~950

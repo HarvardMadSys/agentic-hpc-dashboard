@@ -260,6 +260,8 @@ export interface WindowStatus {
   drift_s: number | null;
   drift_budget_s: number;
   live_records: number;
+  /** Records the tail read during the build, let go from its full hold and not
+   *  read by the build: missing from the view until it is built again. */
   replay_dropped: number;
   covers_note?: string;
   /** Where these reducers came from. A `snapshot` view was saved by an earlier

@@ -29,10 +29,12 @@ service:
   is published in seconds and the view re-scans once it reaches
   `panels.max_drift_pct` of the window.  An aging panel says its age.
 * **The records a rebuild could not replay are counted.**  A build reads the
-  day-files while the tailer is also advancing through them; the handful of rows
-  landing in that seam are buffered and replayed, and if the buffer overflows
-  the count is published as `replay_dropped` instead of quietly going missing.
-  The seam is drawn in bytes, not in time: a live record is one the build
+  day-files while the tailer is also advancing through them; the records the
+  tail reads meanwhile are held and replayed once the build is in. Past
+  `REPLAY_CAP` the oldest held record is let go, kept only as where and when it
+  was read, and the replay counts it as dropped -- published as
+  `replay_dropped` instead of quietly going missing -- only if the build did not
+  read it. The seam is drawn in bytes, not in time: a live record is one the build
   already read when its line ends where the build stopped reading that file, or
   before (`PanelView.seam`). Hosts lag one another, so a record older than the
   newest one the build read can still be one it never saw.
@@ -64,9 +66,11 @@ reduction, until its own build swaps fresh ones in.
 import collections
 import hashlib
 import json
+import math
 import re
 import threading
 import time
+from array import array
 
 from . import gz, hours as hourmod, payloads, redact, snapshots
 from .anonymize import Verbatim
@@ -100,9 +104,15 @@ EVENTS = frozenset(ev for r in HIST_REDUCERS + (SandboxReducer, TrajectoryReduce
 # handful of exits, and every distribution panel would read `n=0`.
 MIN_WINDOW_MIN = 5
 
-# Live records buffered during a rebuild, for replay across the read seam. The
-# seam is sub-second in practice (the scan and the tailer reach EOF together),
-# so this is generous; what matters is that overflow is COUNTED, not silent.
+# Live records held during a rebuild, for replay across the read seam: the
+# records the tail reads from the build's start to its install. A build of a busy
+# fleet's window runs for minutes, and the hold fills. Past this the OLDEST held
+# record is let go, kept only as where and when it was read (`LetGo`): the build
+# reads each file to where it ends when it gets there, so what was held first it
+# has most likely read, and what came last -- lines written after the build read
+# past where they land -- it has not. Holding the newest past the cap instead
+# dropped exactly the records the build never saw. The replay counts a record
+# let go as dropped (`replay_dropped`) only if the live feed would have fed it.
 REPLAY_CAP = 20000
 
 # The build worker's queue entry for "reduce the hours closed since" (`hours`).
@@ -391,6 +401,36 @@ def view_key(minutes, flt=None):
     return int(minutes) if not flt else (int(minutes), flt.key)
 
 
+class LetGo:
+    """Records let go from a build's full hold (`PanelView._make_room`), in the
+    order they came. Of each, where the tail read it and its time: all
+    `PanelView.replay` needs to tell whether the build read it. That is 24 bytes
+    a record, where holding it kept the record and the raw one it was made from,
+    so a build that runs for minutes on a busy fleet holds what it is fed."""
+
+    __slots__ = ("src", "end", "ts")
+
+    def __init__(self):
+        self.src = []               # (path, st_dev, st_ino), one per file read, shared
+        self.end = array("q")       # the offset just past its line; -1 when not said
+        self.ts = array("d")        # its time; NaN when it has none
+
+    def add(self, rec, at):
+        ts = rec.get("_ts_epoch")
+        self.src.append(None if at is None else at[0])
+        self.end.append(-1 if at is None else at[1])
+        self.ts.append(math.nan if ts is None else ts)
+
+    def __len__(self):
+        return len(self.end)
+
+    def __iter__(self):
+        """Each as `(ts, at)`, `at` what `PanelView._read_already` reads of the
+        tail's `(src, end, raw)`."""
+        for src, end, ts in zip(self.src, self.end, self.ts):
+            yield (None if ts != ts else ts), (None if src is None else (src, end))
+
+
 class PanelView:
     """One window's historical reducers, their build state, and their drift."""
 
@@ -432,6 +472,9 @@ class PanelView:
         self.live_records = 0
         self.live_through = None        # newest ts ingested LIVE since the build
         self._replay = None             # deque while a build is in flight
+        # (the build's hold, [what was moved out of it in order]) once it is full:
+        # the tail's notices, and the records let go (`_make_room`, `held`)
+        self._held_out = None
         self._replaying = False         # feeding what was held, as the build installs
         # Where the reducers came from and what happened to the saved copy:
         # `source` is "scan" or "snapshot", `note` says why a snapshot was or
@@ -464,20 +507,15 @@ class PanelView:
             return
         if self._replay is not None:
             if len(self._replay) >= REPLAY_CAP:
-                self.replay_dropped += 1
-            else:
-                self._replay.append((rec, at))
+                self._make_room()
+            self._replay.append((rec, at))
             return
         if not self.dispatch:
             return
         ts = rec.get("_ts_epoch")
-        # Already counted: the build read the same line from disk.
-        if not unread and self._read_already(ts, at):
-            self.live_skipped["already_read"] += 1
-            return
-        # Not in the window: a scan now would pass it over, as the build did.
-        if ts is not None and self.covers_from is not None and ts < self.covers_from:
-            self.live_skipped["before_window"] += 1
+        skip = self._passed_over(ts, at, unread)
+        if skip:
+            self.live_skipped[skip] += 1
             return
         self.live_records += 1
         if ts is not None and (self.live_through is None or ts > self.live_through):
@@ -487,6 +525,45 @@ class PanelView:
                 r.feed(rec)
             except Exception:
                 pass                    # one bad record must never stop the stream
+
+    def _passed_over(self, ts, at, unread=False):
+        """Why the live feed passes over a record read at `at` and timed `ts`
+        (`live_skipped`), or None when it feeds it."""
+        # Already counted: the build read the same line from disk.
+        if not unread and self._read_already(ts, at):
+            return "already_read"
+        # Not in the window: a scan now would pass it over, as the build did.
+        if ts is not None and self.covers_from is not None and ts < self.covers_from:
+            return "before_window"
+        return None
+
+    def _make_room(self):
+        """The build's hold is full (REPLAY_CAP): move its oldest record out of
+        it, kept as where and when it was read (`LetGo`), and the tail's notices
+        before it as they are, in the order they came (`held`). Under the
+        aggregator's lock."""
+        q = self._replay
+        out = self._held_out
+        if out is None or out[0] is not q:
+            out = self._held_out = (q, [])
+        moved = out[1]
+        while q:
+            rec, at = q.popleft()
+            if rec is None:
+                moved.append((None, at))
+                continue
+            if not moved or type(moved[-1]) is not LetGo:
+                moved.append(LetGo())
+            moved[-1].add(rec, at)
+            return
+
+    def held(self, q):
+        """Everything held for the build whose hold is `q`, in the order it came:
+        each `(rec, at)` record or `(None, path)` notice, and a `LetGo` for each
+        run of records let go (`_make_room`). Under the aggregator's lock."""
+        out = self._held_out
+        front = out[1] if out is not None and out[0] is q else []
+        return front + list(q or ())
 
     def _read_already(self, ts, at):
         """Whether the build already read the live record read at `at`: its line
@@ -568,20 +645,51 @@ class PanelView:
         drops. A notice past the first `checked` -- the file cut again after the
         check, whatever was decided for it there -- drops the seam, and what
         came between it and the last checked notice is judged by the seam.
-        Under the aggregator's lock."""
+
+        A record let go when the hold was full (`LetGo`) is judged where it
+        came, as the live feed judges a record, and not fed: passed over
+        (`live_skipped`) if the build read it or it is older than the window,
+        and counted in `replay_dropped` if the live feed would have fed it.
+        `checked` counts entries in the order they came, the records let go
+        among them. Under the aggregator's lock."""
         held = held or {}
-        pending = list(pending or ())
-        last = {at: i for i, (rec, at) in enumerate(pending[:checked]) if rec is None}
+        entries = self.held(pending)
+        self._held_out = None
+        last, i = {}, 0
+        for e in entries:
+            if i >= checked:
+                break
+            if type(e) is LetGo:
+                i += len(e)
+                continue
+            if e[0] is None:
+                last[e[1]] = i
+            i += 1
+
+        def unread(i, at):
+            return at is not None and held.get(at[0][0]) and i < last.get(at[0][0], -1)
         self._replaying = True
         try:
-            for i, (rec, at) in enumerate(pending):
+            i = 0
+            for e in entries:
+                if type(e) is LetGo:
+                    for ts, at in e:
+                        skip = self._passed_over(ts, at, unread(i, at))
+                        if skip:
+                            self.live_skipped[skip] += 1
+                        else:
+                            self.replay_dropped += 1
+                        i += 1
+                    continue
+                rec, at = e
                 if rec is None:
                     if not (i < checked and held.get(at)):
                         self.restarted(at)
-                elif at is not None and held.get(at[0][0]) and i < last.get(at[0][0], -1):
+                elif unread(i, at):
                     self.feed(rec, at, unread=True)
                 else:
                     self.feed(rec, at)
+                i += 1
         finally:
             self._replaying = False
 
@@ -931,7 +1039,7 @@ class WindowRegistry:
                 self._build(view)
             except Exception as e:                 # never kill the worker
                 view.state, view.error = "error", str(e)
-                view._replay = None
+                view._replay = view._held_out = None
 
     def _enqueue(self, key):
         with self._cv:
@@ -993,6 +1101,7 @@ class WindowRegistry:
         # EOF" and "the fresh reducers are installed" replays rather than drops.
         with self.lock:
             view._replay = collections.deque()
+            view._held_out = None
         view.cache["note"] = None
         # Only a view with nothing in memory resumes. A drift re-build exists to
         # move the window's start forward, which a saved copy -- older still --
@@ -1420,14 +1529,14 @@ class WindowRegistry:
         where its notice came, so what was held before it is judged as it was
         read."""
         with self.lock:
-            looked = list(view._replay or ())
-        paths = {at for rec, at in looked if rec is None}
+            looked = view.held(view._replay)
+        paths = {e[1] for e in looked if type(e) is not LetGo and e[0] is None}
         out = {}
         for path in paths:
             keys = [k for k in (path, _twin(path)) if k in seam]
             look = Look(path, [seam[k][2] for k in keys])
             out[path] = bool(keys) and all(look.holds(seam[k]) for k in keys)
-        return out, len(looked)
+        return out, sum(len(e) if type(e) is LetGo else 1 for e in looked)
 
     def refresh(self):
         """Re-materialise every ready view, and re-scan the ones that drifted.
