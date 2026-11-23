@@ -51,7 +51,7 @@ credentials become `[REDACTED]`, and the prompts handed to an agent on its comma
 
 ### Once a run, at start and stop
 
-- **At start**: kernel, BCC version, which BPF blocks loaded and why any did not, the scheduler-stats and delay-accounting sysctls, boot id, time zone, ephemeral port range
+- **At start**: the collector's own version, kernel, BCC version, which BPF blocks loaded and why any did not, the scheduler-stats and delay-accounting sysctls, boot id, time zone, ephemeral port range
 - **At stop**: records written, events lost, and one record for each process still running, with what it had accumulated
 
 ## Node tier (any user, every 5 minutes)

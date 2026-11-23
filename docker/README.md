@@ -46,7 +46,7 @@ docker run -d --name ebpfm \
 | `--pid=host` | to see and attribute every process on the node |
 | `-v /sys:/sys:ro` | BTF and tracefs, to load the programs |
 | `-v /var/log/ebpfm:/var/log/ebpfm` | to keep the day-files on the host |
-| `-e EBPFM_HOST=…` | to name the day-files for the node, not the container |
+| `-e EBPFM_HOST=…` | to name the day-files for the node, not the container (the tracer and every `ebpfm` command in the container use it) |
 
 On a 5.14 or later kernel, set `kernel.task_delayacct=1` too. EL8's 4.18 has no such knob, and
 its delay accounting is on by default ([`packaging/rpm`](../packaging/rpm/README.md#dependencies-and-kernel-settings)).
@@ -58,11 +58,17 @@ its delay accounting is on by default ([`packaging/rpm`](../packaging/rpm/README
   collector answers by writing every process still running as `truncated`.
 - The other commands are arguments:
   `docker run --rm … ghcr.io/harvardmadsys/agentic-hpc-dashboard/collector:edge ebpfm check`,
-  or `… ebpfm features`.
-- The collector writes **only** to its output folders (`/var/log/ebpfm` for the eBPF tier,
-  `/var/log/ebpfm-login` for the node tier). Its one use of the network is resolving the host
-  names that command lines mention (`getaddrinfo`, through the host's resolver), to name the
-  endpoints a process talked to; `EBPFM_ARGV_HOSTS=0` turns that off.
+  or `… ebpfm features`. The image sets `EBPFM_TIER=ebpf`, the one tier it runs, so `check`
+  and `status` ask about that tier alone.
+- `docker exec ebpfm ebpfm status` says whether the tracer runs and is still writing (exit 0
+  healthy, 1 degraded or stale, 3 not running; `--json` for a monitor): the entrypoint
+  leaves the pid file and the note of its settings that `status` reads.
+  `docker exec ebpfm ebpfm version` names the collector, as each run's `meta` record does
+  (`collector_version`).
+- The collector writes **only** to its output folder (`/var/log/ebpfm`; the node tier, which
+  this image does not run, would write to `/var/log/ebpfm-login`). Its one use of the network
+  is resolving the host names that command lines mention (`getaddrinfo`, through the host's
+  resolver), to name the endpoints a process talked to; `EBPFM_ARGV_HOSTS=0` turns that off.
 
 To build it yourself, from the repository root, on `base:edge` until a release publishes
 `base:latest`:
@@ -70,8 +76,13 @@ To build it yourself, from the repository root, on `base:edge` until a release p
 ```bash
 docker build -f docker/collector/Dockerfile \
   --build-arg BASE_IMAGE=ghcr.io/harvardmadsys/agentic-hpc-dashboard/base:edge \
+  --build-arg EBPFM_VERSION="$(git describe --always --dirty)" \
   -t ebpfm-collector .
 ```
+
+`EBPFM_VERSION` stamps the collector's version into the image (`ebpfm version`, and
+`collector_version` in each run's `meta` record); without it, the image has no `.git` to
+ask and names itself by a hash of its code (`sha256:…`).
 
 ## The demo
 

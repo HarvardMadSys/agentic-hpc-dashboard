@@ -1,8 +1,10 @@
 # ebpfm — login-node collector, one bash entry point
 
 A **standalone** collector for login nodes. It has no `../` imports, so it runs anywhere this
-folder is copied, or from the one self-extracting file `ebpfm.sh bundle` writes. Every signal
-in plain words is in [WHAT-IT-COLLECTS.md](WHAT-IT-COLLECTS.md); which tier reads each
+folder is copied, or from the one self-extracting file `ebpfm.sh bundle` writes.
+**Installing it, checking the node, starting and stopping it, telling whether it is
+healthy, its settings, upgrading and removing it: [OPERATIONS.md](OPERATIONS.md).** Every
+signal in plain words is in [WHAT-IT-COLLECTS.md](WHAT-IT-COLLECTS.md); which tier reads each
 login-node signal, in [COVERAGE.md](COVERAGE.md); the six copied modules and the rule that
 keeps them in step, in [VENDORED.md](VENDORED.md).
 
@@ -24,35 +26,47 @@ fallback. It collects the other half.
 ### Run
 
 ```
-./ebpfm.sh check                # works unprivileged: node tier PASS, ebpf tier "needs root"
+./ebpfm.sh check                # works unprivileged: the node tier's checks, then READY: node tier only
 ./ebpfm.sh start                # as a user -> node tier only
 ```
 ```
-sudo ./ebpfm.sh bootstrap       # once per node: dependencies + sysctls
-sudo ./ebpfm.sh check           # expect 0 FAIL
-sudo ./ebpfm.sh start           # both tiers; the eBPF one in system.slice (see below)
-sudo ./ebpfm.sh status
+sudo ./ebpfm.sh install --dry-run   # the plan of a first install; changes nothing
+sudo ./ebpfm.sh install         # dependencies, sysctls, /etc/default/ebpfm, both units started, check, verdict
+sudo ./ebpfm.sh status          # each tier: running? newest record's age, STALE, perf_lost (exit 0/1/3/4)
+```
+```
+sudo ./ebpfm.sh bootstrap       # once per node: dependencies + sysctls (--dry-run shows them)
+sudo ./ebpfm.sh check           # expect 0 FAIL; each FAIL has a fix: line
+sudo ./ebpfm.sh start           # both tiers until a reboot, waiting for each one's first record
 sudo ./ebpfm.sh stop            # SIGTERM -> flushes live processes as `truncated`
-sudo ./ebpfm.sh install-unit    # persistent systemd units, one per tier
+sudo ./ebpfm.sh install-unit    # persistent systemd units, one per tier, started by nobody
 ```
 
 `EBPFM_TIER=node|ebpf|all` overrides the choice by privilege. Beside the eBPF tier, the node
 tier drops the four per-process sections that tier collects properly (`SNAPSHOT_MODE=node`);
 without it, it keeps them (`full`), since dropping them there would lose them. An explicit
-`SNAPSHOT_MODE` wins. **Losing root on one node costs that node its per-process tier and
-nothing else.**
+`SNAPSHOT_MODE` wins, and `start` keeps them when the eBPF tier does not come up. **Losing
+root on one node costs that node its per-process tier and nothing else.**
 
 ### Supervision
 
 `start` runs the eBPF tier as a *transient* systemd service
 (`systemd-run --unit=ebpfm-<host>`), which does not survive a reboot and has no restart
-policy, and the node tier as a `nohup` loop. `install-unit` writes two persistent units with
-this folder's paths filled in: `ebpfm.service` (`Restart=on-failure`, `Slice=system.slice`)
-and `ebpfm-node.service`, the node tier's loop. It enables neither:
-`systemctl enable --now ebpfm ebpfm-node`. While `ebpfm-node` is active, `start`, `stop` and
-`status` defer to it, and `install-unit` refuses while a loop `start` began still runs, so the
-loop never runs twice. The node unit collects in `SNAPSHOT_MODE=node`; on a host without the
-eBPF tier, set `SNAPSHOT_MODE=full` in `/etc/default/ebpfm`.
+policy (with `nohup` where systemd is not running), and the node tier as a `nohup` loop. It
+then waits for evidence that each collects, the eBPF tier's `meta` record and the node
+tier's first snapshot, and prints the log's last lines if one dies (exit 1; 4 if a tier is
+not confirmed within the wait). `install-unit` writes two persistent units with this
+folder's paths filled in: `ebpfm.service` (`Restart=on-failure`, `Slice=system.slice`) and
+`ebpfm-node.service`, the node tier's loop. It enables neither:
+`systemctl enable --now ebpfm ebpfm-node`; `install` does that and the rest of a first
+install. While `ebpfm-node` is active, `start`, `stop` and `status` defer to it, and
+`install-unit` refuses while a loop `start` began still runs, so the loop never runs twice.
+The node unit collects in `SNAPSHOT_MODE=node`; on a host without the eBPF tier, set
+`SNAPSHOT_MODE=full` in `/etc/default/ebpfm` (`install` does, while the eBPF tier fails
+its check). Both units stay failed on exit status 2 (`RestartPreventExitStatus=2`): the
+tracer's "python3-bcc not found", and the node loop's refusal of a setting it cannot use.
+A tier `start` began, and the node loop under its unit, leave a note of their settings
+beside the pid files, where `status`, `stop` and `tail` from another shell find them.
 [`deploy/`](../deploy/README.md) runs both units on each of its servers.
 
 `Restart=on-failure`, never `always`, and nothing restarts it periodically: SIGTERM makes it
@@ -253,7 +267,7 @@ exits observed", not "collector never started".
 
 | `event` | When | Grain |
 |---|---|---|
-| `meta` | startup | resolved blocks, rejected blocks + compiler reason, sysctl state, kernel, BCC version, `output` (`{"formats": ["jsonl"], "ebr": null}`: the format written) |
+| `meta` | startup | resolved blocks, rejected blocks + compiler reason, sysctl state, kernel, BCC version, `collector_version` (the code that wrote the run; null if unknown), `output` (`{"formats": ["jsonl"], "ebr": null}`: the format written) |
 | `exit` | process exit | the main record: identity, `exit_code`/`signal`/`core_dumped`, CPU, RSS, I/O, D-state, net bytes, **`conns`**, **`net_endpoints`** |
 | `conn` | residency tick | one per **standing external** socket: `proto`, RTT, retransmits, bytes, idle |
 | `netio` | residency tick; a series process's exit; stop | one per process that moved bytes: bytes per endpoint since its previous `netio` |
@@ -481,7 +495,20 @@ Each of these changes what a field holds.
 - New blocks: `fork_raw` (threads never reach the ring), `thread_acc`, `netbytes_page` (TCP
   `sendfile`/`splice` sends, on kernels before 6.5). `meta.unsafe_dirs` lists directories on
   the path to the output or to the collector's code that other users can change. A second
-  collector for the same output directory and host refuses to start (`.<host>.lock`).
+  collector for the same output directory on the same machine refuses to start. The lock
+  (`.ebpfm-<boot id>.lock` in the output folder) is the machine's, not the host name's: it
+  was `.<host>.lock`, and the unit (full host name) and `start` (short name) both ran.
+  Hosts sharing a folder over NFS each have their own boot id.
+- **`meta.collector_version`** (added within schema 8, with no version bump) names the code
+  that wrote the run: the build's `VERSION` stamp (RPM, bundle, image), `git describe
+  --always --dirty` in a checkout, else `sha256:` and a hash of the code; null when it
+  cannot tell. A capture whose `meta` lacks the field predates it. `ebpfm version` prints
+  the same, and `ebpfm status` warns when a running tier's differs from the installed one.
+- **The unit names the files with the short host name**, as `start` and the node tier
+  always did: it passed systemd's full host name (`%H`) before `collector_version` was
+  recorded. On a node whose kernel hostname is fully qualified, the eBPF tier's files move
+  from the long name to the short one at the unit's reinstall
+  ([OPERATIONS.md](OPERATIONS.md#the-host-name)).
 
 ### Schema 7: network bytes by endpoint
 
@@ -753,18 +780,26 @@ softirq, where the current task means nothing). The connection folds into that p
 
 ## `ebpfm.sh` verbs
 
+`ebpfm.sh help` lists them; `ebpfm.sh <verb> --help` explains one and runs nothing; an
+option a verb does not take is refused (exit 2). [OPERATIONS.md](OPERATIONS.md) is the
+operator's guide to all of them.
+
 | Verb | Does |
 |---|---|
-| `bootstrap` | install missing dependencies, set the required sysctls, delete the feature cache, re-run `check` |
-| `check` | privilege, toolchain, kernel config, sysctls, tracepoints, kprobe symbols, netlink, its own cgroup and that cgroup's `cpu.max`, the node tier's tools, vendored-file divergence; exit code = FAIL count |
+| `install [--dry-run] [--no-wait]` | the whole first install: `bootstrap`'s dependencies and sysctls, the output folders written into `/etc/default/ebpfm`, both units, `check`, each tier that passes enabled, started and waited for, then a verdict (`READY: both tiers`, `READY: node tier only`, `NOT READY: N FAIL`); refuses a bundle's temporary copy and a node with the RPM |
+| `bootstrap [--dry-run]` | install missing dependencies, set the required sysctls, delete the feature cache, re-run `check` |
+| `check` | the settings, privilege, toolchain, kernel config, sysctls, tracepoints, kprobe symbols, netlink, its own cgroup and that cgroup's `cpu.max`, the node tier's tools, both output folders, vendored-file divergence; a `fix:` per FAIL and a closing verdict; exit code = FAIL count |
 | `features` | probe the BPF blocks, print the resolved set as JSON |
 | `dump-c` | print the generated BPF C (for debugging a rejected block) |
 | `once [secs]` | foreground capture (30 s by default) |
-| `start` / `stop` / `status` | the tiers in the background, as in *Supervision*; `status` gives each stream's records and size today |
+| `start [--no-wait \| --wait SECS]` / `stop` | the tiers in the background, as in *Supervision*: `start` waits for each tier's first record (exit 0 confirmed, 1 failed, 4 not yet); `stop` exits 1 only when a tier could not be stopped |
+| `status [--json]` | per tier: running (unit or pid), the newest record's age against twice its interval (STALE beyond), today's records and size, `perf_lost`, the version it runs, its log, free space; exit 0 healthy, 1 degraded or stale, 3 not running, 4 unknown |
+| `config [--json] [NAME...]` | every setting: its value, where it came from (environment, the settings file and its line, default) and its default; INVALID values and names that are no setting; `--defaults-file` prints the commented defaults file |
+| `version` | the collector's version (also `--version`); the eBPF tier records it as `meta.collector_version` |
 | `overhead` | the one-off measurement above |
-| `tail [n] [stream]` | the last n records (3 by default) of today's files |
-| `install-unit` / `uninstall-unit` | install or remove `ebpfm.service` and `ebpfm-node.service`, with this folder's paths filled in (the RPM ships `ebpfm.service` itself) |
-| `bundle [out]` | the runtime files, `README.md`, `VENDORED.md` and `.vendored.sha256` as one self-extracting `.sh` |
+| `tail [n] [stream]` | the last n records (3 by default) of today's files; stream `snapshot`, `exits` or `node` |
+| `install-unit` / `uninstall-unit` `[--dry-run]` | install or remove `ebpfm.service` and `ebpfm-node.service`, with this folder's paths filled in (the RPM ships `ebpfm.service` itself); `install-unit` refuses a bundle's temporary copy |
+| `bundle [out]` | the runtime files, the docs and a `VERSION` stamp as one self-extracting `.sh`, which runs a verb from a temporary copy it then deletes, or unpacks for good with `--extract DIR` |
 
 ### Bootstrap
 
@@ -780,57 +815,29 @@ softirq, where the current task means nothing). The connection folds into that p
    `/etc/sysctl.d/99-ebpfm.conf`. **Two of the eight data points are inert without these.**
 4. Deletes the feature cache and re-runs `check`, exiting non-zero on any FAIL.
 
-It is idempotent.
+It is idempotent, and `--dry-run` prints what it would install and set.
 
-### Environment
+### Settings
+
+Every setting is an environment variable, resolved by each command from its own
+environment, then the settings file `/etc/default/ebpfm` (the units' `EnvironmentFile=`,
+parsed the way systemd parses it; `EBPFM_DEFAULT_FILE` names another), then the default.
+The table of every `EBPFM_*` and `SNAPSHOT_*` setting, with its default and meaning, is in
+[OPERATIONS.md](OPERATIONS.md#every-setting), generated from
+[`lib/ebpfm_settings.py`](lib/ebpfm_settings.py), which tests hold to the code that reads
+each one. `ebpfm.sh config` shows what each comes to on a node and where it was set. A
+value a tier cannot use refuses the command that would run it (exit 2), and the tracer,
+which its unit runs directly, says on stderr when it falls back to a default.
 
 Where the day-files go, unless `EBPFM_OUTPUT_DIR` (eBPF tier) and `EBPFM_NODE_OUTPUT_DIR`
 (node tier) say otherwise: as root, `/scratch/ebpfm` and `/scratch/ebpfm-login` where
 `/scratch` is writable, else `/var/log/ebpfm` and `/var/log/ebpfm-login`; as a user,
 `~/.ebpfm/login` (and `~/.ebpfm/ebpf`). An installed unit sets `EBPFM_OUTPUT_DIR` to the
-folder `install-unit` resolved, and the RPM's to `/scratch/ebpfm`. An `EBPFM_OUTPUT_DIR` in
-`/etc/default/ebpfm` overrides it (systemd's `EnvironmentFile=` wins over `Environment=`),
-but the unit's `RequiresMountsFor=/scratch`, and `ebpfm status` and `tail`, which read their
-own environment, do not follow it.
-
-`ebpfm.sh`: `EBPFM_TIER` (`node`, `ebpf` or `all`; by default, by privilege) ·
-`EBPFM_PID_DIR` (`/run`; a user's `~/.run`) · `EBPFM_NODE_INTERVAL` (300 s between node
-snapshots) · `EBPFM_NODE_TOP_N` (25) · `EBPFM_BENCH_REPS` (3, for `overhead`) ·
-`EBPFM_UNIT_DIR` (`/etc/systemd/system`, for `install-unit`) · `EBPFM_DIR_MODE` /
-`EBPFM_FILE_MODE` (0750 / 0640) and `EBPFM_GROUP` (a group to own them), read by `ebpfm.sh`
-and the eBPF tier.
-
-The eBPF tier (`ebpf_trace.py`):
-
-- **run:** `EBPFM_OUTPUT_DIR` · `EBPFM_DURATION` (0: until stopped) · `EBPFM_RESIDENCY_S`
-  (60; 0: no residency tick) · `EBPFM_POLL_MS` (100) · `EBPFM_PERF_PAGES` (256 per CPU) ·
-  `EBPFM_FLUSH_MODE` (`poll`; `record` flushes every record) · `EBPFM_FLUSH` (on: write live
-  processes as `truncated` at stop; not to be confused with `EBPFM_FLUSH_MODE`) ·
-  `EBPFM_COMPRESS` (on: a sealed day's files become `.jsonl.gz`; `0` leaves them plain) ·
-  `EBPFM_REORDER_MS` (20; how far behind kernel time events are applied) ·
-  `EBPFM_EXIT_HOLD_MS` (250; `0` writes exit records inline and loses the connections that
-  close after the exit event) · `EBPFM_GC_GRACE` (300 s an exited process's state is kept)
-- **argv and Slurm:** `EBPFM_ARGS_MAXLEN` (0: no cap on emitted `args`) · `EBPFM_ARGV_KMAX`
-  (4096; bytes of argv read in-kernel at exec, the real limit when uncapped) ·
-  `EBPFM_REDACT` (`keys,prompts`; `0` writes argv raw) · `EBPFM_WRITE_KMAX` (1024; bytes
-  captured per `write()`) · `EBPFM_SUBMIT_COMMS` (`sbatch,salloc,srun`: the tools whose output
-  `submit` captures) · `EBPFM_SUBMIT_BUDGET` (8192; bytes of that output captured)
-- **which processes:** `EBPFM_MIN_UID` (0: off; data point 6) · `EBPFM_INCLUDE_ROOTS` (on;
-  `0`: no record for an agent's own process) · `EBPFM_MIN_CPU` / `_DURATION` (0) ·
-  `EBPFM_KEEP_TIMERS` (off: a `sleep` that is no agent and used no CPU or I/O is not written;
-  `EBPFM_TIMER_COMMS`, `sleep,usleep`, names them)
-- **per-process reads:** `EBPFM_CWD` (on) · `EBPFM_CWD_ALWAYS` (off; a readlink on every
-  exec, to validate) · `EBPFM_SANDBOX` (on) · `EBPFM_SANDBOX_ALWAYS` (off; a read on every
-  exec, to validate) · `EBPFM_RESIDENCY_TOPN` (5) · `EBPFM_DSTACK_MAX` / `_DEPTH` (300 reads a
-  tick / 5 frames)
-- **network:** `EBPFM_CONN_ALL` (off: external sockets only) · `EBPFM_CONN_UNTRACKED` (on:
-  netlink rows with no pid) · `EBPFM_TCP_ALL` (off; on also folds connections of untracked
-  processes) · `EBPFM_CONNS_TOPN` (5) · `EBPFM_NETPEER_MAX` (65536; the kernel endpoint
-  table) · `EBPFM_NET_ENDPOINTS_MAX` (256; endpoints listed per record) · `EBPFM_NETIO` (on;
-  `0`: no `netio` series, `net_endpoints` kept) · `EBPFM_ARGV_HOSTS` (on; `0`: no `host` names
-  from argv)
-- **blocks:** `EBPFM_FEATURES` (`auto`, or a pinned block list) · `EBPFM_FEATURE_CACHE` (on)
-  · `EBPFM_PROBE_VERBOSE=1` (print the compiler line for a rejected block)
+folder `install-unit` resolved, and the RPM's to `/scratch/ebpfm`; `install` also writes
+both folders into `/etc/default/ebpfm`, so the choice is made once. An `EBPFM_OUTPUT_DIR` in
+`/etc/default/ebpfm` overrides the unit's (systemd's `EnvironmentFile=` wins over
+`Environment=`), and `ebpfm status` and `tail` follow it, but the unit's
+`RequiresMountsFor=/scratch` does not.
 
 ---
 
