@@ -260,7 +260,15 @@ export interface WindowStatus {
   drift_s: number | null;
   drift_budget_s: number;
   live_records: number;
+  /** Records the tail read during the build, let go from its full hold and not
+   *  read by the build: missing from the view until it is built again. Past
+   *  `LET_GO_CAP` let go in one build, each one let go after is counted as it
+   *  goes, read by the build or not: the count is then an upper bound. */
   replay_dropped: number;
+  /** While a build runs, what the tail read since it began and holds for it:
+   *  `held` whole (records and the tail's notices), and the records `let_go`
+   *  past `REPLAY_CAP` so far, judged as the build installs. Null otherwise. */
+  replay_hold?: { held: number; let_go: number } | null;
   covers_note?: string;
   /** Where these reducers came from. A `snapshot` view was saved by an earlier
    *  build -- `built_at` is that build's -- and caught up from the day-files. */
