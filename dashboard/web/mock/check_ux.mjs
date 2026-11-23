@@ -136,3 +136,16 @@ test('a session is titled by whose it is and what ran it, its pid under the titl
   assert.notEqual(a.title, b.title, 'two users’ sessions read apart');
   assert.equal(S.sessionTitle({ sid: 'h|2026-11-23|human|sess:163', user: 'tim' }).title, 'tim · login session');
 });
+
+test('Feeds says a failed copy is a copy, and which code each collector and the service are', () => {
+  // FeedsTab fetches its own collectors, which SSR cannot, so its wiring is read as text
+  const feeds = readFileSync(fileURLToPath(new URL('../src/tabs/FeedsTab.tsx', import.meta.url)), 'utf8');
+  // on develop: a node whose copy failed read "silent: killed, crashed, or the host is down"
+  assert.match(feeds, /\{h\.transport && \(\s*h\.transport\.ok \?/);
+  assert.match(feeds, /copy failed\{h\.transport\.last_ok_age_s != null/);
+  assert.match(feeds, /h\.running\.collector_version \? ` · \$\{h\.running\.collector_version\}` : ''/);
+  assert.match(feeds, /rc-dashboard \{version\}/);
+  const types = readFileSync(fileURLToPath(new URL('../src/api/types.ts', import.meta.url)), 'utf8');
+  assert.match(types, /export interface CollectorTransport \{\s*kind: 'rsync' \| 'stream';\s*ok: boolean;\s*last_ok_age_s: number \| null;\s*error: string \| null;\s*\}/);
+  assert.match(types, /candidates\?: FeedCandidate\[\];/);
+});

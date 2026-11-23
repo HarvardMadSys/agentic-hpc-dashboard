@@ -2105,6 +2105,11 @@ function build() {
       rows: 7_161_466,
       notice: null,
       backfill: { state: 'done', pct: 100, records: 7_161_466, hours: 168 },
+      /* every folder the service looked in, and what it found (feeds.py; `check-feeds` prints the same) */
+      candidates: [
+        { path: '/scratch/ebpfm', state: 'missing', note: null },
+        { path: '/var/log/ebpfm', state: 'found', note: '18 files' },
+      ],
     },
     slurm_jobs: {
       name: 'slurm_jobs',
@@ -2267,6 +2272,13 @@ function build() {
       host: { _value: '127.0.0.1', _origin: 'cli --host' },
       port: { _value: 8787, _origin: 'cli --port' },
       static_dir: { _value: 'dashboard/web/dist', _origin: 'default' },
+    },
+    /* What the service says of itself (config.py `as_dict`): the zone every time on the page is
+     * in, which code it is, and its host, which names the deployment where no site name is set. */
+    _meta: {
+      tz: { _value: { name: 'America/New_York', abbrev: 'EDT', utc_offset_s: -14400 }, _origin: 'runtime' },
+      version: { _value: { version: '0.1.0', commit: 'fixture' }, _origin: 'build' },
+      host: { _value: 'dash01', _origin: 'runtime' },
     },
   };
 
