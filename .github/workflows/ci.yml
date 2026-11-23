@@ -172,14 +172,17 @@ jobs:
           echo "$RUNNER_TEMP/uv/bin" >> "$GITHUB_PATH"
 
       - name: Install the locked dependencies
+        id: sync
         run: uv sync --frozen --python 3.13
 
       - name: The store off and on
         run: uv run --no-sync python tests/e2e_history.py
 
       # Saved builds resumed into a day sealed between the two runs: through the
-      # replica on one side and the .gz on the other.
+      # replica on one side and the .gz on the other. It serves a feed of its
+      # own, so it runs whatever the step above found, and both are reported.
       - name: Restarted, a day sealed between
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         run: uv run --no-sync python tests/e2e_history.py --restart --seal-between
 
   web:
