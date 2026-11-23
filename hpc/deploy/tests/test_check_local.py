@@ -129,6 +129,58 @@ class TestStartChecks(unittest.TestCase):
             fh.write("RC_DASH_PASSWORD_HASH=scrypt$16384$8$1$c2FsdA$aGFzaA\n")
         self.assertEqual(self.run_check("--auth-set"), 0)
 
+    def test_auth_set_reads_values_as_systemd_does(self):
+        """One pair of matching quotes, and the blanks around the value, come off."""
+        p = os.path.join(self.etc, "auth.env")
+        for line in ("RC_DASH_PASSWORD_HASH='scrypt$16384$8$1$c2FsdA$aGFzaA'",
+                     'RC_DASH_PASSWORD_HASH="scrypt$16384$8$1$c2FsdA$aGFzaA"',
+                     "RC_DASH_PASSWORD_HASH=  scrypt$16384$8$1$c2FsdA$aGFzaA  "):
+            with open(p, "w") as fh:
+                fh.write(line + "\n")
+            self.assertEqual(self.run_check("--auth-set"), 0, line)
+        for line in ("RC_DASH_PASSWORD_HASH='scrypt$16384$8$1$c2FsdA$aGFzaA\"",
+                     "RC_DASH_PASSWORD_HASH=scrypt$x$y", "RC_DASH_PASSWORD_HASH=''"):
+            with open(p, "w") as fh:
+                fh.write(line + "\n")
+            self.assertEqual(self.run_check("--auth-set"), 15, line)
+        self.assertNotIn("scrypt$x$y", self.err)
+
+    def test_auth_set_takes_the_hash_file(self):
+        """etc/password.hash, which password.sh writes and the dashboard reads again
+        when it changes, or the file auth.env names."""
+        h = os.path.join(self.etc, "password.hash")
+        with open(h, "w") as fh:
+            fh.write("'scrypt$16384$8$1$c2FsdA$aGFzaA'\n")
+        self.assertEqual(self.run_check("--auth-set"), 0)
+        with open(h, "w") as fh:
+            fh.write("garbage\n")
+        self.assertEqual(self.run_check("--auth-set"), 15)
+        self.assertIn(h, self.err)
+        other = os.path.join(self.tmp, "elsewhere.hash")
+        with open(other, "w") as fh:
+            fh.write("scrypt$16384$8$1$c2FsdA$aGFzaA\n")
+        with open(os.path.join(self.etc, "auth.env"), "w") as fh:
+            fh.write("RC_DASH_PASSWORD_HASH_FILE=%s\n" % other)
+        self.assertEqual(self.run_check("--auth-set"), 0)
+
+    def test_auth_set_asks_the_dashboards_parser_where_the_venv_is(self):
+        """With a release and its venv, rc_dashboard.auth.parse_hash judges the hash,
+        and its reason is the one given."""
+        os.makedirs(os.path.join(self.root, "venv", "bin"))
+        os.makedirs(os.path.join(self.root, "current", "dashboard"))
+        py = os.path.join(self.root, "venv", "bin", "python")
+        with open(py, "w") as fh:
+            fh.write('#!/bin/bash\nread -r h\n[ "$h" = good ] && exit 0\necho "a field of the hash '
+                     'does not parse"\nexit 1\n')
+        os.chmod(py, 0o700)
+        with open(os.path.join(self.etc, "auth.env"), "w") as fh:
+            fh.write("RC_DASH_PASSWORD_HASH=scrypt$16384$8$1$c2FsdA$aGFzaA\n")
+        self.assertEqual(self.run_check("--auth-set"), 15)
+        self.assertIn("a field of the hash does not parse", self.err)
+        with open(os.path.join(self.etc, "auth.env"), "w") as fh:
+            fh.write("RC_DASH_PASSWORD_HASH=good\n")
+        self.assertEqual(self.run_check("--auth-set"), 0)
+
     def port_free_while_listening(self, **env):
         """--port-free while a real socket listens on the dashboard's port, then once it
         has closed."""

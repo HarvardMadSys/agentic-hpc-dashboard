@@ -5,7 +5,11 @@ login nodes, on one Linux host that you have an account on, with no root on any 
 ssh connection from that host to each node carries the node's collector files, compressed,
 into a private copy ([`hpc/fleet`](../fleet/README.md)). The dashboard reads the copy and
 serves the page on `127.0.0.1`, behind a password. Everything is set in one file,
-`site.env`. On servers where you have root, [`deploy/`](../../deploy/README.md) is simpler.
+`site.env`, which `deploy/rc-deploy init` writes from four questions (it picks this kit when
+you have no root on the nodes or on the dashboard's host). On servers where you have root,
+[`deploy/`](../../deploy/README.md) is simpler. `deploy/rc-deploy` runs this kit's scripts
+too (`apply`, `add-node`, `password`, `status`, `upgrade`, `rollback`, `backup`, `uninstall`);
+each of them below also has the script it runs.
 
 ```
  source node                          the dashboard's host                       reader
@@ -49,16 +53,28 @@ nothing.
 
 ## Settings
 
-Copy [`site.env.example`](site.env.example) to `site.env` in this folder (git ignores it)
-and fill it in; the example explains each key. Required: `SOURCE_USER`, `SOURCE_NODES`,
-`DASH_SSH`, `DASH_NODE`, `DASH_ROOT`, `DASH_PORT`, `WORK_DIR` and `SSH_KEY`. `SOURCE_ROOT` is
-read only by `hpc/fleet/pull-gz.sh` (step 5); the sender's folder on the nodes is the
-`--root` in its key line (step 3).
+`deploy/rc-deploy init` writes `site.env` in this folder (git ignores it), or copy
+[`site.env.example`](site.env.example) there and fill it in; the example explains each key.
+Required: `SOURCE_USER`, `SOURCE_NODES`, `DASH_SSH`, `DASH_NODE`, `DASH_ROOT`, `DASH_PORT`,
+`WORK_DIR` and `SSH_KEY`. `SOURCE_ROOT` is read only by `hpc/fleet/pull-gz.sh` (step 5); the
+sender's folder on the nodes is the `--root` in its key line (step 3).
+
+The same names mean the same setting in every kit ([`deploy/`](../../deploy/README.md#settings)
+takes them too): `SITE_NAME`, `SITE_DESCRIPTION`, `SLURM` (the HPC tab: on unless `no`),
+`NODE_NOUN` ("login nodes"), `ANONYMIZE`, `MEMORY_MAX` (the dashboard's cap; `DASH_MEMORY_MAX`,
+its old name, still works) and `FREE_MIN_GB`. Yes/no takes `1`/`0`, `true`/`false`,
+`yes`/`no` or `on`/`off`.
 
 `render.py` turns `site.env` into the unit (`rc-tmux.service.in`), the dashboard's
 settings (`dashboard.config.json.in`), and the stream's settings (`stream.json.in`). It
-checks every value first, and `deploy.sh` its own two keys, so a bad `site.env` stops a
-deploy before anything is shipped.
+checks every value first, naming the key of a bad number, and `deploy.sh` its own two keys,
+so a bad `site.env` stops a deploy before anything is shipped. bash reads the file too
+(`deploy.sh`, `ship-sender.sh`, `check.sh` source it), so render.py refuses a line the two
+would read differently: a value with blanks and no quotes (`SOURCE_NODES=a b`: bash runs
+`b`), or one with `$( )` or backquotes. A key it does not know is named, with the one it is
+nearest to (`HISTORY_DAY` is not a setting: did you mean `HISTORY_DAYS`?). `deploy.sh`
+renders with `--strict`, which also refuses a value still the example's own
+(`your-account`, `*.example.org`).
 
 ## First deploy
 
@@ -79,16 +95,19 @@ deploy before anything is shipped.
    On the host, `ip route get <a node's address>` shows the address the nodes see. The
    stream accepts each node's host key on its first connection
    (`StrictHostKeyChecking=accept-new`).
-4. Make the password. Neither the dashboard's loop (`check-local.sh --auth-set`) nor
-   `rc_dashboard serve` starts without one, so the page is never open. On this machine, in
-   the repository:
+4. The password. Neither the dashboard's loop (`check-local.sh --auth-set`) nor
+   `rc_dashboard serve` starts without one, so the page is never open. `deploy.sh` makes it
+   in step 6 when the host has none; to make it first, on this machine:
 
-       cd dashboard && uv run --frozen python -m rc_dashboard new-password
+       hpc/deploy/password.sh          # or: deploy/rc-deploy password
 
    It keeps the password in `~/.config/rc-dashboard/password`, with a netrc for curl beside
-   it ([Password](../../dashboard/README.md#password)), and prints only the hash. On the
-   dashboard's host, put the hash in `$DASH_ROOT/etc/auth.env` (mode 600) as one line,
-   `RC_DASH_PASSWORD_HASH=<hash>`.
+   it ([Password](../../dashboard/README.md#password)), and puts only its hash on the
+   dashboard's host, in `$DASH_ROOT/etc/password.hash` (mode 600), which the dashboard reads
+   again whenever it changes. Nothing to paste. A hash in `etc/auth.env`
+   (`RC_DASH_PASSWORD_HASH=...`), as earlier versions of this page said, still works, quotes
+   or none; `password.sh` comments it out when it puts the hash file in place, and restarts
+   the dashboard once to read the file.
 5. Optional, to spare the nodes' network: if the nodes' sealed days are already in a
    folder the dashboard's host can read, as `<folder>/<node>/<day>/*.jsonl.gz`, seed the
    copy from it before the first start, from a checkout of this repository on the host:
@@ -97,9 +116,10 @@ deploy before anything is shipped.
    to the nodes with an ordinary key (the stream's key runs only the sender), with
    `site.env`'s settings in its environment (`set -a; . hpc/deploy/site.env`). The stream
    fetches whatever is missing.
-6. On this machine: `hpc/deploy/deploy.sh --first`. It installs the sender on the
-   nodes, then the release on the host, makes the venv, starts the session, and turns
-   linger on.
+6. On this machine: `hpc/deploy/deploy.sh --first` (or `deploy/rc-deploy apply`;
+   `deploy.sh --plan` first checks `site.env` and says what it would ship). It installs the
+   sender on the nodes, then the release on the host, makes the venv and the password when
+   there is none, starts the session, and turns linger on.
 7. Add the hourly check to this machine's crontab ([The hourly check](#the-hourly-check)).
 
 ## Opening the page
@@ -116,9 +136,10 @@ origin named, as a line `RC_DASH_ALLOWED_ORIGINS=https://<the public name>` in
 `etc/auth.env`; one that keeps the public name (cloudflared does) needs nothing more. The
 sign-in, the cookie, and scripts: [Password](../../dashboard/README.md#password).
 
-To change the password, run step 4 again with `--force`, put the new hash in
-`etc/auth.env`, and restart the dashboard
-([Watching and restarting](#watching-and-restarting)). Everyone is signed out.
+To change the password, `hpc/deploy/password.sh --rotate` (or `deploy/rc-deploy password
+--rotate`): a new password here, its hash there, and the dashboard reads it within seconds,
+with no restart. Everyone is signed out. To share the page, give colleagues the password
+from `~/.config/rc-dashboard/password` over a channel you trust.
 
 ## Where things live
 
@@ -128,8 +149,9 @@ To change the password, run step 4 again with `--force`, put the new hash in
 | `.gz` days being fetched | `DASH_ROOT/data/staging/` |
 | Stream status and traffic | `DASH_ROOT/data/state/` (`status.json`, `traffic.jsonl`) |
 | Dashboard caches and both logs | `DASH_ROOT/{cache,logs}` |
-| Code, bundle, and venv | `DASH_ROOT/{releases/<sha>,current,venv}` (each release stays until you remove it) |
-| Settings, password hash, and the stream key | `DASH_ROOT/etc/` |
+| Code, bundle, and venv | `DASH_ROOT/{releases/<sha>,current,venv}` (each release stays until you remove it; `releases/.history` says which came before which) |
+| Settings, the password's hash (`password.hash`), and the stream key | `DASH_ROOT/etc/` |
+| The Trend tab's roll-up table, and the anonymization salt | `DASH_ROOT/cache/{rollup/,anonymize.salt}` ([What to back up](#what-to-back-up)) |
 | The unit | `~/.config/systemd/user/rc-tmux.service` on the dashboard's host |
 | The sender | `SENDER_DIR/{<sha>,current}` on the nodes (the release before stays for a rollback) |
 | The key's forced command | one `restrict,from=...,command=...` line in `~/.ssh/authorized_keys` on the nodes |
@@ -157,6 +179,7 @@ To restart both processes, or the session itself:
 
 Other views of the state:
 
+    deploy/rc-deploy status          # from this machine: every collector's verdict, and every link
     R=<DASH_ROOT>
     systemctl --user status rc-tmux rc-dashboard.scope rc-fleet-stream.scope
     /usr/bin/python3 $R/current/hpc/fleet/fleet_stream.py status --base $R/data
@@ -211,12 +234,31 @@ On a small host, give up history before sessions. With 1 core and 8 GB, the same
 ran with `HISTORY_DAYS=1`, `MAX_WINDOWS=1`, `MAX_SESSIONS=50000`, `DAY_CACHE=false`, and
 `DASH_MEMORY_MAX=7G`.
 
+## Adding a node
+
+1. Add it to `SOURCE_NODES` in `site.env` (`deploy/rc-deploy add-node login03` does this
+   step and the last).
+2. If the nodes do not share a home (`SHARED_HOME=no`), add the stream key's line to
+   `SOURCE_USER`'s `~/.ssh/authorized_keys` on the new node, as in step 3 of
+   [First deploy](#first-deploy).
+3. `hpc/deploy/deploy.sh`, with no `--restart`. It ships the sender to the new node and a new
+   `stream.json` to the host; the stream reads that file again within seconds (or on
+   SIGHUP), starts the new node's link, and changes no other link. The dashboard reads the
+   copy through a glob (`DASH_ROOT/data/mirror/*`, expanded again at every rescan), so it
+   shows the new node with no restart, and nothing refills its history.
+
+A node taken out of `SOURCE_NODES` (`deploy/rc-deploy remove-node login03`) has its link
+closed the same way; its copy stays in `DASH_ROOT/data/mirror/<node>`, and the dashboard
+shows its days, until you remove that folder (`remove-node --purge-copy`). Delete its key
+line on the node if its home is its own.
+
 ## Deploying a new version
 
 On this machine, from a tree with no uncommitted changes to tracked files:
 
     hpc/deploy/deploy.sh              # install HEAD; the running processes keep their code
     hpc/deploy/deploy.sh --restart    # install HEAD and restart the session
+    deploy/rc-deploy upgrade          # git pull, then deploy.sh --restart
 
 A deploy installs the sender on the nodes first, then the release on the dashboard's
 host, so the nodes never run an older sender than the receiver expects. Without
@@ -224,6 +266,13 @@ host, so the nodes never run an older sender than the receiver expects. Without
 whose unit names another `ExecStart` than the installed one, or another `DASH_PYTHON`
 version than the venv's, restarts the session anyway. A change to `site.env` alone (the
 same commit) keeps the release folder as it is and replaces only the settings.
+
+To go back, `hpc/deploy/rollback.sh` (or `deploy/rc-deploy rollback`) moves `current` on the
+dashboard's host to the release it ran before (`releases/.history`; or name one:
+`rollback.sh <sha>`), installs that release's pinned requirements in the venv, and
+restarts the session. The settings stay as the last deploy rendered them, and the nodes
+keep their sender, which is newer than the receiver: the order deploy.sh keeps anyway. For
+good, check out the older commit and `deploy.sh --restart`.
 
 ## The hourly check
 
@@ -241,8 +290,14 @@ node whose link has been down for more than an hour (the stream closes a link wh
 sends nothing, not even its pings, for 5 minutes: `stall_s`), and one connected with
 nothing from it for an hour (`STREAM ... stale`). It checks that the listener on the port
 is the dashboard's own and, with `PRIVATE_TREE=true`, audits that nothing in `DASH_ROOT` is
-readable by anyone else. It prints `OK`, or one line of findings with an exit code;
-anything but `OK` goes to Slack when `SLACK_WEBHOOK_FILE` names a webhook.
+readable by anyone else. It checks the password's hash as the dashboard will read it (in
+`etc/password.hash`, or `etc/auth.env`, one pair of quotes taken off as systemd does), and
+that it parses (`AUTH`). It asks the dashboard for its own verdict, `rc-dashboard status
+--json`, from the same settings it serves with: a collector silent, stopped or losing
+events, or a link the stream reports down, is a `STATUS warn` or `STATUS crit` finding
+(exit 17). It prints `OK`, or one line of findings with an exit code; anything but `OK`
+goes to Slack when `SLACK_WEBHOOK_FILE` names a webhook. This machine must be up for it
+to run: a laptop that sleeps checks nothing.
 
 ## When the stream trips
 
@@ -266,17 +321,48 @@ them, a deploy makes only `etc/`, which holds the secrets, 700, and new folders 
 in the copy follow its default ACL. A trip then means only that a folder was put in the
 place of `DASH_ROOT` or its `data` folder.
 
+## What to back up
+
+Almost everything in `DASH_ROOT` is rebuilt: the copy from the nodes, the history and the
+hour states from the copy. Two files are not:
+
+| What | Where | Lost, it means |
+|---|---|---|
+| the Trend tab's roll-up table | `DASH_ROOT/cache/rollup/rollup.sqlite` | the daily counts past what the nodes still hold (up to a year) |
+| the anonymization salt | `DASH_ROOT/cache/anonymize.salt` | with `ANONYMIZE` on, every alias changes |
+
+Worth keeping too: `DASH_ROOT/etc/` (the password's hash, the stream key the nodes let in)
+and `site.env` here. `hpc/deploy/backup.sh` (or `deploy/rc-deploy backup`) runs
+`rc-dashboard backup` on the host, from the dashboard's own settings (the roll-up table,
+the salt, the session key, the config, the hash), and brings the file here, mode 600;
+`rc-dashboard restore --from FILE`, on the host, puts it back.
+
 ## Moving to another host
 
-Set `DASH_SSH`, `DASH_NODE`, and `DASH_ROOT` in `site.env`, and do the steps in
-[First deploy](#first-deploy) on the new host, with its own key line on the nodes. Then,
-on the old host, do only the dashboard's host's part of [Removing
-everything](#removing-everything), and delete the old host's key line on the nodes: the
-sender, the crontab line and `WORK_DIR` serve the new host.
+1. Back up first, from this machine: `hpc/deploy/backup.sh --to rc.tar`. It holds the
+   Trend tab's table and the salt, which nothing can rebuild.
+2. Set `DASH_SSH`, `DASH_NODE`, and `DASH_ROOT` in `site.env` for the new host, and do the
+   steps in [First deploy](#first-deploy) there, with its own key line on the nodes.
+3. Put the backup back on the new host, with the session stopped:
+   `systemctl --user stop rc-tmux`, copy `rc.tar` there, then
+   `cd $DASH_ROOT/current/dashboard && RC_DASH_CONFIG=$DASH_ROOT/etc/dashboard.config.json $DASH_ROOT/venv/bin/python -m rc_dashboard restore --from rc.tar`,
+   and `systemctl --user start rc-tmux`.
+4. Only then, on the old host, remove the software and the data: from this machine, with
+   the old host's values in a copy of `site.env`,
+   `SITE_ENV=<that copy> hpc/deploy/uninstall.sh --purge`, or by hand as in
+   [Removing everything](#removing-everything); and delete the old host's key line on the
+   nodes. The sender, the crontab line and `WORK_DIR` serve the new host.
 
 ## Removing everything
 
-On the dashboard's host:
+From this machine: `hpc/deploy/uninstall.sh` (or `deploy/rc-deploy uninstall`; `--plan`
+first prints what it would do). It stops the session and removes its unit, the releases
+and the venv on the dashboard's host; removes the sender and the stream key's line (the one
+that runs `fleet_stream.py send`; every other line stays) on the nodes; and takes the
+check's line out of this machine's crontab. It keeps `DASH_ROOT`'s data and settings,
+`WORK_DIR` and `~/.config/rc-dashboard`; `--purge` takes them too. Take a backup first.
+
+By hand, on the dashboard's host:
 
     systemctl --user disable --now rc-tmux
     rm -rf <DASH_ROOT>
@@ -286,6 +372,19 @@ On the dashboard's host:
 On the nodes: `rm -rf <SENDER_DIR>`, and delete the `rc-fleet-stream` line from
 `~/.ssh/authorized_keys`. On this machine: delete the check's line from the crontab,
 `rm -rf <WORK_DIR>`, and `rm -rf ~/.config/rc-dashboard` (the password and its netrc).
+Linger is left on by `uninstall.sh` too: turn it off unless something else of yours
+needs it.
+
+## Troubleshooting
+
+| Symptom | Look at |
+|---|---|
+| `AUTH ... does not parse` | the hash in `etc/password.hash` or `etc/auth.env` is cut, or not a hash: `hpc/deploy/password.sh` makes and puts a new one |
+| the dashboard's window says it started 4 times and stopped | its log, `DASH_ROOT/logs/rc-dashboard.log`; then `tmux -L rc-dashboard respawn-pane -t rc-dashboard:dashboard.0`, or wait for the hourly check |
+| `STREAM <node> down` | the error after it is ssh's: a key line missing or wrong on the node (step 3), or a host key that changed |
+| `STATUS crit: <node> silent` | the link is up but the collector on the node writes nothing: the site's collector (`ebpfm status` on the node) |
+| `deploy.sh`: a value is still the example's | fill `site.env` in: `--strict` refuses `your-account` and `*.example.org` |
+| `TRIPPED` | [When the stream trips](#when-the-stream-trips) |
 
 ## Tests
 

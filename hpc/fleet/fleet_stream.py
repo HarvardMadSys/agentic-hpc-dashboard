@@ -1337,6 +1337,7 @@ class Link:
         self.host, self.argv, self.mirror, self.days = host, list(argv), mirror, days
         self.counters, self.paused, self.stop, self.backoff = counters, paused, stop, backoff
         self.stall_s = stall_s
+        self.retired = threading.Event()   # taken out of the config: no more reconnects
         self.proc = None
         self.connected = False
         self.down_since = time.time()      # None while connected
@@ -1361,11 +1362,28 @@ class Link:
                 "down_since": self.down_since, "last_error": self.last_error,
                 "bytes_today": self.counters.today(self.host)}
 
+    def _ended(self):
+        return self.stop.is_set() or self.retired.is_set()
+
+    def _sleep(self, seconds):
+        """Wait `seconds`, or less if the receiver stops or this link is retired."""
+        end = time.time() + seconds
+        while not self._ended():
+            left = end - time.time()
+            if left <= 0:
+                return
+            self.stop.wait(min(left, 0.5))
+
+    def retire(self):
+        """Taken out of the config: end the transport and stop reconnecting."""
+        self.retired.set()
+        self.close()
+
     def run(self):
         delay = self.backoff[0]
-        while not self.stop.is_set():
+        while not self._ended():
             if self.paused.is_set():
-                self.stop.wait(0.5)
+                self._sleep(0.5)
                 continue
             started = time.time()
             self.attempts.append(started)
@@ -1387,14 +1405,14 @@ class Link:
                 dropped = self.mirror.take_dropped()
                 if dropped:
                     self.counters.add(self.host, resent=dropped)
-            if self.stop.is_set():
+            if self._ended():
                 break
             if self.paused.is_set():
                 continue
             self.last_error = err
             if time.time() - started >= 60:
                 delay = self.backoff[0]
-            self.stop.wait(delay)
+            self._sleep(delay)
             delay = min(delay * 2, self.backoff[1])
 
     def _drain_stderr(self, pipe):
@@ -1536,8 +1554,11 @@ class Receiver:
     """
 
     def __init__(self, config, statvfs=None, stop_dashboard=None, watchdog_s=10.0, uid=None,
-                 space_s=60.0, retention_s=3600.0):
+                 space_s=60.0, retention_s=3600.0, config_path=None, reload_s=10.0):
         self.cfg = config
+        self.config_path, self.reload_s = config_path, reload_s
+        self.reload_wanted = threading.Event()
+        self._config_id = _file_id(config_path)
         self.days = int(config["days"])
         self.statvfs, self.stop_dashboard = statvfs, stop_dashboard
         self.watchdog_s, self.space_s, self.retention_s = watchdog_s, space_s, retention_s
@@ -1589,6 +1610,50 @@ class Receiver:
             if gone:
                 m.verified -= gone
                 m._save_ledger()
+
+    def _start_link(self, host, argv):
+        link = Link(host, argv, Mirror(self.base, host, keep_gz=bool(self.cfg.get("keep_gz", False))),
+                    self.days, self.counters, self.paused, self.stop,
+                    backoff=tuple(self.cfg.get("backoff") or (5, 300)),
+                    stall_s=float(self.cfg.get("stall_s") or STALL_S))
+        t = threading.Thread(target=link.run, name=host, daemon=True)
+        self.links.append(link)
+        self.threads.append(t)
+        t.start()
+        return link
+
+    def reload(self):
+        """Read the config file again (SIGHUP, or the file changed: a deploy installs a
+        new one): a host added gets its link, a host taken out has its link closed and
+        stops reconnecting (its copy stays, for the dashboard, until you remove it), a
+        host whose command changed reconnects with the new one. Every other key needs a
+        restart, and says so; a file that does not load changes nothing."""
+        self._config_id = _file_id(self.config_path)
+        try:
+            new = load_config(self.config_path)
+        except (OSError, ValueError) as e:
+            _log("reload: %s; the hosts stay as they were" % e)
+            return
+        for k in sorted(set(new) | set(self.cfg)):
+            if k != "hosts" and new.get(k) != self.cfg.get(k):
+                _log("reload: %s changed; it takes effect at the next start" % k)
+        hosts = new["hosts"]
+        old = dict((l.host, l) for l in self.links)
+        gone = sorted(h for h in old if h not in hosts)
+        changed = sorted(h for h in old if h in hosts and list(hosts[h]) != old[h].argv)
+        added = sorted(h for h in hosts if h not in old)
+        for h in gone + changed:
+            old[h].retire()
+            i = self.links.index(old[h])
+            del self.links[i]
+            del self.threads[i]
+        for h in changed + added:
+            self._start_link(h, hosts[h])
+        self.cfg["hosts"] = hosts
+        if gone or changed or added:
+            _log("reload: %d hosts%s%s%s" % (
+                len(self.links), "".join(" +" + h for h in added),
+                "".join(" -" + h for h in gone), "".join(" ~" + h for h in changed)))
 
     def write_status(self):
         self.base.write_atomic("state/status.json", json.dumps(
@@ -1642,19 +1707,13 @@ class Receiver:
             self._write_marker("refused to start: %s" % e)
             (self.stop_dashboard or self._default_stop_dashboard)()
             return EXIT_UNSAFE
-        backoff = tuple(self.cfg.get("backoff") or (5, 300))
-        keep_gz = bool(self.cfg.get("keep_gz", False))
-        stall_s = float(self.cfg.get("stall_s") or STALL_S)
-        self.links = [Link(host, argv, Mirror(self.base, host, keep_gz=keep_gz), self.days,
-                           self.counters, self.paused, self.stop, backoff=backoff,
-                           stall_s=stall_s)
-                      for host, argv in sorted(self.cfg["hosts"].items())]
-        self.threads = [threading.Thread(target=l.run, name=l.host, daemon=True) for l in self.links]
-        for t in self.threads:
-            t.start()
+        self.links, self.threads = [], []
+        for host, argv in sorted(self.cfg["hosts"].items()):
+            self._start_link(host, argv)
         _log("streaming %d hosts into %s" % (len(self.links), self.cfg["base"]))
         tick = min(self.watchdog_s, self.space_s, 1.0)
-        due = {"space": 0.0, "retention": 0.0, "status": 0.0, "flush": time.time() + 60}
+        due = {"space": 0.0, "retention": 0.0, "status": 0.0, "flush": time.time() + 60,
+               "reload": time.time() + self.reload_s}
         while not self.stop.is_set():
             try:
                 self.base.check()
@@ -1674,6 +1733,12 @@ class Receiver:
                 if now >= due["flush"]:
                     self.counters.flush(self.base)
                     due["flush"] = now + 60
+                if self.config_path and (self.reload_wanted.is_set() or (
+                        now >= due["reload"] and _file_id(self.config_path) != self._config_id)):
+                    self.reload_wanted.clear()
+                    self.reload()
+                if now >= due["reload"]:
+                    due["reload"] = now + self.reload_s
             except OSError as e:           # a full disk must not end the watchdog
                 _log("housekeeping failed: %s" % e)
             self.stop.wait(tick)
@@ -1689,12 +1754,25 @@ class Receiver:
         return 0
 
 
+def _file_id(path):
+    """What tells a file changed: its inode, size and time. None for no file."""
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime)
+
+
 def receive_main(config_path):
-    """Run the Receiver until SIGTERM; returns the exit status."""
+    """Run the Receiver until SIGTERM; returns the exit status. SIGHUP, or a new config
+    file (a deploy installs one), reloads the hosts."""
     os.umask(0o077)
-    r = Receiver(load_config(config_path))
+    r = Receiver(load_config(config_path), config_path=config_path)
     signal.signal(signal.SIGTERM, lambda *a: r.stop.set())
     signal.signal(signal.SIGINT, lambda *a: r.stop.set())
+    signal.signal(signal.SIGHUP, lambda *a: r.reload_wanted.set())
     return r.run()
 
 

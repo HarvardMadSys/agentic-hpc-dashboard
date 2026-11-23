@@ -1,6 +1,7 @@
 {
  "//": "Rendered by render.py from site.env. The password hash is not here: keep-running.sh loads it from etc/auth.env.",
  "feeds": {
+  "//ebpf": "Each node's copy, as one glob over the stream's mirror: expanded again at every rescan, so a node added to SOURCE_NODES needs no restart.",
   "ebpf": {"roots": @EBPF_ROOTS_JSON@, "days": @DAYS@},
   "//ebpf_node": "No node tier: the stream carries each node's eBPF tier only, and this host's own capture, if it has one, is not a source.",
   "ebpf_node": {"roots": []}
@@ -24,6 +25,9 @@
               "--color", "never", "--json", "-C", "{workdir}", "-o", "{answer_file}", "{model_flag}", "-"]
  },
  "site": {"name": @SITE_NAME_JSON@, "description": @SITE_DESCRIPTION_JSON@},
+ "//slurm": "A cluster's login nodes run Slurm: the HPC tab, unless site.env says SLURM=no. NODE_NOUN is what every page calls them.",
+ "slurm": {"enabled": @SLURM@},
+ "ui": {"node_noun": @NODE_NOUN_JSON@},
  "cache": {"dir": "@DASH_ROOT@/cache"},
  "server": {
   "host": "127.0.0.1", "port": @DASH_PORT@,

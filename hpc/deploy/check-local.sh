@@ -8,13 +8,15 @@
 #   check-local.sh --base-ok     the folder and its data/ (the stream's base) are real 700
 #                                folders owned by this account, and the stream has not
 #                                tripped (no TRIPPED in the folder); exit 0, 11, or 13
-#   check-local.sh --auth-set    etc/auth.env holds a password hash; exit 0 or 15
+#   check-local.sh --auth-set    etc/password.hash (or etc/auth.env) holds a password
+#                                hash that parses; exit 0 or 15
 #   check-local.sh --port-free   nothing listens on the dashboard's port yet; exit 0 or 14
 #                                (14 too when it cannot tell)
 #   check-local.sh               the hourly check (check.sh runs it over ssh): all of the
 #                                above, linger, the tmux session and its two windows (a
 #                                window whose loop ended is started again), a dashboard
-#                                that stopped answering, every stream's health, log
+#                                that stopped answering, every stream's health, the
+#                                dashboard's own verdict (rc-dashboard status), log
 #                                rotation, and the privacy audit. One line out.
 #
 # keep-running.sh also runs the start checks before each start of its process.
@@ -25,9 +27,11 @@
 # Exit codes, most severe first when several apply: 11 TRIPPED (the stream stopped on a
 # swapped base folder; nothing is restarted), 13 UNSAFE (a folder is not this account's
 # 700 folder), 14 PORT (someone else listens on the port, or who listens cannot be
-# told), 15 AUTH (no password hash, or a start failed), 16 STREAM (a source node down
-# over an hour, one connected with nothing from it for an hour, or a stale status), 12
-# AUDIT (files readable by others, or extended ACLs), 10 RESTARTED, FROZEN, or LINGER
+# told), 15 AUTH (no password hash, one that does not parse, or a start failed), 16
+# STREAM (a source node down over an hour, one connected with nothing from it for an
+# hour, or a stale status), 17 STATUS (rc-dashboard status says warn or crit: a
+# collector silent, stopped or degraded), 12 AUDIT (files readable by others, or
+# extended ACLs), 10 RESTARTED, FROZEN, or LINGER
 # (something was started or restarted, or linger was turned back on), 0 OK; 2 for a
 # usage error, or no RC_DASH_ROOT.
 set -u
@@ -90,7 +94,74 @@ own_dir() {      # the same, made if missing
 dirs_ok() { own_dir "$RUN" && own_dir "$RUN/cache" && own_dir "$RUN/logs" && own_dir "$BASE"; }
 base_ok() { private_dir "$RUN" && private_dir "$BASE"; }
 tripped() { [ -e "$MARKER" ] || [ -L "$MARKER" ]; }
-auth_set() { grep -q '^RC_DASH_PASSWORD_HASH=..' "$ETC/auth.env" 2>/dev/null; }
+unquote() {     # as keep-running.sh, and systemd, read a value: blanks, then one pair of quotes off
+  local v=$1
+  v=${v#"${v%%[![:space:]]*}"}
+  v=${v%"${v##*[![:space:]]}"}
+  if [ ${#v} -ge 2 ]; then
+    case $v in \"*\"|\'*\') v=${v:1:${#v}-2} ;; esac
+  fi
+  printf '%s' "$v"
+}
+# The password's hash as the dashboard will see it, and where it came from: the hash
+# file (etc/password.hash, or RC_DASH_PASSWORD_HASH_FILE in auth.env), else
+# RC_DASH_PASSWORD_HASH in auth.env. Sets AUTH_FROM and AUTH_HASH.
+auth_read() {
+  local line file=
+  AUTH_FROM= AUTH_HASH=
+  if [ -f "$ETC/auth.env" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case $line in
+        RC_DASH_PASSWORD_HASH_FILE=*) file=$(unquote "${line#*=}") ;;
+        RC_DASH_PASSWORD_HASH=*) AUTH_HASH=$(unquote "${line#*=}"); AUTH_FROM=$ETC/auth.env ;;
+      esac
+    done < "$ETC/auth.env"
+  fi
+  [ -n "$file" ] || { [ -s "$ETC/password.hash" ] && file=$ETC/password.hash; }
+  if [ -n "$file" ]; then
+    AUTH_FROM=$file AUTH_HASH=
+    [ -f "$file" ] && IFS= read -r AUTH_HASH < "$file"
+    AUTH_HASH=$(unquote "$AUTH_HASH")
+  fi
+}
+# Whether a hash parses, and why not: the dashboard's own parser where the venv is
+# (rc_dashboard.auth.parse_hash), else its shape, scrypt$n$r$p$salt$key. The hash goes
+# over stdin, never on a command line.
+HASH_RE='^scrypt[$][0-9]+[$][0-9]+[$][0-9]+[$][A-Za-z0-9+/]+=*[$][A-Za-z0-9+/]+=*$'
+hash_why() {
+  local why
+  if [ -x "$R/venv/bin/python" ] && [ -d "$R/current/dashboard" ]; then
+    why=$(cd "$R/current/dashboard" && printf '%s' "$1" | "$R/venv/bin/python" -c '
+import sys
+try:
+    from rc_dashboard.auth import parse_hash
+except Exception:
+    sys.exit(3)
+try:
+    parse_hash(sys.stdin.read())
+except ValueError as e:
+    print(e)
+    sys.exit(1)' 2>/dev/null)
+    case $? in 0) return 0 ;; 1) printf '%s' "$why"; return 1 ;; esac
+  fi
+  [[ $1 =~ $HASH_RE ]] && return 0
+  printf 'not a scrypt$n$r$p$salt$key hash'
+  return 1
+}
+AUTH_WHY=
+auth_set() {
+  local why
+  auth_read
+  if [ -z "$AUTH_HASH" ]; then
+    AUTH_WHY="no password hash in $ETC/password.hash or $ETC/auth.env; the page would be open"
+    return 1
+  fi
+  if ! why=$(hash_why "$AUTH_HASH"); then
+    AUTH_WHY="the password hash in $AUTH_FROM does not parse ($why): the dashboard would not start. Make one with rc-deploy password, or hpc/deploy/password.sh"
+    return 1
+  fi
+  return 0
+}
 # Every TCP listener on the port, one line each, with pid=<n> where the process is this
 # account's. From ss; without ss, or when it fails, from /proc/net/tcp and tcp6, which
 # list every account's sockets as ss does (lsof, run as this account, would show none of
@@ -164,7 +235,7 @@ case "${1:-}" in
     echo "UNSAFE $RUN or $BASE is missing or not $WANT" >&2; exit 13 ;;
   --auth-set)
     auth_set && exit 0
-    echo "AUTH $ETC/auth.env holds no password hash; the page would be open" >&2; exit 15 ;;
+    echo "AUTH $AUTH_WHY" >&2; exit 15 ;;
   --port-free)
     if ! lines=$(listener); then
       echo "PORT cannot tell whether port $PORT is free: ss is missing or failed, and $PROC_NET/tcp could not be read" >&2; exit 14
@@ -178,7 +249,7 @@ esac
 found=()
 code=0
 severity() {
-  case $1 in 11) echo 7;; 13) echo 6;; 14) echo 5;; 15) echo 4;; 16) echo 3;; 12) echo 2;;
+  case $1 in 11) echo 7;; 13) echo 6;; 14) echo 5;; 15) echo 4;; 16|17) echo 3;; 12) echo 2;;
              10) echo 1;; *) echo 0;; esac
 }
 note() {        # finding, exit code; the exit code kept is the most severe one
@@ -196,7 +267,7 @@ if tripped; then
   done
 fi
 dirs_ok || note "UNSAFE $RUN or a folder in it is not $WANT" 13
-auth_set || note "AUTH no password hash in $ETC/auth.env" 15
+auth_set || note "AUTH $AUTH_WHY" 15
 
 # Logs: the processes hold them open (appending), so copy and truncate.
 for f in "$RUN"/logs/*.log; do
@@ -304,6 +375,51 @@ PYEOF
   while IFS= read -r l; do
     [ -n "$l" ] && note "$l" 16
   done <<< "$report"
+fi
+
+# The dashboard's own verdict on every collector and link, from the settings it serves
+# with: `rc-dashboard status --json` (a heartbeat gone quiet, a probe that could not
+# load, a link the stream reports down). A level of warn or crit is a finding.
+# RC_STATUS_CMD stands in for the command (tests).
+status_findings() {
+  local out err rc
+  err=$(mktemp "$RUN/.status-err.XXXXXX" 2>/dev/null) || return 0
+  if [ -n "${RC_STATUS_CMD:-}" ]; then
+    out=$(bash -c "$RC_STATUS_CMD" 2>"$err"); rc=$?
+  elif [ -x "$R/venv/bin/python" ] && [ -d "$R/current/dashboard" ]; then
+    out=$(cd "$R/current/dashboard" && RC_DASH_CONFIG=$ETC/dashboard.config.json \
+          RC_DASH_TRANSPORT_FILES=${RC_DASH_TRANSPORT_FILES:-$BASE/state/status.json} \
+          timeout 300 "$R/venv/bin/python" -m rc_dashboard status --json 2>"$err"); rc=$?
+  else
+    rm -f "$err"
+    return 0                      # no release installed yet
+  fi
+  if grep -q "invalid choice: 'status'" "$err" 2>/dev/null; then
+    rm -f "$err"
+    return 0                      # a release from before `status`
+  fi
+  printf '%s' "$out" | python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+except ValueError:
+    sys.exit(4)
+level = d.get("level") if isinstance(d, dict) else None
+if level not in ("ok", "warn", "crit"):
+    sys.exit(4)
+if level != "ok":
+    why = "; ".join(str(w) for w in (d.get("why") or [])) or "no reason given"
+    print("STATUS %s: %s" % (level, why[:400]))
+' 2>/dev/null
+  if [ "${PIPESTATUS[1]}" = 4 ]; then
+    echo "STATUS rc-dashboard status gave no verdict (exit $rc): $(tail -n 1 "$err" 2>/dev/null | cut -c1-200)"
+  fi
+  rm -f "$err"
+}
+if [ "$code" != 11 ] && [ "$code" != 13 ]; then
+  while IFS= read -r l; do
+    [ -n "$l" ] && note "$l" 17
+  done <<< "$(status_findings)"
 fi
 
 # Privacy audit: nothing readable by group or others, nothing owned by anyone else,
