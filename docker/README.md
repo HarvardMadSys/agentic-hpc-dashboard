@@ -1,6 +1,6 @@
 # Container images
 
-Three images, each from a Dockerfile here, each built with the repository root as the build
+Four images, each from a Dockerfile here, each built with the repository root as the build
 context:
 
 | image | Dockerfile | what | published by |
@@ -8,6 +8,7 @@ context:
 | `ghcr.io/harvardmadsys/agentic-hpc-dashboard/base` | [`base/Dockerfile.rocky810`](base/Dockerfile.rocky810) | Rocky Linux 8.10 with EPEL and PowerTools enabled, and git, rsync, curl and rpm-build | [`base-image.yml`](../.github/workflows/base-image.yml) |
 | `ghcr.io/harvardmadsys/agentic-hpc-dashboard/collector` | [`collector/Dockerfile`](collector/Dockerfile) | the [collector](../collector/README.md), built from `base`; **x86_64 only** | [`collector-image.yml`](../.github/workflows/collector-image.yml) |
 | `rc-dashboard-demo`, a local tag | [`demo/Dockerfile`](demo/Dockerfile) | the dashboard's [demo mode](../dashboard/README.md#demo-mode), over a synthetic feed | not to GHCR: [`deploy/cloudflare`](../deploy/cloudflare/README.md) builds it and runs it as the public demo |
+| `ghcr.io/harvardmadsys/agentic-hpc-dashboard/dashboard` | [`dashboard/Dockerfile`](dashboard/Dockerfile) | the [dashboard](../dashboard/README.md) service, over day-files mounted in ([below](#the-dashboard)) | [`dashboard-image.yml`](../.github/workflows/dashboard-image.yml): `edge` from `develop`, `X.Y.Z`, `X.Y` and `latest` from a `vX.Y.Z` tag |
 
 ## Tags
 
@@ -20,6 +21,10 @@ context:
 
 No `vX.Y.Z` tag has been pushed yet, so there is no `latest`: pull `edge`, main's newest
 build, as the examples below do.
+
+`dashboard` is tagged otherwise ([The dashboard](#the-dashboard)): a pull request or a push that
+changes what goes into it is built and checked, and published nowhere; `develop` pushes `edge`,
+and a `vX.Y.Z` tag pushes `X.Y.Z`, `X.Y` and `latest`.
 
 ## The collector
 
@@ -97,3 +102,57 @@ start takes a while. The page is built in a Node 22 stage, and the service runs 
 Python 3.13. Ask LLM is off: the image has no agent CLI, and a public demo must not spend
 anyone's model budget. It serves without a password and answers under any host name, since
 its data is made up; the public copy's Cloudflare Worker asks for a password of its own.
+
+## The dashboard
+
+The [dashboard](../dashboard/README.md) service, from [`dashboard/Dockerfile`](dashboard/Dockerfile):
+a Node 22 stage builds the page, a Python stage builds the package as a wheel with the page inside
+it, and the image installs that wheel on Python 3.13 with the dependencies `dashboard/uv.lock`
+pins. It reads the collector's day-files from `/feeds/ebpf` and `/feeds/node` and keeps what it must
+keep in `/state` (`RC_DASH_CACHE_DIR=/state/cache`: the session key, the anonymize salt, the Trend
+tab's roll-up table, and the caches rebuilt from the day-files), and serves `rc-dashboard serve` on
+`0.0.0.0:8080`.
+
+```bash
+# Once: a password, its hash in the state volume (the password itself in /state/password).
+docker run --rm -v rc-dashboard-state:/state ghcr.io/harvardmadsys/agentic-hpc-dashboard/dashboard:edge \
+  rc-dashboard new-password --dir /state/password --install /state/password.hash
+
+docker run -d --name rc-dashboard -p 127.0.0.1:8080:8080 \
+  -v /var/log/ebpfm:/feeds/ebpf:ro -v /var/log/ebpfm-login:/feeds/node:ro \
+  -v rc-dashboard-state:/state \
+  --group-add "$(getent group ebpfm | cut -d: -f3)" \
+  -e RC_DASH_PASSWORD_HASH_FILE=/state/password.hash \
+  -e TZ=America/New_York \
+  ghcr.io/harvardmadsys/agentic-hpc-dashboard/dashboard:edge
+```
+
+| option | why |
+|---|---|
+| `-p 127.0.0.1:8080:8080` | the page on the host's loopback only; reach it through `ssh -N -L 8080:127.0.0.1:8080 <host>`, or a proxy in front |
+| `-v …:/feeds/ebpf:ro`, `-v …:/feeds/node:ro` | the collector's folders (or a fleet's copy), read-only. A glob over several mounts works: `-e RC_DASH_EBPF_ROOTS='/feeds/ebpf/*'` |
+| `-v rc-dashboard-state:/state` | what survives a new container: without it every start makes a new session key (everyone signs in again) and a new salt (new aliases), and the Trend tab starts empty |
+| `--group-add <gid>` | the collector writes its files 0640 for its group (`EBPFM_GROUP`); the image runs as uid 10001, which must be in it |
+| `-e RC_DASH_PASSWORD_HASH_FILE=…` | **the image refuses to start without a password**, as the service does anywhere: a hash file (read again when it changes, and on `docker kill -s HUP rc-dashboard`), or `RC_DASH_PASSWORD_HASH`; `RC_DASH_OPEN=1` serves the page with none |
+| `-e TZ=…` | the zone the page shows every time in: the cluster's ([The time zone](../dashboard/README.md#the-time-zone)) |
+
+- Every other setting is an `RC_DASH_*` variable, or a config file mounted in and named by
+  `RC_DASH_CONFIG` (`-v ./dashboard.toml:/etc/rc-dashboard/dashboard.toml:ro -e
+  RC_DASH_CONFIG=/etc/rc-dashboard/dashboard.toml`); a relative path in it is beside it.
+- The other commands are arguments: `docker exec rc-dashboard rc-dashboard status --json` (exit
+  0, 1 or 2), `… rc-dashboard check-feeds`, `… rc-dashboard backup --to /state/backup.tar`.
+- `rc-dashboard --version` names the commit the image was built from (`GIT_COMMIT`, stamped into
+  the package).
+
+To build it yourself, from the repository root:
+
+```bash
+docker build -f docker/dashboard/Dockerfile --build-arg GIT_COMMIT="$(git rev-parse HEAD)" -t rc-dashboard .
+```
+
+[`dashboard-image.yml`](../.github/workflows/dashboard-image.yml) builds it, and the wheel, on every
+pull request and push that changes what goes into them (not a `.md` file alone), and checks that
+the image refuses to start with no password and that the wheel carries the page. It pushes the image
+only from `develop` (`edge`) and from a `vX.Y.Z` tag (`X.Y.Z`, `X.Y`, `latest`), and on a tag
+attaches the wheel to the tag's GitHub Release, making the release if there is none. A tag stamps
+its version into both, so `rc-dashboard --version` says `X.Y.Z`.

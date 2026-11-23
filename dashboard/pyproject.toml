@@ -19,5 +19,16 @@ rc-dashboard = "rc_dashboard.__main__:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# The wheel is the package, and beside its code what an install without a checkout
+# needs: the risk profiles (risk.profile names them as risk-profiles/<name>.json),
+# and the built page when web/dist has been built (`npm run build`), which the
+# default server.static_dir then finds inside the package (config._static_default).
+# web/dist is gitignored, so it is listed as an artifact; absent, the wheel has no page.
+# A build stamp, rc_dashboard/BUILD.json, goes in when a build writes one (about.py).
 [tool.hatch.build.targets.wheel]
-packages = ["rc_dashboard"]
+only-include = ["rc_dashboard", "risk-profiles", "web/dist"]
+artifacts = ["web/dist/**"]
+
+[tool.hatch.build.targets.wheel.sources]
+"risk-profiles" = "rc_dashboard/risk-profiles"
+"web/dist" = "rc_dashboard/web"
