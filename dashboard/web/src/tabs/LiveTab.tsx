@@ -181,10 +181,10 @@ export const LiveTab = memo(function LiveTab({
 
   // Every class's points in one pass over the bins -- a week is 10,080 of them
   // -- made again only when the frame, the window or the classes shown change.
-  // The service bins by the minute; a window of an hour or more sums them into
+  // The service bins by the minute; a window longer than an hour sums them into
   // 5-minute buckets, so a 24 h line is 288 points, not 1,440 jittery ones, and
-  // a shorter one plots the minutes, since at the 5-minute floor no whole
-  // 5-minute bucket fits (`lib/rate.ts`).
+  // an hour or less plots the minutes, so its line runs to within a minute or
+  // two of now (`lib/rate.ts`).
   const binS = L?.window?.bin_s ?? 60;
   const bucketS = rateBucketS(L?.window?.minutes, binS);
   const words = rateWords(bucketS);

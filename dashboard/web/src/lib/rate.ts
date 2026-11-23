@@ -2,26 +2,27 @@
  * into the chart's bucket.
  *
  * The service bins exits by the minute (`live.rate`, `RollingBuckets.series`).
- * A long window sums them into 5-minute buckets, so a day is 288 points and not
- * 1,440 jittery ones. A window shorter than a dozen of those plots the
- * service's own bins: at the 5-minute floor no whole 5-minute bucket fits, and
- * the chart drew nothing at all.
+ * A window longer than an hour sums them into 5-minute buckets, so a day is 288
+ * points and not 1,440 jittery ones. An hour or less plots the service's own
+ * bins, at most 60 points. In 5-minute buckets the 5-minute floor drew nothing
+ * (no whole bucket fits in it), and an hour drew 11 points whose newest sat 5
+ * to 10 minutes before now: a sixth of the chart, on the tab for what is
+ * happening now.
  *
  * Pure, so mock/check_charts.mjs runs it as written.
  */
 import type { RateRow } from '../api/types';
 import type { LinePt } from '../charts/primitives';
 
-/** The wide bucket, seconds, and how many of them a window must hold to use it. */
+/** The wide bucket, seconds, and the longest window, minutes, drawn without it. */
 const WIDE_S = 300;
-const MIN_BUCKETS = 12;
+const FINE_MAX_MIN = 60;
 
 /** The rate chart's bucket, seconds, for a window of `windowMin` minutes over
- *  the service's `binS`-second bins: 5 minutes once the window holds a dozen
- *  of them (an hour is 12), the service's own bin below that. */
+ *  the service's `binS`-second bins: the service's own bin up to an hour, and
+ *  5 minutes in a longer window. */
 export function rateBucketS(windowMin: number | null | undefined, binS: number): number {
-  const wide = Math.max(binS, WIDE_S);
-  return windowMin != null && windowMin * 60 >= MIN_BUCKETS * wide ? wide : binS;
+  return windowMin != null && windowMin > FINE_MAX_MIN ? Math.max(binS, WIDE_S) : binS;
 }
 
 /** A bucket in words: the title's (`per 5 minutes`, `per minute`), the axis's

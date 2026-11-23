@@ -9,7 +9,8 @@
  * width keeps the ticks it had before it was fluid, a wider one gains none, and a
  * narrow one thins them rather than overprinting them. And the value axis: every
  * tick of one axis written alike, and a count axis in whole steps. And the rate
- * chart draws a line at every window the control offers, the 5-minute floor too.
+ * chart draws a line at every window the control offers, the 5-minute floor too,
+ * and an hour's line runs to the last whole minute.
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -116,19 +117,29 @@ function rows(end, min, fill = () => 1) {
 // 14:03 UTC, so a 5-minute bucket boundary (14:00, 13:55) falls inside every short window
 const end = Date.UTC(2026, 0, 10, 14, 3) / 1000;
 
-test('the rate chart sums into 5 minutes only where the window holds a dozen of them', () => {
+test('the rate chart plots the minutes up to an hour, and sums into 5 minutes past it', () => {
   assert.equal(rateBucketS(5, 60), 60); // the floor: no whole 5-minute bucket fits in it
   assert.equal(rateBucketS(15, 60), 60);
-  assert.equal(rateBucketS(59, 60), 60);
-  assert.equal(rateBucketS(60, 60), 300); // the 1 h preset: 12 of them
-  assert.equal(rateBucketS(1440, 60), 300);
+  assert.equal(rateBucketS(60, 60), 60); // the 1 h preset: 5-minute buckets ended 5 to 10 minutes back
+  assert.equal(rateBucketS(61, 60), 300);
+  assert.equal(rateBucketS(360, 60), 300); // the 6 h preset: 72 points
+  assert.equal(rateBucketS(1440, 60), 300); // a day: 288 points, not 1,440
   assert.equal(rateBucketS(undefined, 60), 60); // no frame yet
-  assert.equal(rateBucketS(60, 600), 600); // bins coarser than 5 minutes are never split
+  assert.equal(rateBucketS(1440, 600), 600); // bins coarser than 5 minutes are never split
 });
 
 test('the rate chart says which bucket it drew', () => {
   assert.deepEqual(rateWords(60), { per: 'per minute', unit: 'min', one: 'minute' });
   assert.deepEqual(rateWords(300), { per: 'per 5 minutes', unit: '5 min', one: '5 minutes' });
+});
+
+test('an hour runs to the last whole minute; in 5-minute buckets it stopped 5 to 10 minutes back', () => {
+  const r = rows(end, 60);
+  const [minutes] = rateSeries(r, ['agent'], 60, rateBucketS(60, 60), 0);
+  assert.equal(minutes.length, 59);
+  assert.equal(end - minutes[minutes.length - 1].x, 60); // 14:02, at 14:03
+  const [fives] = rateSeries(r, ['agent'], 60, 300, 0);
+  assert.equal(end - fives[fives.length - 1].x, 8 * 60); // 13:55, at 14:03
 });
 
 test('the 5-minute window draws its whole minutes, and not the one still filling', () => {
@@ -141,7 +152,7 @@ test('the 5-minute window draws its whole minutes, and not the one still filling
   assert.deepEqual(rateSeries(r, ['agent'], 60, 300, 0)[0], []);
 });
 
-test('an hour is summed into whole 5-minute buckets on the clock, a hole kept a hole', () => {
+test('5-minute buckets are whole and on the clock, a hole kept a hole', () => {
   // the minutes of 13:15-13:19 hold no record at all; one minute of 13:20-13:24 has a record
   const hole = (i) => {
     const m = (end - (59 - i) * 60) / 60 % 60;
@@ -149,7 +160,7 @@ test('an hour is summed into whole 5-minute buckets on the clock, a hole kept a 
     if (m >= 20 && m < 25) return m === 22 ? 7 : null;
     return 1;
   };
-  const [agent] = rateSeries(rows(end, 60, hole), ['agent'], 60, rateBucketS(60, 60), 0);
+  const [agent] = rateSeries(rows(end, 60, hole), ['agent'], 60, 300, 0);
   // 13:04-14:03: 13:04 starts a bucket that began before the window, and 14:00 is still filling
   assert.equal(agent[0].x, Date.UTC(2026, 0, 10, 13, 5) / 1000);
   assert.equal(agent[agent.length - 1].x, Date.UTC(2026, 0, 10, 13, 55) / 1000);
