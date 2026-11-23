@@ -18,10 +18,17 @@ from rc_dashboard import gcwatch                       # noqa: E402
 class SettleTest(unittest.TestCase):
     def setUp(self):
         self.state = dict(gcwatch._state)
+        self.frozen = gc.get_freeze_count()
+        # A first settle() here, whatever an earlier one in this process did,
+        # so none of these is a full collection it did not ask for.
+        gcwatch._state["full_at"] = None
 
     def tearDown(self):
-        # settle() froze this whole process: leave the next test what it had
-        gc.unfreeze()
+        # settle() froze this whole process: leave the next test what it had.
+        # What was frozen before cannot be told from what settle() froze, so a
+        # process that came with some keeps all of it.
+        if not self.frozen:
+            gc.unfreeze()
         gcwatch._state.clear()
         gcwatch._state.update(self.state)
 
@@ -35,6 +42,13 @@ class SettleTest(unittest.TestCase):
         self.assertEqual(st["trims"], self.state["trims"] + 2)
         self.assertIsNotNone(st["last_trim_ms"])
         self.assertEqual(st["settles"], self.state["settles"] + 2)
+
+    def test_no_lock_is_held_through_the_trim(self):
+        # a settle() racing this one waits for the freeze, not the trim
+        held = []
+        with mock.patch.object(gcwatch, "_trim", lambda pad: held.append(gcwatch._lock.locked()) or 1):
+            gcwatch.settle()
+        self.assertEqual(held, [False])
 
     def test_with_no_malloc_trim_settle_still_freezes_and_says_none_ran(self):
         with mock.patch.object(gcwatch, "_trim", None):

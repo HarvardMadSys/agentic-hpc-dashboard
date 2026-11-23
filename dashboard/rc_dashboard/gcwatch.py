@@ -24,8 +24,10 @@ backfill done and the 24 h window built, the service held 900 to 1,010 MB, of
 which the live tier, the roll-up and the collectors' health are about 12 MB; it
 holds 490 to 500 MB when `settle()` ends with a `malloc_trim(0)`, as it does now
 where the C library has one (glibc; not musl or macOS). A trim took 0.5 to 40
-ms there, the GIL let go meanwhile. It releases free pages and nothing else: no
-object, no answer.
+ms there. ctypes lets the GIL go meanwhile, so other threads run unless they
+need the C heap: glibc locks each arena as it walks it, and an allocation too
+large for Python's own allocator (over 512 bytes) waits for the walk to move on.
+It releases free pages and nothing else: no object, no answer.
 """
 import ctypes
 import gc
@@ -99,10 +101,14 @@ def settle(full_every_s=FULL_EVERY_S):
         gc.freeze()
         _state["frozen_at"] = now
         _state["settles"] += 1
-        if _trim is not None:
-            t = time.perf_counter()
-            _trim(0)
-            _state["last_trim_ms"] = round(1000.0 * (time.perf_counter() - t), 1)
+    if _trim is not None:
+        # Outside the lock, so a settle() racing this one waits for the freeze
+        # alone; two trims at once take turns at each arena, which glibc locks.
+        t = time.perf_counter()
+        _trim(0)
+        ms = round(1000.0 * (time.perf_counter() - t), 1)
+        with _lock:
+            _state["last_trim_ms"] = ms
             _state["trims"] += 1
     return "collected and froze" if full else "froze"
 
