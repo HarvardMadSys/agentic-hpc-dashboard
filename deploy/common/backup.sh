@@ -10,8 +10,10 @@
 #                keeps is rebuilt from the day-files.
 #   --settings   also ETC as FILE.settings.tar: dashboard.env, fleet.env, install.env,
 #                and in a fleet the pull key the nodes let in. Keep it as you keep keys.
-#   --restore F  the dashboard stops, `rc-dashboard restore --from F` puts the file back as
-#                its account, and the dashboard starts again (it refills its history).
+#   --restore F  the dashboard stops, `rc-dashboard restore --from F --force` puts the file
+#                back as its account, replacing what the host holds (an installed host already
+#                has a session key and a roll-up table, which restore keeps without --force),
+#                and the dashboard starts again (it refills its history).
 #
 # In a fleet with FLEET_KEEP_DAYS=0, the copy (STATE/mirror) may hold days the nodes no
 # longer have: keep it too when you move (deploy/README.md, "What to back up").
@@ -62,7 +64,7 @@ if [ -n "$restore" ]; then
   chown "$SERVICE_USER" "$tmp"
   say "stopping the dashboard, putting $restore back"
   systemctl stop rc-dashboard.service || true
-  dash restore --from "$tmp" || { rm -f "$tmp"; die "rc-dashboard restore failed: the dashboard stays stopped"; }
+  dash restore --from "$tmp" --force || { rm -f "$tmp"; die "rc-dashboard restore failed: the dashboard stays stopped"; }
   rm -f "$tmp"
   systemctl start rc-dashboard.service
   say "the dashboard runs again: it refills its history from the day-files"
