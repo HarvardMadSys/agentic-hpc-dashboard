@@ -15,12 +15,14 @@
  * chart or table: no method notes. The service's `notes`, `basis` and
  * `*_basis` texts are not served to the page; Ask LLM reads them.
  */
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { FeedStatus, PanelEnvelope, WindowStatus } from '../api/types';
 import { AskBox, canAsk, useAskScope } from './Ask';
 import type { AskRef } from './Ask';
 import { Boundary } from './Boundary';
+import { AboutButton } from './About';
+import { CopyCsvButton } from './CopyCsv';
 
 export function StatusPill({
   status,
@@ -202,6 +204,14 @@ export function Panel({
 }: PanelProps) {
   const scope = useAskScope();
   const [asking, setAsking] = useState(false);
+  const secRef = useRef<HTMLElement>(null);
+  // a panel that draws a table offers it as CSV (components/CopyCsv.tsx); read
+  // after each draw, since its table comes with its data
+  const [hasTable, setHasTable] = useState(false);
+  useLayoutEffect(() => {
+    const t = !!secRef.current?.querySelector('table');
+    if (t !== hasTable) setHasTable(t);
+  });
   const askable = !!ask && canAsk(scope.info);
   const feedName = p?._feed ?? feed ?? '';
   // no body to show, ask about or qualify: an absent feed, or a panel the
@@ -229,7 +239,7 @@ export function Panel({
     </button>
   ) : null;
   return (
-    <section className={`panel${span ? ' span2' : ''}`} id={id ?? slug(title)} data-title={title}>
+    <section ref={secRef} className={`panel${span ? ' span2' : ''}`} id={id ?? slug(title)} data-title={title}>
       <header>
         <div>
           {/* No "process tracer · ok" line: which collector fed a panel, and
@@ -255,6 +265,9 @@ export function Panel({
           )}
           {live && !missing && <StatusPill status="live" text="live" beat />}
           {Array.isArray(ask) && askBtn}
+          {/* every explanation this panel's labels hold, in one place (components/About.tsx) */}
+          {!missing && !blank && hasTable && <CopyCsvButton root={secRef} />}
+          {!missing && !blank && <AboutButton title={title} root={secRef} />}
         </div>
       </header>
       {askable && asking && !missing && !blank && (

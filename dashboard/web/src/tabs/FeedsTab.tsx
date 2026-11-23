@@ -178,6 +178,20 @@ function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
                 </td>
                 <td>
                   <StatusPill status={v.pill} text={v.text} tip={v.tip} />
+                  {/* where the files are copied, the copy's own state: a failed copy
+                      is not a collector that stopped, though its files stop growing */}
+                  {h.transport && (
+                    h.transport.ok ? (
+                      <div className="nm" style={{ fontSize: '12px' }} data-tip={`copied to the dashboard by ${h.transport.kind === 'rsync' ? 'rsync' : 'the ssh stream'}`}>
+                        copied {ago(h.transport.last_ok_age_s)}
+                      </div>
+                    ) : (
+                      <div className="copy-bad" data-tip={`the ${h.transport.kind === 'rsync' ? 'rsync pull' : 'ssh stream'} of this ${nodes.one}'s files failed: the collector may be fine`}>
+                        copy failed{h.transport.last_ok_age_s != null ? ` · last good ${ago(h.transport.last_ok_age_s)}` : ''}
+                        {h.transport.error ? <div className="mono">{h.transport.error}</div> : null}
+                      </div>
+                    )
+                  )}
                 </td>
                 <td className="num" style={h.verdict === 'silent' || h.verdict === 'stopped' ? { color: 'var(--crit)' } : undefined}>
                   {ago(h.heartbeat.age_s)}
@@ -189,6 +203,7 @@ function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
                       <div className="nm" style={{ fontSize: '12px' }}>
                         {h.running.started != null ? `up ${dur(now - h.running.started)}` : ''}
                         {h.running.pid != null ? ` · pid ${h.running.pid}` : ''}
+                        {h.running.collector_version ? ` · ${h.running.collector_version}` : ''}
                       </div>
                     </>
                   ) : (
@@ -420,6 +435,11 @@ export const FeedsTab = memo(function FeedsTab({
     (a, b) => Number(b.required) - Number(a.required) || (a.tier || '').localeCompare(b.tier || '') || (a.name || '').localeCompare(b.name || ''),
   );
   const cfg = config.data ? flatten(config.data as unknown as ConfigNode) : [];
+  // the service's version (`_meta.version`): "0.1.0 · abc1234"; nothing from a service too old to say
+  const ver = ((config.data?._meta as Record<string, { _value?: unknown }> | undefined)?.version?._value ?? null) as
+    | { version?: string | null; commit?: string | null }
+    | null;
+  const version = ver?.version ? `${ver.version}${ver.commit ? ` · ${ver.commit}` : ''}` : null;
   const cfgSort = useSort<string>();
   const counts = hosts.reduce<Record<string, number>>((m, h) => ({ ...m, [h.verdict]: (m[h.verdict] ?? 0) + 1 }), {});
   const summary = (['ok', 'degraded', 'stopped', 'silent', 'unknown'] as CollectorVerdict[])
@@ -468,7 +488,21 @@ export const FeedsTab = memo(function FeedsTab({
         <Backfill b={(col.data?.backfill ?? (feeds.data?.ebpf?.backfill as Record<string, unknown> | undefined)) as Record<string, unknown> | null} />
       </Panel>
 
-      <Panel title="Configuration" feed="/api/config" header={<span className="pill">panels built {builtAt ?? DASH}</span>}>
+      <Panel
+        title="Configuration"
+        feed="/api/config"
+        header={
+          <>
+            {/* which code the service is (`rc-dashboard --version`), beside when it built the panels */}
+            {version && (
+              <span className="pill" data-tip="the dashboard service's version and commit (rc-dashboard --version)">
+                rc-dashboard {version}
+              </span>
+            )}
+            <span className="pill">panels built {builtAt ?? DASH}</span>
+          </>
+        }
+      >
         {config.error && <div className="err">{config.error}</div>}
         <More label={`every resolved setting and where it came from · ${fint(cfg.length)}`}>
           <div className="scroller vscroll">

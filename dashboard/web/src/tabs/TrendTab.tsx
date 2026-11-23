@@ -26,10 +26,11 @@ import { TOOL_COL } from '../charts/TimeChart';
 import { Segmented } from '../components/ClassFilter';
 import { Legend, Panel } from '../components/Panel';
 import { SortTh } from '../components/SortTh';
-import { AGENT_TYPE_COL, AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
+import { AGENT_TYPE_COL, AGENT_TYPE_LBL, CLS_COL, CLS_INK, CLS_LBL } from '../lib/classes';
 import { DASH, fint, fmt, pc } from '../lib/format';
 import type { Who } from '../lib/filters';
 import { useSort } from '../lib/useSort';
+import { zdate, zinstant } from '../lib/zone';
 
 type By = 'day' | 'week' | 'month';
 type Read = 'abs' | 'share';
@@ -55,45 +56,51 @@ const HOSTS_SHOWN = 6;
 /** The table is written a minute at a time; read it again this often. */
 const EVERY_MS = 120000;
 
-/** Ticks on local midnights: a day, a week (Mondays), or a month's first,
- *  whichever puts at most `target` across the span. */
+/** Ticks on the page zone's midnights (the service's: lib/zone.ts), where its
+ *  day buckets begin: a day, a week (Mondays), or a month's first, whichever
+ *  puts at most `target` across the span. `d` is a wall clock: getUTC* reads it. */
 function dateTicks(x0: number, x1: number, target: number): number[] {
   const spanD = (x1 - x0) / DAY_S;
   const out: number[] = [];
-  const d = new Date(x0 * 1000);
-  d.setHours(0, 0, 0, 0);
+  const d = zdate(x0 * 1000);
+  d.setUTCHours(0, 0, 0, 0);
+  const at = () => zinstant(d) / 1000;
   if (spanD / 7 > target) {
     // months, every 1, 2, 3 or 6 of them
     const every = [1, 2, 3, 6, 12].find((m) => spanD / 30.4 / m <= target) ?? 12;
-    d.setDate(1);
-    while (d.getTime() / 1000 < x0 || d.getMonth() % every) d.setMonth(d.getMonth() + 1);
-    for (; d.getTime() / 1000 <= x1; d.setMonth(d.getMonth() + every)) out.push(d.getTime() / 1000);
+    d.setUTCDate(1);
+    while (at() < x0 || d.getUTCMonth() % every) d.setUTCMonth(d.getUTCMonth() + 1);
+    for (; at() <= x1; d.setUTCMonth(d.getUTCMonth() + every)) out.push(at());
   } else if (spanD > target) {
     const every = Math.max(1, Math.ceil(spanD / 7 / target)) * 7;
-    while (d.getDay() !== 1 || d.getTime() / 1000 < x0) d.setDate(d.getDate() + 1);
-    for (; d.getTime() / 1000 <= x1; d.setDate(d.getDate() + every)) out.push(d.getTime() / 1000);
+    while (d.getUTCDay() !== 1 || at() < x0) d.setUTCDate(d.getUTCDate() + 1);
+    for (; at() <= x1; d.setUTCDate(d.getUTCDate() + every)) out.push(at());
   } else {
-    while (d.getTime() / 1000 < x0) d.setDate(d.getDate() + 1);
-    for (; d.getTime() / 1000 <= x1; d.setDate(d.getDate() + 1)) out.push(d.getTime() / 1000);
+    while (at() < x0) d.setUTCDate(d.getUTCDate() + 1);
+    for (; at() <= x1; d.setUTCDate(d.getUTCDate() + 1)) out.push(at());
   }
   return out.length ? out : [x0];
 }
 
 /** A tick: the month's name on its first day, the day of the month otherwise. */
 function dateLabel(e: number): string {
-  const d = new Date(e * 1000);
-  if (d.getDate() === 1) return d.getMonth() === 0 ? String(d.getFullYear()) : MONTHS[d.getMonth()];
-  return `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+  const d = zdate(e * 1000);
+  if (d.getUTCDate() === 1) return d.getUTCMonth() === 0 ? String(d.getUTCFullYear()) : MONTHS[d.getUTCMonth()];
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
 }
+
+/** A bucket's day key (`YYYY-MM-DD`, the service's local day) as a calendar
+ *  date: the same day whatever the zone it is read in. */
+const calendar = (key: string) => new Date(`${key}T12:00:00Z`);
 
 /** What a bucket is called, in a hover and in the table. */
 function bucketName(b: TrendBucket, by: By): string {
   if (by === 'month') {
-    const d = new Date(`${b.key}T12:00:00`);
-    return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+    const d = calendar(b.key);
+    return `${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
   }
   if (by === 'week') return `week of ${b.key}`;
-  return `${b.key} ${WEEKDAY[new Date(`${b.key}T12:00:00`).getDay()]}`;
+  return `${b.key} ${WEEKDAY[calendar(b.key).getUTCDay()]}`;
 }
 
 /** What about a bucket is partial, in a few words. */
@@ -150,6 +157,8 @@ function TrendChart({
   const series: LineSeries[] = lines.map((l) => ({
     lbl: l.lbl,
     c: l.c,
+    // each line's word at its end, told without its colour; past six the words would pile up, and the legend serves
+    tag: lines.length <= 6 ? l.lbl : undefined,
     pts: bs.map((b) => ({ x: b.t, y: b.data_days ? l.v(b) : null })),
   }));
   const x0 = bs.length ? bs[0].t : 0;
@@ -356,13 +365,13 @@ export function TrendTab({ cls, who }: { cls: Cls[]; who: Who | null }) {
                 <SortTh s={s} k="held" num tip="minutes the collector wrote any exit in, of the minutes the table could hold">minutes held</SortTh>
                 <SortTh s={s} k="users" num tip="distinct accounts that ran anything, over the whole point">users</SortTh>
                 {have.map((c) => (
-                  <SortTh key={`u:${c}`} s={s} k={`u:${c}`} num className="cls" style={{ color: CLS_COL[c] }}
+                  <SortTh key={`u:${c}`} s={s} k={`u:${c}`} num className="cls" style={{ color: CLS_INK[c] }}
                     tip={`distinct accounts that ran something as ${CLS_LBL[c] ?? c}`}>
                     {CLS_LBL[c] ?? c} users
                   </SortTh>
                 ))}
                 {have.map((c) => (
-                  <SortTh key={`n:${c}`} s={s} k={`n:${c}`} num className="cls" style={{ color: CLS_COL[c] }}
+                  <SortTh key={`n:${c}`} s={s} k={`n:${c}`} num className="cls" style={{ color: CLS_INK[c] }}
                     tip={`processes of the ${CLS_LBL[c] ?? c} class that exited, a day (the mean over the days with data)`}>
                     {CLS_LBL[c] ?? c} / day
                   </SortTh>

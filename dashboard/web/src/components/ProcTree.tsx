@@ -28,6 +28,7 @@ import { DASH, clock, dur, fint, fmt, mb } from '../lib/format';
 import { hiders, isHidden, shortPath, typoLabel, typoTip } from './ProcDiagram';
 import type { Hide } from './ProcDiagram';
 import { table } from '../lib/lookup';
+import { monthDay, ymd } from '../lib/zone';
 
 /** Group members past the itemised few: in the group's totals, not drawn. */
 interface Rest {
@@ -287,8 +288,7 @@ export function defaultOpen(root: ProcNode, extra = 160): Set<string> {
 function when(t: number | null | undefined, lo: number | null): string {
   if (t == null) return DASH;
   if (lo != null && Math.abs(t - lo) > 20 * 3600) {
-    const d = new Date(t * 1000);
-    return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${clock(t).slice(0, 5)}`;
+    return `${monthDay(t * 1000)} ${clock(t).slice(0, 5)}`;
   }
   return clock(t);
 }
@@ -314,8 +314,7 @@ export function tookText(e: ProcNode): string {
 
 function stamp(t: number | null | undefined): string {
   if (t == null) return DASH;
-  const d = new Date(t * 1000);
-  return `${d.toLocaleDateString()} ${clock(t)}`;
+  return `${ymd(t * 1000)} ${clock(t)}`;
 }
 
 /** A subtree's syscall bytes; the hover splits them into read and written,

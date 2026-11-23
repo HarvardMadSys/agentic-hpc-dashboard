@@ -147,7 +147,7 @@ test('the agent’s share of every process is out of every class, `unlabeled` to
 
 test('the risky-actions plate has no per-class zeros for kinds this cluster does not count', async () => {
   const html = await ui.render('components/WindowPlates.tsx', 'WindowPlates', { P: plates({ agent: 5 }, {}), cls: ALL, traj: null });
-  const risky = html.split('<div class="plate').find((p) => p.includes('risky agent actions'));
+  const risky = html.split('<div class="plate').find((p) => p.includes('risky actions'));
   assert.ok(risky);
   // on develop: a class row of 0 · 0 · 0 under a total of —
   assert.doesNotMatch(risky, /class="cls3"/);
@@ -157,7 +157,7 @@ test('the risky-actions plate has no per-class zeros for kinds this cluster does
     cls: ALL,
     traj: null,
   });
-  const row = counted.split('<div class="plate').find((p) => p.includes('risky agent actions'));
+  const row = counted.split('<div class="plate').find((p) => p.includes('risky actions'));
   assert.match(row, /class="cls3"/, 'a counted kind keeps its class row');
 });
 

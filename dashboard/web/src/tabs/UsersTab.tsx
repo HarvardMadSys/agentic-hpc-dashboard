@@ -239,6 +239,11 @@ function Plates({ U, rows }: { U: UsersResponse; rows: UserRow[] }) {
   const f = U.fleet;
   const win = U._window?.label ?? (U.window ? `${Math.round(U.window.minutes / 60)}h` : '');
   const running = rows.filter((r) => r.running > 0).length;
+  const perUser = (() => {
+    const n = rows.map((r) => r.sessions).filter((x) => x > 0).sort((a, b) => a - b);
+    const m = n.length >> 1;
+    return { med: n.length ? (n.length % 2 ? n[m] : (n[m - 1] + n[m]) / 2) : null, max: n.length ? n[n.length - 1] : null };
+  })();
   const bp = f ? bypassShare(f.approval as Record<string, number>) : null;
   const sc = f ? surfaceShare(f.surfaces, ['script']) : null;
   return (
@@ -249,11 +254,15 @@ function Plates({ U, rows }: { U: UsersResponse; rows: UserRow[] }) {
         tip="accounts with at least one agent session in the window"
         note={f ? `${fint(running)} with an agent running now` : undefined}
       />
+      {/* how many each user ran, not how many there were: the window's count of
+          sessions is Live's and Agents › Sessions' headline, and a third copy of
+          it here said nothing about users */}
       <Plate
-        k="agent sessions"
-        total={f ? f.sessions : null}
-        tip="one session is one agent run; a typical one is the median"
-        note={f ? `typically open ${dur(f.wall_p50_s)} · ${f.calls_p50 != null ? plural(f.calls_p50, 'tool call') : 'tool calls not read'}` : undefined}
+        k="sessions per user · median"
+        total={f ? perUser.med : null}
+        fmtFn={fmt}
+        tip="the agent sessions each user ran in the window, the middle user's count; a session is one agent run"
+        note={f ? `${fint(f.sessions)} in all${perUser.max != null ? ` · the busiest user ran ${fint(perUser.max)}` : ''} · typically open ${dur(f.wall_p50_s)}` : undefined}
       />
       <Plate
         k="launched with a bypass flag"
@@ -292,7 +301,8 @@ function Roster({
   const [q, setQ] = useState('');
   const [trait, setTrait] = useState<string | null>(null);
   // rows name people: A to Z until a header is clicked (lib/useSort.ts)
-  const s = useSort<RosterKey>('user', 'asc');
+  // the most recently active first: who is working now is who a reader looks for, not who sorts first
+  const s = useSort<RosterKey>('last');
   const catalogue = U.traits ?? [];
   const ql = q.toLowerCase();
   const kept = rows.filter(
@@ -364,11 +374,23 @@ function Roster({
               const toggle = () => setOpen(on ? null : r.user);
               return (
                 // one body a user: their row, and the line under it that says how they leverage agents
-                <tbody key={r.user} className={`ur-user${on ? ' open' : ''}`} aria-selected={on}>
+                <tbody key={r.user} className={`ur-user${on ? ' open' : ''}`}>
                   <tr className="ur-row" onClick={toggle}>
                     <td>
-                      <span className="u-caret">{on ? '▾' : '▸'}</span>
-                      <span className="mono u-name">{r.user}</span>
+                      {/* the row opens on a click anywhere; the name is the control a
+                          keyboard and a screen reader reach, and it says whether it is open */}
+                      <button
+                        className="linkbtn u-toggle"
+                        aria-expanded={on}
+                        aria-label={`${r.user}: ${on ? 'close' : 'open'} their portrait`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggle();
+                        }}
+                      >
+                        <span className="u-caret" aria-hidden="true">{on ? '▾' : '▸'}</span>
+                        <span className="mono u-name">{r.user}</span>
+                      </button>
                       {r.running > 0 && (
                         <span className="ur-live" data-tip={`${plural(r.running, 'session')} running now`}>
                           <i />

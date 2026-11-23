@@ -13,7 +13,7 @@ import { SplitBar } from '../components/SplitBar';
 import type { SplitPart } from '../components/SplitBar';
 import { SortTh } from '../components/SortTh';
 import { Term } from '../components/Term';
-import { CLS, CLS_COL, CLS_LBL } from '../lib/classes';
+import { CLS, CLS_COL, CLS_INK, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt, mb } from '../lib/format';
 import { GLOSS } from '../lib/glossary';
 import { useNodeWords } from '../lib/nodes';
@@ -201,7 +201,7 @@ export const OverviewTab = memo(function OverviewTab({
                 <SortTh s={sort} k="unit" first="asc">each class's share of</SortTh>
                 <th className="split" aria-label="the whole, split by class" />
                 {have.map((c) => (
-                  <SortTh key={c} s={sort} k={c} className="cls" style={{ color: CLS_COL[c] }}>
+                  <SortTh key={c} s={sort} k={c} className="cls" style={{ color: CLS_INK[c] }}>
                     {CLS_LBL[c] ?? c}
                   </SortTh>
                 ))}

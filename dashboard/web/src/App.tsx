@@ -29,7 +29,8 @@ import { UrlCtx, useUrlState } from './lib/useUrlState';
 import type { Panels } from './lib/panels';
 import { useStickyBar } from './lib/sticky';
 import { FrameCtx, PinnedCtx } from './lib/useNow';
-import { CLS } from './lib/classes';
+import { AGENT_TYPE_LBL, CLS } from './lib/classes';
+import { sessionTitle } from './lib/sessions';
 import { Icon } from './components/Icon';
 import { LogoGlyph } from './components/Logo';
 import type { IconName } from './components/Icon';
@@ -50,6 +51,10 @@ import { TabBoundary, lazyTab, preloadTabs } from './lib/lazyTab';
 import { NodeNounCtx, nodeWords } from './lib/nodes';
 import { feedLabel } from './lib/feeds';
 import { table } from './lib/lookup';
+import { setZone, zoneLabel } from './lib/zone';
+import { SetupScreen, noData } from './components/SetupScreen';
+import { AskDrawer } from './components/AskDrawer';
+import type { ZoneInfo } from './lib/zone';
 
 /* Live is the first paint, with the shell; every other tab loads its code
  * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). The sessions
@@ -69,57 +74,66 @@ const ChatTab = lazyTab(() => import('./tabs/ChatTab').then((m) => m.ChatTab));
 const UsersTab = lazyTab(() => import('./tabs/UsersTab').then((m) => m.UsersTab));
 const TrendTab = lazyTab(() => import('./tabs/TrendTab').then((m) => m.TrendTab));
 
-/* In the order an operator reads them (roadmap notes 32 and 50): what is
- * happening and who uses what, how each user works with agents, the agents
- * and one session at a time, how safely the agents ran, then the detail: the
- * login nodes, and the cluster behind them. Old tab keys still open
- * (lib/filters.ts TAB_ALIAS): sessions, cascades and trajectories -> agents,
- * io -> resources, sandbox -> security, and overview -> live, where its table
- * now is; `?tab=hpc` opens HPC, whose key stays `slurm`.
+/* Six stops in the rail, in the order an operator reads them: what is
+ * happening now, who works with agents and how, the agents and every session,
+ * what was risky, what the nodes and the scheduler gave, and the system itself.
+ * Eleven entries made every question a hunt; each entry now answers one, and
+ * holds the tabs that answer it as sub-tabs along the foot of the head:
  *
- * Fewer stops in the rail: Overview's last table is a section of Live; the
- * Sessions tab is the Agents tab's last part, its list of every session and
- * the inspector beside it, while a user's own sessions open under their
- * portrait on Users; and Resources and Risks are one entry, the login nodes,
- * with a sub-tab each. HPC, the scheduler, is an entry of its own: what a
- * session asks of the cluster is not login-node use. A sub-tab keeps its own
- * key, so `?tab=resources`, a citation and every link into it land where they
- * always did. */
+ *   Live    the window now (Overview's table is its section)
+ *   Users   each user's portrait, and their sessions under it
+ *   Agents  › Agents (trees, blast radius, tools) · Sessions (every session, and its inspector)
+ *   Risk    › Security (launch, confinement, exposure, reach) · Site rules (what should not run on a login node)
+ *   Usage   › Login nodes (CPU, memory, I/O) · HPC (the scheduler) · Trend (each class over a year)
+ *   System  › Feeds · Internal (only where `ui.show_internal` lists it)
+ *
+ * Ask LLM is not a stop: it asks about the window on screen, so it opens beside
+ * whatever tab is open (the head's Ask button), and only where a site turned it
+ * on. Every tab keeps its key, so `?tab=resources`, a citation and every link
+ * into a tab land where they always did; old keys still open (lib/filters.ts
+ * TAB_ALIAS): cascades -> agents, trajectories -> sessions, io -> resources,
+ * sandbox -> security, overview -> live, hpc -> slurm; `?tab=chat` opens Ask. */
 /* `also`: the names a tab had before, which "go to" still finds it by. */
-type Tab = { k: string; lbl: string; eyebrow: string; icon: IconName; group: string; parent?: 'nodes'; also?: string };
+type Parent = 'agents' | 'risk' | 'usage' | 'system';
+type Tab = { k: string; lbl: string; eyebrow: string; icon: IconName; group: string; parent?: Parent; also?: string };
 const TABS: Tab[] = [
-  { k: 'live', lbl: 'Live', eyebrow: 'what runs, and who runs it', icon: 'live', group: 'Monitor', also: 'overview who uses what' },
-  { k: 'trend', lbl: 'Trend', eyebrow: 'each class’s use over up to a year, from the roll-up table', icon: 'trend', group: 'Monitor', also: 'year history growth' },
-  { k: 'users', lbl: 'Users', eyebrow: 'how each user works with coding agents, and their sessions', icon: 'users', group: 'Monitor' },
-  { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, the tools they ran, and each session', icon: 'agents', group: 'Monitor', also: 'sessions session trajectories trajectory inspector process tree' },
-  { k: 'security', lbl: 'Security', eyebrow: 'how agents were launched and sandboxed, what they exposed, and where they reached', icon: 'security', group: 'Monitor', also: 'sandbox approval bypass credentials secrets blast radius' },
-  { k: 'resources', lbl: 'Resources', eyebrow: 'CPU, memory, waits, and I/O', icon: 'resources', group: 'Monitor', parent: 'nodes' },
-  { k: 'risk', lbl: 'Risks', eyebrow: 'what should not run here', icon: 'risk', group: 'Monitor', parent: 'nodes', also: 'risk warning' },
-  { k: 'slurm', lbl: 'HPC', eyebrow: 'what sessions ask of the Slurm scheduler, and what looks abnormal', icon: 'hpc', group: 'Monitor', also: 'slurm scheduler jobs queue abnormal cluster' },
+  { k: 'live', lbl: 'Live', eyebrow: 'what runs, and who runs it', icon: 'live', group: 'Monitor', also: 'overview who uses what now' },
+  { k: 'users', lbl: 'Users', eyebrow: 'how each user works with coding agents, and their sessions', icon: 'users', group: 'Monitor', also: 'people portrait' },
+  { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, where they reached, and the tools they ran', icon: 'agents', group: 'Monitor', parent: 'agents', also: 'cascades subagents blast radius tools' },
+  { k: 'sessions', lbl: 'Sessions', eyebrow: 'every session, ranked, and its process tree', icon: 'trajectories', group: 'Monitor', parent: 'agents', also: 'session trajectories trajectory inspector process tree' },
+  { k: 'security', lbl: 'Security', eyebrow: 'how agents were launched and sandboxed, what they exposed, and where they reached', icon: 'security', group: 'Monitor', parent: 'risk', also: 'sandbox approval bypass credentials secrets blast radius' },
+  { k: 'risk', lbl: 'Site rules', eyebrow: 'what this site’s rules say should not run on a login node', icon: 'risk', group: 'Monitor', parent: 'risk', also: 'risks risk warning dangerous commands credentials' },
+  { k: 'resources', lbl: 'Login nodes', eyebrow: 'CPU, memory, waits, and I/O on the login nodes', icon: 'resources', group: 'Monitor', parent: 'usage', also: 'resources cpu memory io nodes host' },
+  { k: 'slurm', lbl: 'HPC', eyebrow: 'what sessions ask of the Slurm scheduler, and what looks abnormal', icon: 'hpc', group: 'Monitor', parent: 'usage', also: 'slurm scheduler jobs queue abnormal cluster' },
+  { k: 'trend', lbl: 'Trend', eyebrow: 'each class’s use over up to a year, from the roll-up table', icon: 'trend', group: 'Monitor', parent: 'usage', also: 'year history growth' },
+  { k: 'feeds', lbl: 'Feeds', eyebrow: 'where the data comes from, and how fresh it is', icon: 'feeds', group: 'More', parent: 'system', also: 'provenance data sources collectors settings version' },
+  { k: 'internal', lbl: 'Internal', eyebrow: 'panels not settled yet', icon: 'internal', group: 'More', parent: 'system' },
+  // not a stop in the rail: a drawer beside the open tab (`AskDrawer`); kept so `?tab=chat` opens it
   { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask a language model about this window', icon: 'chat', group: 'More' },
-  { k: 'internal', lbl: 'Internal', eyebrow: 'not settled yet', icon: 'internal', group: 'More' },
-  { k: 'feeds', lbl: 'Feeds', eyebrow: 'where the data comes from, and how fresh it is', icon: 'feeds', group: 'More', also: 'provenance data sources' },
 ];
-/** The one entry the three node tabs share. It is named in the site's own
- *  word for its hosts (`ui.node_noun`, "login nodes"): their figures are
- *  login-node use, not the cluster's (README, "Scope is stated"). */
-const NODES_EYEBROW = 'what runs on them, and what should not';
-/** The Agents tab's list of every session (TrajectoriesTab.tsx), its last part,
- *  and the inspector beside it (TrajectoryInspector.tsx). */
+/** A parent entry: the rail's stop for its sub-tabs, and the head's title. The
+ *  usage entry's first sub-tab is named in the site's own word for its hosts
+ *  (`ui.node_noun`): its figures are login-node use, not the cluster's
+ *  (README, "Scope is stated"). */
+const PARENTS: Record<Parent, { lbl: string; icon: IconName; eyebrow: string }> = {
+  agents: { lbl: 'Agents', icon: 'agents', eyebrow: 'every agent and its subagents, and every session, one at a time' },
+  risk: { lbl: 'Risk', icon: 'security', eyebrow: 'how agents were launched and confined, what they exposed, and what should not run here' },
+  usage: { lbl: 'Usage', icon: 'resources', eyebrow: 'what the login nodes gave, what was asked of the scheduler, and each class over a year' },
+  system: { lbl: 'System', icon: 'feeds', eyebrow: 'where the data comes from, how fresh it is, and every setting' },
+};
+/** The Sessions tab's list of every session (TrajectoriesTab.tsx) and the
+ *  inspector beside it (TrajectoryInspector.tsx). */
 const SESSIONS_SEC = 'sec-ranked-sessions';
 const INSPECTOR_SEC = 'sec-session-inspector';
-/** A link to a tab that folded into another lands on the part it became: the
- *  Sessions tab's on its list, at the foot of the Agents tab. */
-const LANDS_ON: Record<string, string> = table({ overview: 'sec-who-uses-what', trajectories: SESSIONS_SEC });
+/** A link to a tab that folded into another lands on the part it became. */
+const LANDS_ON: Record<string, string> = table({ overview: 'sec-who-uses-what' });
 
 /** Where a page opened on this link lands: a tab that folded into another, on
- *  the part it became; the Agents tab with a session open, on its inspector,
- *  and narrowed to one user's sessions, on its list -- each at the foot of
- *  the tab. */
+ *  the part it became; the Sessions tab with a session open, on its inspector
+ *  (below the list on a narrow screen). */
 function landsOn(opened: string, url: { tab: string; traj: string | null; tuser: string | null }): string | null {
-  if (url.tab === 'agents' && url.traj) return INSPECTOR_SEC;
-  if (LANDS_ON[opened]) return LANDS_ON[opened];
-  return url.tab === 'agents' && url.tuser ? SESSIONS_SEC : null;
+  if (url.tab === 'sessions' && url.traj) return INSPECTOR_SEC;
+  return LANDS_ON[opened] ?? null;
 }
 /** The tab the page was opened on, read once, before the link is rewritten
  *  (an effect can run twice on mount, and the second saw the rewritten link). */
@@ -133,7 +147,7 @@ const TRANSPORT_WORDS = { ws: 'streaming', polling: 'every 15 s', connecting: 'c
 const typing = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
-/** How long after each answer the sessions list asks again, while the Agents tab, whose last part it is, is shown. */
+/** How long after each answer the sessions list asks again, while the Sessions tab is shown. */
 const TRAJ_LIVE_MS = 5000;
 /** No panels yet: one empty map, not a new one each render, so a memoized tab
  *  handed it is not drawn again for nothing. */
@@ -173,7 +187,7 @@ function headline(feeds: Record<string, FeedReport> | null): {
 const DATA_WORDS: Record<FeedStatus, [string, string]> = {
   ok: ['live', ''],
   stale: ['data delayed', 'a feed is older than its own max age: the numbers are not current'],
-  empty: ['no data yet', 'the collector is running but has written nothing in this window'],
+  empty: ['no data yet', "a feed's folder is there but holds no records: the collector may not be running, or writes somewhere else"],
   missing: ['collector not found', 'a required feed has no files where it is expected'],
 };
 
@@ -219,11 +233,11 @@ export default function App() {
   // Another tab closes the session open on this one (lib/filters.ts `patched`).
   const goto = useCallback((t: string) => setUrl({ tab: t }, true), [setUrl]);
   const goResources = useCallback(() => setUrl({ tab: 'resources' }, true), [setUrl]);
-  // Every session is the Agents tab's: its list, and the inspector beside it.
+  // Every session opens on the Sessions tab: its list, and the inspector beside it.
   const openTraj = useCallback(
     (sid: string) => {
-      setUrl({ tab: 'agents', traj: sid, tfrom: null, tuser: null }, true);
-      setLand({ tab: 'agents', sec: INSPECTOR_SEC });
+      setUrl({ tab: 'sessions', traj: sid, tfrom: null, tuser: null }, true);
+      setLand({ tab: 'sessions', sec: INSPECTOR_SEC });
     },
     [setUrl],
   );
@@ -236,11 +250,11 @@ export default function App() {
     [setUrl],
   );
   // Every one of a user's sessions, of every class, the portrait's newest few
-  // and the rest: the Agents tab's list, narrowed to them.
+  // and the rest: the Sessions tab's list, narrowed to them.
   const listUserTraj = useCallback(
     (u: string) => {
-      setUrl({ tab: 'agents', tuser: u, traj: null, tfrom: null }, true);
-      setLand({ tab: 'agents', sec: SESSIONS_SEC });
+      setUrl({ tab: 'sessions', tuser: u, traj: null, tfrom: null }, true);
+      setLand({ tab: 'sessions', sec: SESSIONS_SEC });
     },
     [setUrl],
   );
@@ -280,9 +294,9 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const who: Who = useMemo(() => ({ users: url.users, atypes: url.atypes }), [whoKey]);
   const panels = usePanels(url.win, live.buildNonce, who);
-  // Re-read every few seconds while the sessions list, the Agents tab's last part, is open.
+  // Re-read every few seconds while the sessions list (the Sessions tab) is open.
   const traj = useTrajectories(url.rank, url.win, live.buildNonce, who,
-    url.tab === 'agents' ? TRAJ_LIVE_MS : null);
+    url.tab === 'sessions' ? TRAJ_LIVE_MS : null);
   // The filter's choices come with the panels whenever the unfiltered view of
   // this window is held. Kept across a fetch that has none -- a window not yet
   // built unfiltered -- so the dropdowns do not empty under the reader.
@@ -341,8 +355,13 @@ export default function App() {
   const slurmLeaf = (config.data?.slurm as Record<string, { _value?: unknown }> | undefined)?.enabled;
   const tabs = TABS.filter((t) => t.k !== 'slurm' || slurmLeaf?._value !== false);
   // A tab that is not here -- an old link to Search & export (`?tab=events`),
-  // since removed, or HPC where it is off -- opens the first.
-  const tab = tabs.find((t) => t.k === url.tab) || tabs[0];
+  // since removed, or HPC where it is off -- opens the first; so does `?tab=chat`,
+  // with Ask open beside it (`askOpen`).
+  const tab = tabs.find((t) => t.k === url.tab && t.k !== 'chat') || tabs[0];
+  // Internal's panels are not settled: listed in the rail only where the site
+  // asks (`ui.show_internal`), or while it is the tab open. A link still opens it.
+  const showInternal =
+    (config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.show_internal?._value === true;
   // What the site calls its hosts (`ui.node_noun`): every place the page names
   // them says it, through NodeNounCtx (lib/nodes.ts).
   const nodeNoun =
@@ -352,23 +371,36 @@ export default function App() {
   const nodes = nodeWords(nodeNoun);
   const nodesLbl = nodes.Many;
 
-  // The rail's entries: a tab, or the one entry its sub-tabs share.
+  /** a tab's name; the login nodes' sub-tab in the site's own word for its hosts */
+  const tabLbl = (t: Tab) => (t.k === 'resources' ? nodesLbl : t.lbl);
+  // The rail's entries: a tab, or the one entry its sub-tabs share (PARENTS).
+  // An entry left with one sub-tab -- System where Internal is not listed --
+  // takes that tab's name: a stop called System that opens Feeds is a riddle.
   type RailItem = { key: string; lbl: string; icon: IconName; group: string; tabs: Tab[] };
   const railItems: RailItem[] = [];
   for (const t of tabs) {
+    if (t.k === 'chat' || (t.k === 'internal' && !showInternal && tab.k !== 'internal')) continue;
     const key = t.parent ?? t.k;
     const have = railItems.find((r) => r.key === key);
     if (have) have.tabs.push(t);
     else
       railItems.push(
         t.parent
-          ? { key, lbl: nodesLbl, icon: 'nodes', group: t.group, tabs: [t] }
+          ? { key, lbl: PARENTS[t.parent].lbl, icon: PARENTS[t.parent].icon, group: t.group, tabs: [t] }
           : { key, lbl: t.lbl, icon: t.icon, group: t.group, tabs: [t] },
       );
   }
+  for (const r of railItems) {
+    if (r.tabs.length === 1 && r.tabs[0].parent) {
+      r.lbl = tabLbl(r.tabs[0]);
+      r.icon = r.tabs[0].icon;
+    }
+  }
   const railOn = railItems.find((r) => r.tabs.includes(tab)) ?? railItems[0];
-  /** the open tab's parent entry, when it is a sub-tab */
-  const parent = tab.parent ? railOn : null;
+  /** the open tab's parent entry, when it has sub-tabs to show */
+  const parent = tab.parent && railOn.tabs.length > 1 ? railOn : null;
+  /** what the head's title answers: the entry's question, or the tab's own */
+  const eyebrow = parent && tab.parent ? PARENTS[tab.parent].eyebrow : tab.eyebrow;
   // Back to a parent entry from elsewhere, the sub-tab last open there opens.
   const [lastSub, setLastSub] = useState<Record<string, string>>({});
   useEffect(() => {
@@ -377,10 +409,20 @@ export default function App() {
   }, [tab.k, tab.parent]);
 
   // Which deployment: the sidebar and the browser tab both say, so a frozen
-  // capture and a live feed open side by side are never confused.
+  // capture and a live feed open side by side are never confused. With no
+  // site name set, the dashboard's own host says it (`_meta.host`).
+  const meta = config.data?._meta as Record<string, { _value?: unknown }> | undefined;
+  const hostName = typeof meta?.host?._value === 'string' ? meta.host._value : '';
   const siteName = String(
     (config.data?.site as Record<string, { _value?: unknown }> | undefined)?.name?._value ?? '',
-  );
+  ) || hostName;
+  // Every time on the page is in the service's zone (lib/zone.ts), which the
+  // config names; set before the tabs draw, and they are drawn again once it is
+  // known (their key), since what they drew before was in the browser's zone.
+  const tzInfo = (meta?.tz?._value ?? null) as ZoneInfo | null;
+  const tzKey = tzInfo ? `${tzInfo.name ?? ''}|${tzInfo.utc_offset_s ?? ''}` : '';
+  useMemo(() => setZone(tzInfo), [tzKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const zl = zoneLabel();
   useEffect(() => {
     document.title = siteName ? `${siteName} · Agent Observatory` : 'Agent Observatory';
   }, [siteName]);
@@ -447,9 +489,13 @@ export default function App() {
     }
     return done;
   }, [land, tab.k, goSec, settled]);
+  // No feed holds a record: the tabs give way to the setup screen, which says
+  // where the service looked and what to do (components/SetupScreen.tsx).
+  const empty = noData(feeds.data);
   // The window and the filters, one strip held at the top while the tab scrolls
-  // (lib/sticky.ts). Feeds is about the service, not a window of data: none.
-  const showControls = tab.k !== 'feeds';
+  // (lib/sticky.ts). Feeds is about the service, not a window of data: none;
+  // nor the setup screen, which has no window to pick.
+  const showControls = tab.k !== 'feeds' && !empty;
   const controlsRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const stuck = useStickyBar(controlsRef, sentinelRef, showControls);
@@ -522,6 +568,18 @@ export default function App() {
     getAskInfo(ac.signal).then(setAskInfo).catch(() => {});
     return () => ac.abort();
   }, []);
+  // Ask LLM asks about the window on screen, so it opens beside the open tab
+  // (a drawer, from the head's Ask button) rather than in place of it; and only
+  // where a site turned it on (`ask.enabled`): a rail stop that said "chat is
+  // turned off" on every dashboard that had not was a dead end.
+  const askOn = askInfo?.enabled === true;
+  const [askOpen, setAskOpen] = useState<boolean>(() => OPENED_ON === 'chat');
+  const closeAsk = useCallback(() => setAskOpen(false), []);
+  // a link to the old Ask tab (`?tab=chat`) opens Live, with Ask beside it
+  useEffect(() => {
+    if (OPENED_ON === 'chat') setUrl({ tab: 'live' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const askScope: AskScope = useMemo(
     () => ({
       info: askInfo,
@@ -537,7 +595,10 @@ export default function App() {
   // The header says one thing about the data: the pill (pillOf). What stands
   // behind it -- the newest record's age, each feed past its own limit, the
   // login nodes that reported -- is its hover, not a chip each.
-  const pill = pillOf(hl.status, live.transport);
+  const pill = empty
+    ? { status: 'stale' as const, text: 'no data', beat: false,
+        tip: 'no feed holds a record: the collector is not writing where the dashboard looks (see the page below)' }
+    : pillOf(hl.status, live.transport);
   const hostNames = (live.live?.hosts ?? []).map((h) => h.host);
   const statusTip = [
     pill.tip,
@@ -568,6 +629,7 @@ export default function App() {
 
   const nClasses = url.cls.length;
   const body = (() => {
+    if (empty && tab.k !== 'feeds') return <SetupScreen feeds={feeds.data!} goFeeds={() => goto('feeds')} />;
     switch (tab.k) {
       case 'live':
         return (
@@ -608,15 +670,6 @@ export default function App() {
         return <ResourcesTab P={P} cls={cls} live={live.live} />;
       case 'risk':
         return <RiskIoTab P={P} cls={cls} part="risk" />;
-      case 'chat':
-        return (
-          <ChatTab
-            windowMin={resolvedWin?.minutes ?? null}
-            windowLabel={resolvedWin?.label ?? null}
-            openUserTraj={openUserTraj}
-            goto={goto}
-          />
-        );
       case 'internal':
         return <InternalTab P={P} cls={cls} />;
       case 'security':
@@ -624,11 +677,10 @@ export default function App() {
       case 'slurm':
         return <SlurmTab P={P} live={live.live} cls={cls} goResources={goResources} />;
       case 'agents':
+        return <AgentsTab P={P} cls={cls} />;
+      case 'sessions':
         return (
           <>
-            <AgentsTab P={P} cls={cls} />
-            {/* then every session, one at a time: the Sessions tab was this part */}
-            <div className="grid-gap" />
             <TrajectoriesTab
               traj={traj}
               rank={url.rank}
@@ -685,20 +737,28 @@ export default function App() {
     buildStamp(),
   ].join('\n');
 
+  // The users "go to" finds: the filter's (the window's busiest), and anyone
+  // with a session listed, which the page holds before the filter's are built.
+  const paletteUsers = !paletteOpen ? [] : [...new Set([
+    ...(facets?.users ?? []).map((u) => u.user),
+    ...Object.values(traj.data?.rows ?? {}).map((r) => r.user),
+  ].filter((u): u is string => typeof u === 'string' && u !== ''))];
   // What "go to" offers: only what this page can already do. Made only while
   // it is open; closed, it is handed nothing and is not drawn again.
   const paletteItems: PaletteItem[] = !paletteOpen ? NO_ITEMS : [
-    ...tabs.map((t) => ({
-      id: `tab:${t.k}`,
-      group: 'Tabs',
-      // a sub-tab under its entry's name: "Login nodes · Slurm"
-      label: t.parent ? `${nodesLbl} · ${t.lbl}` : t.lbl,
-      hint: t.eyebrow,
-      icon: t.icon,
-      // the old tab names still find where their panels went
-      keywords: `${t.group}${t.also ? ` ${t.also}` : ''}${t.parent ? ' nodes host' : ''}`,
-      run: () => goTab(t.k),
-    })),
+    ...tabs
+      .filter((t) => (t.k !== 'chat' || askOn) && (t.k !== 'internal' || showInternal))
+      .map((t) => ({
+        id: `tab:${t.k}`,
+        group: 'Tabs',
+        // a sub-tab under its entry's name: "Usage · HPC"
+        label: t.parent ? `${PARENTS[t.parent].lbl} · ${tabLbl(t)}` : t.lbl,
+        hint: t.eyebrow,
+        icon: t.icon,
+        // the old tab names still find where their panels went
+        keywords: `${t.group}${t.also ? ` ${t.also}` : ''}`,
+        run: t.k === 'chat' ? () => setAskOpen(true) : () => goTab(t.k),
+      })),
     ...secs.map((s) => ({
       id: `sec:${s.id}`,
       group: `On ${tab.lbl}`,
@@ -707,6 +767,73 @@ export default function App() {
       keywords: 'section panel',
       run: () => goSec(s.id),
     })),
+    // Who and what the window holds, once a word is typed: "what is ada
+    // doing?" and "what is on login02?" are the first questions an operator
+    // asks, and this list was where a username once found nothing.
+    ...paletteUsers.map((u) => ({
+      id: `user:${u}`,
+      group: 'Users',
+      label: u,
+      hint: 'their portrait',
+      icon: 'users' as IconName,
+      keywords: 'user account person portrait who',
+      searchOnly: true,
+      run: () => {
+        setToSessions(null);
+        setUrl({ tab: 'users', portrait: u, traj: null, tfrom: null }, true);
+        setNavOpen(false);
+      },
+    })),
+    ...paletteUsers.map((u) => ({
+      id: `only:${u}`,
+      group: 'Narrow the page',
+      label: `Only ${u}`,
+      hint: 'every tab shows this user alone',
+      icon: 'users' as IconName,
+      keywords: 'filter user only narrow',
+      searchOnly: true,
+      run: () => setUrl({ users: [u] }),
+    })),
+    ...(live.live?.hosts ?? []).map((h) => ({
+      id: `host:${h.host}`,
+      group: nodesLbl,
+      label: h.host,
+      hint: `${nodes.one} health`,
+      icon: 'nodes' as IconName,
+      keywords: 'host node server machine login health',
+      searchOnly: true,
+      run: () => {
+        setUrl({ tab: 'resources' }, true);
+        setLand({ tab: 'resources', sec: 'sec-node-health' });
+        setNavOpen(false);
+      },
+    })),
+    ...(facets?.agent_types ?? []).filter((t) => t.agent_type).map((t) => ({
+      id: `atype:${t.agent_type}`,
+      group: 'Narrow the page',
+      label: `Only ${AGENT_TYPE_LBL[t.agent_type] ?? t.agent_type}`,
+      hint: 'every tab shows this agent type alone',
+      icon: 'agents' as IconName,
+      keywords: 'agent type filter only narrow',
+      searchOnly: true,
+      run: () => setUrl({ atypes: [t.agent_type] }),
+    })),
+    ...Object.values(traj.data?.rows ?? {}).slice(0, 200).map((r) => {
+      const nm = sessionTitle(r);
+      return {
+        id: `traj:${r.sid}`,
+        group: 'Sessions',
+        label: nm.title,
+        hint: [nm.detail, nm.date].filter(Boolean).join(' · ') || undefined,
+        icon: 'trajectories' as IconName,
+        keywords: `session ${r.host} ${r.user} ${AGENT_TYPE_LBL[r.agent_type ?? ''] ?? ''} ${r.sid}`,
+        searchOnly: true,
+        run: () => {
+          openTraj(r.sid);
+          setNavOpen(false);
+        },
+      };
+    }),
     ...(showControls
       ? offeredWindows(windows?.presets, minWin).map((p) => ({
           id: `win:${p.minutes}`,
@@ -787,9 +914,11 @@ export default function App() {
             </span>
             <span className="mark-t">Agent Observatory</span>
           </div>
-          <div className="sub mono" data-tip="which deployment this is">
-            {siteName || 'rc_measurement'}
-          </div>
+          {siteName && (
+            <div className="sub mono" data-tip="which deployment this is">
+              {siteName}
+            </div>
+          )}
         </div>
         <button
           className="rail-search"
@@ -814,8 +943,11 @@ export default function App() {
                 <span className="navlbl">{r.lbl}</span>
                 {r.key === 'live' && (
                   <>
-                    <i className={`navdot${live.transport === 'ws' ? '' : ' off'}`} aria-hidden="true" />
-                    <span className="vh">{live.transport === 'ws' ? ', streaming' : ', not streaming'}</span>
+                    {/* lit while records stream in: a socket open over no data is not live */}
+                    <i className={`navdot${live.transport === 'ws' && !empty ? '' : ' off'}`} aria-hidden="true" />
+                    <span className="vh">
+                      {empty ? ', no data yet' : live.transport === 'ws' ? ', streaming' : ', not streaming'}
+                    </span>
                   </>
                 )}
               </button>
@@ -914,9 +1046,9 @@ export default function App() {
         <div className={`head${showControls ? ' with-bar' : ''}`}>
           {/* The tab's name, and what it answers on hover. Below 900px the top
               bar names the tab, so this one is for a screen reader there. */}
-          <h1 data-tip={parent ? NODES_EYEBROW : tab.eyebrow}>{railOn.lbl}</h1>
+          <h1 data-tip={eyebrow}>{railOn.lbl}</h1>
           {/* what the tab answers, for a screen reader: the tip layer is hidden from one */}
-          <p className="vh">{parent ? NODES_EYEBROW : tab.eyebrow}</p>
+          <p className="vh">{eyebrow}</p>
           <div className="status">
             {/* A pinned clock is a capture, not a feed: "live" and a lag of a
                 second would both be false (rc_dashboard/clock.py). */}
@@ -949,6 +1081,23 @@ export default function App() {
                 fake data
               </span>
             )}
+            {askOn && (
+              <button
+                className={`btn askhead${askOpen ? ' on' : ''}`}
+                aria-pressed={askOpen}
+                onClick={() => setAskOpen((o) => !o)}
+                data-tip="ask a language model about the window on screen"
+              >
+                <Icon name="chat" size={16} />
+                Ask
+              </button>
+            )}
+            {/* the one zone every time on the page is in: a tab stop, so its
+                words reach the keyboard and a screen reader */}
+            <span className="pill zone" data-tip={zl.tip} tabIndex={0}>
+              {zl.short}
+              <span className="vh">{`. ${zl.tip}`}</span>
+            </span>
             <button
               className="iconbtn"
               onClick={refresh}
@@ -970,7 +1119,7 @@ export default function App() {
                   data-tip={t.eyebrow}
                 >
                   <Icon name={t.icon} size={16} />
-                  {t.lbl}
+                  {tabLbl(t)}
                 </button>
               ))}
             </nav>
@@ -1023,12 +1172,28 @@ export default function App() {
 
         <AskScopeCtx.Provider value={askScope}>
           {/* a tab whose code has not come yet draws nothing under the controls until it has */}
-          <TabBoundary key={tab.k}>
+          <TabBoundary key={`${tab.k}|${tzKey}`}>
             <Suspense fallback={null}>{body}</Suspense>
           </TabBoundary>
         </AskScopeCtx.Provider>
       </main>
       <IoCmdsDrawer win={url.win} who={who} cls={cls} />
+      {askOn && askOpen && (
+        <AskDrawer onClose={closeAsk}>
+          <AskScopeCtx.Provider value={askScope}>
+            <TabBoundary key="chat">
+              <Suspense fallback={null}>
+                <ChatTab
+                  windowMin={resolvedWin?.minutes ?? null}
+                  windowLabel={resolvedWin?.label ?? null}
+                  openUserTraj={openUserTraj}
+                  goto={goto}
+                />
+              </Suspense>
+            </TabBoundary>
+          </AskScopeCtx.Provider>
+        </AskDrawer>
+      )}
       <CommandPalette open={paletteOpen} onClose={closePalette} items={paletteItems} />
       <TooltipLayer />
     </div>

@@ -132,7 +132,7 @@ export function securityChecks(P: Panels, cls: Cls[]): Check[] {
   const sb = pick<Sandbox>(P, 'sandbox', 'ebpfm');
   const sbWhy = unread(sb, 'the sandbox panel') ?? (agentOn ? null : OFF);
   const approval = at('security', slug(APPROVAL_TITLE));
-  const approvalWhere = 'Security › Approval at launch';
+  const approvalWhere = 'Risk › Security › Approval at launch';
   if (sbWhy) {
     out.push({ key: 'launch', axis: 'launch', state: 'unchecked', what: 'Approval at launch: not checked', note: sbWhy });
     out.push({ key: 'sandbox', axis: 'confinement', state: 'unchecked', what: 'Sandboxed tool calls: not checked', note: sbWhy });
@@ -168,7 +168,7 @@ export function securityChecks(P: Panels, cls: Cls[]): Check[] {
     const calls = sb.tool_calls?.agent;
     const iso = shareOfKnown(calls, 'isolated', callKnown);
     const callsTo = at('security', CALLS_ANCHOR);
-    const callsWhere = 'Security › Tool calls — did they run sandboxed?';
+    const callsWhere = 'Risk › Security › Tool calls — did they run sandboxed?';
     if (!iso.total) {
       out.push({ key: 'sandbox:not', axis: 'confinement', state: 'clear', what: 'No agent tool call in the window',
         note: 'none to judge', to: callsTo, where: callsWhere });
@@ -217,7 +217,7 @@ export function securityChecks(P: Panels, cls: Cls[]): Check[] {
     if (!sections.length) {
       out.push({ key: 'cred', axis: 'exposure', state: 'unchecked', what: 'Credentials on a command line: not checked',
         note: 'this cluster’s risk profile has no credentials section',
-        to: at('risk', slug('Rules in effect')), where: 'Risks › Rules in effect' });
+        to: at('risk', slug('Rules in effect')), where: 'Risk › Site rules › Rules in effect' });
     }
     const scanned = risk.secrets ? `${plural(risk.secrets.args_scanned, 'command line')} scanned` : null;
     for (const sc of sections) {
@@ -241,7 +241,7 @@ export function securityChecks(P: Panels, cls: Cls[]): Check[] {
         what: n > 0 ? `${sc.title}: ${plural(n, 'match', 'matches')} on agent command lines` : `${sc.title}: none on an agent’s`,
         note: [...top, n > 0 ? 'a line can match more than one pattern · the values are never shown' : null, scanned]
           .filter(Boolean).join(' · '),
-        by, to: at('risk', slug(sc.title)), where: `Risks › ${sc.title}`,
+        by, to: at('risk', slug(sc.title)), where: `Risk › Site rules › ${sc.title}`,
       });
     }
   }
@@ -287,7 +287,7 @@ export function securityChecks(P: Panels, cls: Cls[]): Check[] {
           ? `ran in, or named a path in, a home folder not its user’s · ${fint(wroteThere)} wrote or deleted there`
           : agents ? `of ${plural(agents, 'agent')}` : 'no agent in the window',
         to: wroteThere > 0 ? outsideTo : at('agents', 'sec-agent-trees'),
-        where: wroteThere > 0 ? `Security › ${OUTSIDE_TITLE}` : 'Agents › Agents and their subagents',
+        where: wroteThere > 0 ? `Risk › Security › ${OUTSIDE_TITLE}` : 'Agents › Agents and their subagents',
       });
     }
   }

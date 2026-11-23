@@ -24,6 +24,7 @@ import { useSort } from '../lib/useSort';
 import { useNodeWords } from '../lib/nodes';
 import { pick } from '../lib/panels';
 import type { Panels } from '../lib/panels';
+import { offsetAt } from '../lib/zone';
 
 /* ------------------------------------------------------------- helpers */
 
@@ -194,7 +195,8 @@ export const LiveTab = memo(function LiveTab({
     const pts: LinePt[][] = cls.map(() => []);
     const binS = L?.window?.bin_s ?? 60;
     const per = Math.max(1, Math.round(RATE_BIN_S / binS));
-    const tz = new Date().getTimezoneOffset() * 60;
+    // seconds west of UTC in the page's zone (lib/zone.ts), as getTimezoneOffset counts
+    const tz = -offsetAt(Date.now());
     const lastE = rate.length ? Number(rate[rate.length - 1].epoch) : NaN;
     let bx = NaN;
     let seen = 0;
@@ -228,6 +230,8 @@ export const LiveTab = memo(function LiveTab({
       return {
         lbl: CLS_LBL[c],
         c: CLS_COL[c],
+        // the class's word at the line's end: told apart without its colour
+        tag: CLS_LBL[c],
         area: c === 'agent',
         mark: c === 'agent' ? (last != null ? fint(last) + '/' + RATE_LBL : null) : null,
         pts: pts[k],

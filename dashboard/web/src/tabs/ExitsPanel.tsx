@@ -18,7 +18,7 @@ import { NoRows, Panel } from '../components/Panel';
 import { ShareCell } from '../components/ShareCell';
 import { SortTh } from '../components/SortTh';
 import { Term } from '../components/Term';
-import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
+import { AGENT_TYPE_LBL, CLS_COL, CLS_INK, CLS_LBL } from '../lib/classes';
 import { DASH, fint } from '../lib/format';
 import { coveredBy } from '../lib/iocmds';
 import type { IoQuery } from '../lib/iocmds';
@@ -159,7 +159,7 @@ export function ExitsPanel({ P, cls }: { P: Panels; cls: Cls[] }) {
               <tr>
                 <SortTh s={s} k="k" first="asc">{view === 'tool' ? 'tool' : 'kind of tool'}</SortTh>
                 {have.map((c) => (
-                  <SortTh key={c} s={s} k={`r:${c}`} className="cls" style={{ color: CLS_COL[c] }}
+                  <SortTh key={c} s={s} k={`r:${c}`} className="cls" style={{ color: CLS_INK[c] }}
                     tip={`the share of ${CLS_LBL[c] ?? c}'s runs that failed, and how many; sorts by the share`}>
                     {CLS_LBL[c] ?? c}
                   </SortTh>

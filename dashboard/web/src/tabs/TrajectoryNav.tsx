@@ -100,6 +100,7 @@ import type { LegendEntry, Level } from '../lib/phases';
 import { KINDS, klbl, pcol, pkind } from '../lib/purposes';
 import type { PurposeKind } from '../lib/purposes';
 import { laneClause, taskAtX, taskBlocks, taskTip, tasksBasis } from '../lib/tasks';
+import { offsetAt } from '../lib/zone';
 
 /** Purposes stack by the kind they are coloured as (lib/purposes.ts), so a bar has a segment per swatch. */
 const ORDER: PurposeKind[] = KINDS.map(([k]) => k);
@@ -109,8 +110,8 @@ const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10
 
 export function ticks(v0: number, v1: number, room: number): { t: number; lbl: string }[] {
   const step = STEPS.find((s) => (v1 - v0) / s <= room) ?? STEPS[STEPS.length - 1];
-  // On the local clock: an hour tick is a local hour, whatever the offset.
-  const off = -new Date(v0 * 1000).getTimezoneOffset() * 60;
+  // On the page zone's clock (lib/zone.ts): an hour tick is an hour there, whatever the offset.
+  const off = offsetAt(v0 * 1000);
   const out: { t: number; lbl: string }[] = [];
   for (let k = Math.ceil((v0 + off) / step); k * step - off <= v1 && out.length < 40; k++) {
     const t = k * step - off;

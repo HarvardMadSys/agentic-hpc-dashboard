@@ -65,8 +65,9 @@ npm run check:procexit # a run's box says how it ended as the process table does
 npm run check:security # a security check with no panel behind it says "not checked", never none; every link lands
 npm run check:hpc    # abnormal Slurm activity is worded from the service's thresholds, and never none of a panel not judged
 npm run check:io     # the per-tool disk chart keeps the heaviest on each counter, a 0 as 0, one scale
-npm run check:tabs   # sessions are the Agents tab's last part, a user's open under their portrait, and every link to one lands
+npm run check:tabs   # six stops in the rail; Sessions a sub-tab of Agents; a user's open under their portrait; every link to one lands
 npm run check:internal # a per-process distribution of all 0s reads "not measured", never 0; a measured 0 stays 0
+npm run check:ux     # no data says so (the setup screen); nothing unmeasured reads 0; one verdict per rule; one time zone; class words
 npm run preview      # serve dist/ locally (no API)
 ```
 
@@ -104,7 +105,11 @@ Research-integrity constraints: breaking one is a reporting error, not a styling
    and a grey tail (`--sg`): `src/lib/purposes.ts` draws the service's purposes as three kinds
    (slurm, build & compute, files & data) and folds the rest, a new purpose included, into the
    grey `other` rather than invent a hue. A series that is not a class (a tool, sent and received) takes its hue
-   from `TOOL_COL` (`src/charts/TimeChart.tsx`).
+   from `TOOL_COL` (`src/charts/TimeChart.tsx`). **A class is never told by colour alone**: to a
+   red-green colour-blind reader crimson and green are one brown, so each class swatch on a plate
+   carries its word (`components/Plate.tsx`), a class line carries its word at its end
+   (`LineSeries.tag`), and a class's colour as text uses `CLS_INK`, whose human green is darkened
+   to WCAG AA (`--s3-ink`).
 4. **Zero is not missing**, and each kind of nothing looks like itself. `_present === false`
    renders `<EmptyState>`: the panel's frame, title and feed, and each `_paths` entry verbatim
    (`no data from /var/log/ebpfm`). A present feed with no rows renders `<NoRows>`, the word
@@ -113,7 +118,12 @@ Research-integrity constraints: breaking one is a reporting error, not a styling
    reducer that raised sends its envelope with `_error` alone (`windows.materialize`), which
    renders `<NotReduced>`. A window still being reduced renders `<Building>`, a frame and a
    percentage. `pick` hands a missing or errored panel on as not present, so a plate reads a
-   dash, and a tab says `none` only of a body the service reduced (`hasBody`).
+   dash, and a tab says `none` only of a body the service reduced (`hasBody`), and a plate's
+   note says *not checked*, with why, of a panel not present, never `0`. When **no feed holds a
+   record at all**, the tabs give way to one setup screen (`components/SetupScreen.tsx`): where the
+   service looked, folder by folder (`/api/feeds` `candidates`), and the three steps that fix it;
+   the head's pill reads `no data` and the rail's live light goes out. Needs attention is green
+   only for a full check: with a source not checked it reads *nothing flagged in what was checked*.
 5. **Nothing fabricated**: no `Math.random()` in `src/` (`npm run check:no-random`), and nothing
    interpolates between frames. A `null` rate bin stays `null`, and `Lines` draws a separate
    subpath around it: a hole, never a 0 or a line across. The fixture lives in `mock/`, outside
@@ -126,7 +136,12 @@ Research-integrity constraints: breaking one is a reporting error, not a styling
    value exactly 0: a counter the collector could not fill), in Internal's distributions too.
 7. **Data only**: a panel holds its title, its feed and the chart or table, and no method notes:
    what a reader needs to read a number goes in its `data-tip`. The service does not send the page
-   its `notes`, `basis` and `*_basis` texts ([API](../README.md#api)); Ask LLM reads them.
+   its `notes`, `basis` and `*_basis` texts ([API](../README.md#api)); Ask LLM reads them. Every
+   panel's ⓘ opens **How to read** (`components/About.tsx`), a drawer of the explanations its
+   labels hold -- its tips, gathered from the panel as drawn, not the per-row and per-point ones --
+   so they can be read, scrolled and reached by keyboard and screen reader; nothing is written
+   twice. A panel that draws a table also offers **copy CSV** (`components/CopyCsv.tsx`): the
+   tables as drawn, from the page's own DOM, at no cost to the service.
 8. **Down to a phone**: at 900px and under (`src/lib/useNarrow.ts`) the rail is a drawer and
    every grid one column. The page never scrolls sideways, down to 320px: wide tables scroll in
    their own `.scroller`, fading at an edge with more (`src/lib/scrollEdges.ts`). Charts are
@@ -182,10 +197,11 @@ word shows on hover (the word is underlined, dotted): what is measured, and what
 | **fake data** | the demo's made-up records | synthetic data |
 
 When a word changes, the tab's URL key, the API field and the filter key keep the old name
-(`risk` is Risks, `slurm` HPC), so links and citations keep working; a panel whose
-title changed keeps its old anchor (`id=`), which `src/lib/cites.ts` points at. Sessions are the
-Agents tab's last part, and a link to the old Sessions tab (`?tab=trajectories`, with its `traj`,
-`tuser`, `rank` and `torder`) opens the Agents tab there. Trend (`src/tabs/TrendTab.tsx`, `/api/trend`) is the one tab that
+(`risk` is Site rules, `slurm` HPC, `resources` Login nodes), so links and citations keep
+working; a panel whose title changed keeps its old anchor (`id=`), which `src/lib/cites.ts`
+points at. Sessions is a sub-tab of the Agents entry (`sessions`): a link to the old Sessions tab
+(`?tab=trajectories`, with its `traj`, `tuser`, `rank` and `torder`), or to the Agents tab with a
+session open or one user's list (`?tab=agents&traj=…`, `&tuser=…`), opens it there. Trend (`src/tabs/TrendTab.tsx`, `/api/trend`) is the one tab that
 reads neither the window nor the filter: each class's use over up to a year, from the roll-up
 table the service writes as it ingests (`rc_dashboard/rollup.py`), so the window picker is not
 shown on it.
@@ -211,32 +227,53 @@ differ.
 
 ## The rail and "go to"
 
-The rail lists the tabs and nothing else: in their reading order, each with its icon, in two
-groups parted by a rule (what an operator watches, then Ask LLM, Internal and Feeds).
-Resources and Risks share one entry, named in the site's own word for its hosts
-(`ui.node_noun`, "Login nodes"; their figures are login-node use, not the cluster's), with a
-sub-tab each along the foot of the head. A sub-tab keeps its own key (`?tab=resources`,
-`risk`), so links and citations land where they did, and the entry reopens the
-sub-tab last used. Overview's one table is a section of Live (*Who uses what*), and
-`?tab=overview` lands on it. A tab's sections are not listed under it: go-to reaches each
-one, read off the page itself (`src/components/SectionNav.tsx`). The rail folds to the icons
-alone (`[`, or the button at its foot), which this browser remembers (`localStorage`, a
-per-viewer convenience: storage that is absent or refuses just leaves it unfolded). Its foot
-says how the page gets its data in one line, the transport as a light and the last update;
-the window and how much of it the service holds, when the panels were built (and whether
-they were restored from a saved build), and which code the page is are that line's hover.
+The rail holds six stops, each answering one question, in an operator's reading order: **Live**
+(the window now; Overview's table is its section, *Who uses what*), **Users**, **Agents** (›
+Agents, Sessions), **Risk** (› Security, Site rules), **Usage** (› Login nodes, HPC, Trend), and,
+after a rule, **System** (› Feeds, and Internal only where `ui.show_internal` lists it). An
+entry's sub-tabs run along the foot of the head; a sub-tab keeps its own key (`?tab=resources`,
+`risk`, `slurm`, …), so links and citations land where they did, and the entry reopens the
+sub-tab last used. An entry left with one sub-tab takes that tab's name (System is *Feeds* where
+Internal is not listed), and HPC goes where `slurm.enabled` is false. Login nodes is named in the
+site's own word for its hosts (`ui.node_noun`): its figures are login-node use, not the
+cluster's. A tab's sections are not listed under it: go-to reaches each one, read off the page
+itself (`src/components/SectionNav.tsx`). The rail folds to the icons alone (`[`, or the button
+at its foot), which this browser remembers (`localStorage`, a per-viewer convenience: storage
+that is absent or refuses just leaves it unfolded). Its foot says how the page gets its data in
+one line, the transport as a light and the last update; the window and how much of it the
+service holds, when the panels were built (and whether they were restored from a saved build),
+and which code the page is are that line's hover.
+
+**Ask LLM** is not a stop: it asks about the window on screen, so the head's **Ask** button
+opens it in a drawer beside whatever tab is open (`components/AskDrawer.tsx`), and only where a
+site turned it on (`ask.enabled`); `?tab=chat` opens Live with it open.
+
+A pane beside a list never stands empty: with nothing picked, Agents shows its list's first
+agent and Sessions its first session, held while it stays listed (the list is re-read every few
+seconds, and a new row at its top must not swap the tree under the reader); a pick is the
+reader's, and only it goes in the URL.
 
 The head above the panels is one line: the tab's name, with what the tab answers on its hover,
 and one pill saying how current the data is (`live`, or what is wrong: `data delayed`,
-`no data yet`, …; `frozen capture · as of …` on a pinned clock). What the pill stands on is
-its hover: the newest record's age, each feed past its own limit and by how much, and the
-login nodes that reported. `anonymized` and `fake data` sit beside it when they apply, then
-the refresh. Below 900px the top bar names the tab, so the head shows the pills alone.
+`no data yet`, `no data`, …; `frozen capture · as of …` on a pinned clock). What the pill
+stands on is its hover: the newest record's age, each feed past its own limit and by how much,
+and the login nodes that reported. `anonymized` and `fake data` sit beside it when they apply,
+then Ask (where it is on), the **time zone** every time on the page is in, and the refresh.
+Below 900px the top bar names the tab, so the head shows the pills alone.
+
+**One time zone.** Every time on the page is in the dashboard service's zone, which
+`/api/config` names (`_meta.tz`); the head says which (`EST`, or `UTC−05:00`). The service
+formats some times itself, in its local zone, and the page formats the rest from epochs through
+`src/lib/zone.ts`, so the two agree on one screen; drawn in the browser's zone they disagreed as
+soon as reader and cluster were in different zones. A service that does not say leaves the
+browser's zone, and the pill says that instead.
 
 **Go to** (`src/components/CommandPalette.tsx`), opened with Ctrl+K or Cmd+K anywhere, or `/`
 outside a field: type to reach a tab, a section of the open tab, a window preset, or an
-action (refresh, show all three classes, fold the rail). It offers only what the page already
-holds, so it can never name a tab, section or window that is not there.
+action (refresh, show all three classes, fold the rail); and, once a word is typed, who and
+what the window holds: a **user**'s portrait, a **login node**'s health, a **session**, or the
+page narrowed to one user or agent type. It offers only what the page already holds, so it can
+never name a tab, section, window, user or session that is not there.
 
 ## Keyboard
 
@@ -267,17 +304,17 @@ How each figure is computed is in [`docs/figures`](../../docs/figures/README.md)
 | tab | source | holds |
 |---|---|---|
 | **Live** | `WS /ws`, `GET /api/live`, `/api/panels?window_min=` | *Needs attention* (`src/tabs/Attention.tsx`): what the service already flags, each linking to its panel, and every source it could not check named, never read as an all-clear; one row of plates over the window; the rate of processes exited per 5 minutes, the one time series the tab keeps; *Who uses what* (`src/tabs/OverviewTab.tsx`; `?tab=overview` lands on it); *Active users* (`src/tabs/LiveUsers.tsx`); the login nodes right now. The window's other series are on Resources, and per-day use is Trend's |
-| **Trend** | `/api/trend?days=&by=` | each class's use over the long run, never the window and not narrowed by the filter, so the window picker is not shown: *Over the year*, from the roll-up table the service writes as it ingests (`rc_dashboard/rollup.py`) -- processes and CPU a day, users, users of each agent -- by day, week or month over 30 days to a year, a stretch with no record a hole; and *Each week* (or day, or month), the same as a table. The one place for per-day use (`src/tabs/TrendTab.tsx`) |
+| **Usage › Trend** (`?tab=trend`) | `/api/trend?days=&by=` | each class's use over the long run, never the window and not narrowed by the filter, so the window picker is not shown: *Over the year*, from the roll-up table the service writes as it ingests (`rc_dashboard/rollup.py`) -- processes and CPU a day, users, users of each agent -- by day, week or month over 30 days to a year, a stretch with no record a hole; and *Each week* (or day, or month), the same as a table. The one place for per-day use (`src/tabs/TrendTab.tsx`) |
 | **Users** | `/api/users`, `/api/user?name=` | every user with an agent session in the window (`src/tabs/UsersTab.tsx`), one row each, opening the user's **portrait** (`?portrait=`): their figure, drawn from their numbers (`src/components/PortraitFigure.tsx`), how they leverage agents, the numbers and rules behind it, and every session, each opening its process tree under the portrait (`?traj=`), whose *all their sessions →* opens the Agents tab's list narrowed to them (`?tuser=`). The service holds every threshold (`rc_dashboard/portraits.py`); the page words what it counted (`src/lib/portraits.ts`) |
-| **Agents** (`?tab=cascades` and `?tab=sessions` open it too) | `cascades`, `tool_mix` | every agent tree, by user or as one list (`src/tabs/AgentsTab.tsx`), agents with **subagents** kept apart from **hosted** sessions; per agent, **Workspace & blast radius**, alone or with its subagents: where its processes ran and the bytes they moved (measured), the paths its command lines named (inferred, drawn dashed), writes and deletes outside its start folder; depth and fan-out; **Tool mix** and **Top tools** (`src/tabs/ToolPanels.tsx`); *Commands that failed* (`src/tabs/ExitsPanel.tsx`) |
-| **Agents › Sessions** (its last part; `?tab=trajectories` lands on it) | `/api/trajectories?rank=&window_min=` | at the foot of the Agents tab (`src/tabs/TrajectoriesTab.tsx`), re-read every 5 s while that tab is open: sessions ranked by a switcher that only reorders, each row a band of its phases and a line naming its tasks ([below](#sessions-tasks-phases-and-processes)); a row opens the **inspector** (`/api/trajectory`, `?traj=`; `src/tabs/OpenSession.tsx`, which the Users tab opens too): who ran the session and what it came to, **What it did**, then **Processes**, read oldest or newest first, with every bound of the read stated |
-| **Security** (`?tab=sandbox` opens it too) | `sandbox`, `risk`, `cascades` | *Security checks* (`src/tabs/SecurityTab.tsx`) on launch, confinement, exposure and reach, each with its share of what its axis could judge and a link to its panel, and no threshold of its own: a check that found none is a ring, one not made (its panel not in, or the agent class filtered out) a dashed ring and the reason. Then the **sandbox** panels (`src/tabs/SandboxTab.tsx`), and *Writes outside the start folder*, by kind of place, the most alarming first (`src/lib/places.ts`), then by user; those paths are read from command text, not measured |
-| **Login nodes › Resources** (`?tab=resources`; `?tab=io` opens it too) | `node`, `resources`, `io_process` | *Login node health* (`src/tabs/NodeHealth.tsx`), the node tier's newest snapshot of each host; then the window over time, on one zoom (`src/tabs/LiveCharts.tsx`): *Over the window* (CPU and memory), *Login node response* (`node.series`, `src/tabs/NodeResponse.tsx`) and *More over time* (runqueue wait, D-state, major faults, disk, network, Slurm checks and jobs, one at a time); then the worst individual processes; disk read and written by tool, on one scale; where the network bytes went (*Network bytes*, its endpoints); I/O per user. The per-class tables behind them are on **Internal** |
-| **Login nodes › Risks** (`?tab=risk`) | `risk` | the sections the site's [risk profile](../risk-profiles/README.md) lays out, by default build and interpreter CPU on the login node, commands that should not run there, and credentials on command lines (counted, never shown) |
-| **HPC** (`?tab=slurm`; `?tab=hpc` opens it too) | `slurm`, `submits` (`/api/live`) | *Abnormal Slurm activity* (`src/tabs/SlurmTab.tsx`), each rule worded from the threshold the service sends with it, each class's count of the sessions that broke it, then every such session with its own numbers as evidence; then sessions at the scheduler, how each class uses it, refused submissions, the latest submissions; its two series, queue checks and jobs submitted, are in Resources' *More over time*. Gone where `slurm.enabled` is false |
-| **Ask LLM** (`?tab=chat`) | `/api/ask`, `/api/ask/{job}`, `/api/suggestions/done` | a question about the window, its answer's citations linking to the panels it read (`src/lib/cites.ts`); *Suggestions for the operator*, one marked done kept for every reader; off unless the site turned `ask` on (`src/tabs/ChatTab.tsx`) |
-| **Internal** | `resources`, `io_process` | panels not settled yet, and the detail behind the operator tabs: per-process distributions, faults, delays and D-state (`not measured` where unread), requested against disk bytes, I/O distributions |
-| **Feeds** | `/api/feeds`, `/api/collectors` (every 20 s), `/api/config` | *Collectors*, each login node's collector and how its runs ended; *Feeds*, each one's configured **vs** resolved path, status, newest record against its own `max_age_s`, files and notice; *Startup read*; *Configuration*, each resolved setting and where it came from |
+| **Agents › Agents** (`?tab=agents`; `?tab=cascades` opens it too) | `cascades`, `tool_mix` | every agent tree, by user or as one list (`src/tabs/AgentsTab.tsx`), agents with **subagents** kept apart from **hosted** sessions; per agent, **Workspace & blast radius**, alone or with its subagents: where its processes ran and the bytes they moved (measured), the paths its command lines named (inferred, drawn dashed), writes and deletes outside its start folder; depth and fan-out; **Tool mix** and **Top tools** (`src/tabs/ToolPanels.tsx`); *Commands that failed* (`src/tabs/ExitsPanel.tsx`) |
+| **Agents › Sessions** (`?tab=sessions`; `?tab=trajectories` opens it too) | `/api/trajectories?rank=&window_min=` | the Sessions sub-tab (`src/tabs/TrajectoriesTab.tsx`), re-read every 5 s while it is open, its first session open beside the list until one is picked: sessions ranked by a switcher that only reorders, each row a band of its phases and a line naming its tasks ([below](#sessions-tasks-phases-and-processes)); a row opens the **inspector** (`/api/trajectory`, `?traj=`; `src/tabs/OpenSession.tsx`, which the Users tab opens too): who ran the session and what it came to, **What it did**, then **Processes**, read oldest or newest first, with every bound of the read stated |
+| **Risk › Security** (`?tab=security`; `?tab=sandbox` opens it too) | `sandbox`, `risk`, `cascades` | *Security checks* (`src/tabs/SecurityTab.tsx`) on launch, confinement, exposure and reach, each with its share of what its axis could judge and a link to its panel, and no threshold of its own: a check that found none is a ring, one not made (its panel not in, or the agent class filtered out) a dashed ring and the reason. Then the **sandbox** panels (`src/tabs/SandboxTab.tsx`), and *Writes outside the start folder*, by kind of place, the most alarming first (`src/lib/places.ts`), then by user; those paths are read from command text, not measured |
+| **Usage › Login nodes** (`?tab=resources`; `?tab=io` opens it too) | `node`, `resources`, `io_process` | *Login node health* (`src/tabs/NodeHealth.tsx`), the node tier's newest snapshot of each host; then the window over time, on one zoom (`src/tabs/LiveCharts.tsx`): *Over the window* (CPU and memory), *Login node response* (`node.series`, `src/tabs/NodeResponse.tsx`) and *More over time* (runqueue wait, D-state, major faults, disk, network, Slurm checks and jobs, one at a time); then the worst individual processes; disk read and written by tool, on one scale; where the network bytes went (*Network bytes*, its endpoints); I/O per user. The per-class tables behind them are on **Internal** |
+| **Risk › Site rules** (`?tab=risk`) | `risk` | the sections the site's [risk profile](../risk-profiles/README.md) lays out, by default build and interpreter CPU on the login node, commands that should not run there, and credentials on command lines (counted, never shown) |
+| **Usage › HPC** (`?tab=slurm`; `?tab=hpc` opens it too) | `slurm`, `submits` (`/api/live`) | *Abnormal Slurm activity* (`src/tabs/SlurmTab.tsx`), each rule worded from the threshold the service sends with it, each class's count of the sessions that broke it, then every such session with its own numbers as evidence; then sessions at the scheduler, how each class uses it, refused submissions, the latest submissions; its two series, queue checks and jobs submitted, are in Resources' *More over time*. Gone where `slurm.enabled` is false |
+| **Ask LLM** (a drawer: the head's Ask button; `?tab=chat` opens it) | `/api/ask`, `/api/ask/{job}`, `/api/suggestions/done` | a question about the window, its answer's citations linking to the panels it read (`src/lib/cites.ts`); *Suggestions for the operator*, one marked done kept for every reader; off unless the site turned `ask` on (`src/tabs/ChatTab.tsx`) |
+| **System › Internal** (`?tab=internal`; in the rail where `ui.show_internal`) | `resources`, `io_process` | panels not settled yet, and the detail behind the operator tabs: per-process distributions, faults, delays and D-state (`not measured` where unread), requested against disk bytes, I/O distributions |
+| **System › Feeds** (`?tab=feeds`) | `/api/feeds`, `/api/collectors` (every 20 s), `/api/config` | *Collectors*, each login node's collector and how its runs ended; *Feeds*, each one's configured **vs** resolved path, status, newest record against its own `max_age_s`, files and notice; *Startup read*; *Configuration*, each resolved setting and where it came from |
 
 ### Sessions: tasks, phases, and processes
 

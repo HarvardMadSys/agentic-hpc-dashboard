@@ -44,6 +44,7 @@ import { sessionName } from '../lib/sessions';
 import { AGENT_TYPE_LBL } from '../lib/classes';
 import './trajectories.css';
 import './treepop.css';
+import { monthDay } from '../lib/zone';
 
 /* the inline diagram's sizes, so a box reads the same in both */
 const NW = BOX_W;
@@ -64,8 +65,7 @@ const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 /** Date and time, for the details panel: a read can span days. */
 function stamp(t: number | null | undefined): string {
   if (t == null) return DASH;
-  const d = new Date(t * 1000);
-  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${clock(t)}`;
+  return `${monthDay(t * 1000)} ${clock(t)}`;
 }
 
 /* ---------------------------------------------------------------- export */

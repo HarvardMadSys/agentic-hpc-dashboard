@@ -68,7 +68,7 @@ tr.ws-detail > td {
 }
 .ws-tag.measured {
   border-color: var(--s3);
-  color: var(--s3);
+  color: var(--s3-ink);
 }
 .ws-tag.inferred {
   border-style: dashed;
