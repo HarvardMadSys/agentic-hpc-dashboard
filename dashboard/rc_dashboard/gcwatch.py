@@ -16,16 +16,41 @@ reference counting go as before; the one thing freezing changes is that a
 reference cycle among frozen objects is not collected, so `settle()` unfreezes
 and collects everything again at most every `FULL_EVERY_S`, off the request
 path (the rebuild tick), which bounds what such a cycle could hold.
+
+What is freed goes back to the C library's heap, and stays there: glibc gives
+memory back to the system only from the top of a heap, and what a backfill or a
+replaced window frees is spread all through it. Over the bench feed, with the
+backfill done and the 24 h window built, the service held 900 to 1,010 MB, of
+which the live tier, the roll-up and the collectors' health are about 12 MB; it
+holds 490 to 500 MB when `settle()` ends with a `malloc_trim(0)`, as it does now
+where the C library has one (glibc; not musl or macOS). A trim took 0.5 to 40
+ms there, the GIL let go meanwhile. It releases free pages and nothing else: no
+object, no answer.
 """
+import ctypes
 import gc
 import threading
 import time
 
 FULL_EVERY_S = 3600.0
 
+
+def _malloc_trim():
+    """glibc's `malloc_trim`, or None where the C library has none."""
+    try:
+        fn = ctypes.CDLL(None).malloc_trim
+    except (OSError, AttributeError):
+        return None
+    fn.argtypes = [ctypes.c_size_t]
+    fn.restype = ctypes.c_int
+    return fn
+
+
+_trim = _malloc_trim()
 _lock = threading.Lock()
 _state = {"installed": False, "t0": None, "frozen_at": None, "full_at": None,
-          "settles": 0, "full_collects": 0, "last_full_ms": None}
+          "settles": 0, "full_collects": 0, "last_full_ms": None,
+          "trims": 0, "last_trim_ms": None}
 _gens = {g: {"n": 0, "total_ms": 0.0, "max_ms": 0.0} for g in (0, 1, 2)}
 
 
@@ -55,7 +80,8 @@ def install():
 
 def settle(full_every_s=FULL_EVERY_S):
     """Freeze what is alive now; collect all of it again first when the last full
-    collection is older than `full_every_s`. Returns what it did."""
+    collection is older than `full_every_s`; then hand the heap's free pages back
+    to the system (`malloc_trim`, where there is one). Returns what it did."""
     now = time.monotonic()
     with _lock:
         # Nothing is frozen before the first call, so it has nothing to bound: it
@@ -73,14 +99,22 @@ def settle(full_every_s=FULL_EVERY_S):
         gc.freeze()
         _state["frozen_at"] = now
         _state["settles"] += 1
+        if _trim is not None:
+            t = time.perf_counter()
+            _trim(0)
+            _state["last_trim_ms"] = round(1000.0 * (time.perf_counter() - t), 1)
+            _state["trims"] += 1
     return "collected and froze" if full else "froze"
 
 
 def status():
-    """For /api/health: per generation, how many collections and how long."""
+    """For /api/health: per generation, how many collections and how long; and
+    how many times the heap's free pages were handed back, the last taking how
+    long (`trims` stays 0 where the C library has no `malloc_trim`)."""
     return {"generations": {str(g): {"n": v["n"], "total_ms": round(v["total_ms"], 1),
                                      "max_ms": round(v["max_ms"], 1)}
                             for g, v in _gens.items()},
             "frozen": gc.get_freeze_count(), "settles": _state["settles"],
             "full_collects": _state["full_collects"], "last_full_ms": _state["last_full_ms"],
+            "trims": _state["trims"], "last_trim_ms": _state["last_trim_ms"],
             "threshold": list(gc.get_threshold())}
