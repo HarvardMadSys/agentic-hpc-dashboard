@@ -214,12 +214,15 @@ jobs:
           cache-to: type=gha,mode=max,scope=dashboard-image
 
       # It must refuse to start with no password, as the service does anywhere, and
-      # say which build it is.
+      # say which build it is. The step's shell is `bash -e`, under which a failing
+      # `out=$(...)` ends the step: the refusal's exit 2 is caught with `||`, never
+      # left to errexit.
       - name: Check the image
         run: |
           set -uo pipefail
           docker run --rm rc-dashboard:ci rc-dashboard --version
-          out=$(docker run --rm rc-dashboard:ci 2>&1); code=$?
+          code=0
+          out=$(docker run --rm rc-dashboard:ci 2>&1) || code=$?
           printf '%s\n' "$out" | head -n 5
           if [ "$code" != 2 ] || ! printf '%s' "$out" | grep -q "refusing to serve"; then
             echo "::error::the image started with no password (exit $code)"
