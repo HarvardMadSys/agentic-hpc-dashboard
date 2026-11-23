@@ -92,8 +92,9 @@ export function SetupScreen({ feeds, goFeeds }: { feeds: FeedsResponse; goFeeds:
         <ol className="setup-steps">
           <li>
             On each login node, check that the collector is running, and see where it writes:
-            <pre className="mono">sudo ebpfm status</pre>
-            Not installed yet? From the repository: <code>sudo ./collector/ebpfm.sh install</code>
+            <pre className="mono">sudo ./collector/ebpfm.sh status</pre>
+            (<code>sudo ebpfm status</code> where the RPM is installed). Not installed yet:{' '}
+            <code>sudo ./collector/ebpfm.sh install</code>
           </li>
           <li>
             Point the dashboard at those folders, then start it again. <code>rc-dashboard init</code> finds them
