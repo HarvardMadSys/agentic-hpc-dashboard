@@ -34,9 +34,13 @@ for a in "$@"; do
     *) echo "usage: deploy.sh [--first] [--restart] [--plan] [--help]" >&2; exit 2 ;;
   esac
 done
-[ -f "$here/site.env" ] || { echo "deploy.sh: no $here/site.env: copy site.env.example there and fill it in (or deploy/rc-deploy init)" >&2; exit 2; }
+# The settings file: rc-deploy --site names one (SITE_ENV); else the kit's own. Read,
+# rendered, shipped and handed on as one file: the kit's own read here once deployed
+# the default file's settings in place of the one asked for.
+site=${SITE_ENV:-$here/site.env}
+[ -f "$site" ] || { echo "deploy.sh: no $site: copy site.env.example there and fill it in (or deploy/rc-deploy init)" >&2; exit 2; }
 # shellcheck source=/dev/null
-. "$here/site.env"
+. "$site"
 # render.py checks the keys it renders; these two are this script's own, and SSH_KEY is
 # first read after the sender has shipped, so an unset one stops here instead.
 : "${WORK_DIR:?WORK_DIR is not set in site.env}" "${SSH_KEY:?SSH_KEY is not set in site.env}"
@@ -58,7 +62,7 @@ echo "==> render"
 # spaces, or backslashes, and none still site.env.example's own (--strict). A bad
 # site.env stops here, before anything is shipped.
 for t in rc-tmux.service dashboard.config.json stream.json; do
-  python3 "$here/render.py" --strict "$here/$t.in" "$here/site.env" > "$work/$t"
+  python3 "$here/render.py" --strict "$here/$t.in" "$site" > "$work/$t"
 done
 if [ "$plan" = 1 ]; then
   echo "    site.env renders: $(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["hosts"]))' "$work/stream.json") node(s)"
@@ -93,7 +97,7 @@ git show "HEAD:$kit/install-remote.sh" > "$work/install-remote.sh"
 if [ -n "${SENDER_DIR:-}" ]; then
   echo "==> sender to $SENDER_DIR"
   tar -xOf "$work/release.tar" "release/$stream/fleet_stream.py" > "$work/fleet_stream.py"
-  SITE_ENV="$here/site.env" "$here/ship-sender.sh" "$sha" "$work/fleet_stream.py"
+  SITE_ENV="$site" "$here/ship-sender.sh" "$sha" "$work/fleet_stream.py"
 fi
 
 ssh_=(ssh -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 -o LogLevel=ERROR)
@@ -105,7 +109,7 @@ tar -C "$work" -czf - dist release.tar requirements.txt rc-tmux.service dashboar
 # first start passes its check.
 if ! "${ssh_[@]}" "$DASH_SSH" "test -s $DASH_ROOT/etc/password.hash || grep -q '^RC_DASH_PASSWORD_HASH=..' $DASH_ROOT/etc/auth.env 2>/dev/null"; then
   echo "==> password: $DASH_NODE has none"
-  SITE_ENV="$here/site.env" "$here/password.sh"
+  SITE_ENV="$site" "$here/password.sh"
 fi
 # The script goes over stdin: run from a folder it deletes, NFS would keep the open
 # file as a .nfs placeholder and the folder could not be removed.
@@ -115,6 +119,6 @@ fi
 echo "==> hourly check in $WORK_DIR/bin"
 mkdir -p "$WORK_DIR/bin"
 install -m 700 "$here/check.sh" "$WORK_DIR/bin/check.sh"
-install -m 600 "$here/site.env" "$WORK_DIR/bin/site.env"
+install -m 600 "$site" "$WORK_DIR/bin/site.env"
 rm -rf "$work"
 echo "deployed $sha to $DASH_NODE"

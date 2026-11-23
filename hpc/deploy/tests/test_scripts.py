@@ -268,6 +268,29 @@ class TestDeployPlan(Rig):
         self.assertNotIn("ssh", self.calls())
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "work")))
 
+    def test_plan_reads_the_settings_file_it_is_given(self):
+        """rc-deploy --site hands deploy.sh its file as SITE_ENV: that one is read, rendered
+        and checked, not the kit's own site.env beside it."""
+        repo = self.checkout()
+        with open(os.path.join(repo, "hpc", "deploy", "site.env")) as fh:
+            own = fh.read().replace('SOURCE_NODES="node01 node02"', "SOURCE_NODES=node09")
+        self.assertIn("SOURCE_NODES=node09", own)
+        with open(os.path.join(repo, "hpc", "deploy", "site.env"), "w") as fh:
+            fh.write(own)
+        p = subprocess.run(["bash", os.path.join(repo, "hpc", "deploy", "deploy.sh"), "--plan"],
+                           env=dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"],
+                                    HOME=self.home, STUB_LOG=self.log, SITE_ENV=self.site),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("site.env renders: 2 node(s)", p.stdout)
+        self.assertIn("on node01 node02", p.stdout)
+        os.unlink(os.path.join(repo, "hpc", "deploy", "site.env"))
+        p = subprocess.run(["bash", os.path.join(repo, "hpc", "deploy", "deploy.sh"), "--plan"],
+                           env=dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"],
+                                    HOME=self.home, STUB_LOG=self.log, SITE_ENV=self.site),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        self.assertEqual(p.returncode, 0, "the kit needs no site.env of its own: " + p.stdout)
+
     def test_plan_refuses_the_examples_values(self):
         repo = self.checkout()
         shutil.copy(os.path.join(KIT, "site.env.example"), os.path.join(repo, "hpc", "deploy", "site.env"))
