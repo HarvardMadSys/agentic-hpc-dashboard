@@ -622,6 +622,45 @@ class HashFile(unittest.TestCase):
         self.assertTrue(g.reload())
         self.assertIsNone(g.reload_error)
 
+    def test_a_check_across_a_new_hash_opens_nothing(self):
+        """A sign-in whose scrypt ran while the hash was replaced (SIGHUP, or a change
+        another request saw) once passed against the old hash, and its cookie was signed
+        with the new hash's key: a revoked password opened a session that outlived the
+        rotation. The check now says no, and a cookie is signed with the key of the hash
+        it was checked against, so one made across a rotation is refused."""
+        g = auth.from_config(self.cfg(password_hash_file=self.path))
+        g.fail_delay_s = 0
+        new = auth.hash_password("pw2", **FAST)
+        real = auth.verify_password
+
+        def rotating(password, stored):     # the old hash checked, then replaced
+            ok = real(password, stored)
+            auth.write_hash_file(self.path, new)
+            g.reload()
+            return ok
+        run = asyncio.new_event_loop().run_until_complete
+        auth.verify_password = rotating
+        try:
+            self.assertIsNone(run(g.sign_in("pw")))
+        finally:
+            auth.verify_password = real
+        self.assertEqual(g.stored, new)
+        auth.write_hash_file(self.path, self.stored)
+        self.assertTrue(g.reload())
+        auth.verify_password = rotating
+        try:
+            self.assertFalse(run(g.check_password("pw")), "nor through Basic")
+        finally:
+            auth.verify_password = real
+        # a token signed for the hash checked is refused once another is in use
+        tok = run(g.sign_in("pw2"))
+        self.assertTrue(g.valid(tok))
+        old = g.key
+        auth.write_hash_file(self.path, self.stored)
+        self.assertTrue(g.reload())
+        self.assertFalse(g.valid(tok))
+        self.assertFalse(g.valid(g.token(old)))
+
     def test_a_password_check_looks_at_the_file_first(self):
         g = auth.from_config(self.cfg(password_hash_file=self.path))
         g.fail_delay_s = 0

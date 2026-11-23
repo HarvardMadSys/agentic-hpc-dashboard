@@ -878,7 +878,9 @@ password_hash_file = "/etc/rc-dashboard/password.hash"
 - **A new password needs no restart.** The service reads the hash file again when it changes (its
   inode, mtime or size): checked on every sign-in attempt (the form, and each request a script
   signs with Basic auth), at most once a second on any other request, and on `SIGHUP`, which also
-  says on stderr what came of it. A new hash makes a new cookie key, so everyone signs in again. A file
+  says on stderr what came of it. A new hash makes a new cookie key, so everyone signs in again; a
+  sign-in whose check spans the change is refused, and a cookie is signed with the key of the hash
+  its password was checked against, so the old password opens nothing after the change. A file
   that cannot be read or holds no hash leaves the password as it was, and says why on stderr, until
   it is fixed; at start, it stops the service. The file holds the hash on one line; quotes around
   it, blank lines and `#` lines are passed over. `new-password` refuses to replace a password or a

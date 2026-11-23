@@ -277,12 +277,15 @@ class Gate:
         self._lock = self._loop = None
         self._use(stored)
 
-    def _use(self, stored):
-        self.stored = stored
+    def _key_for(self, stored):
         # Per deployment and per password: a cookie made under another key
         # file or another hash is not valid here.
-        self.key = hmac.new(self._session_key, b"rc-dashboard session\0" + stored.encode(),
-                            hashlib.sha256).digest()
+        return hmac.new(self._session_key, b"rc-dashboard session\0" + stored.encode(),
+                        hashlib.sha256).digest()
+
+    def _use(self, stored):
+        self.stored = stored
+        self.key = self._key_for(stored)
         self._passed = set()            # Basic headers that passed once, as HMACs
 
     # -- the hash file
@@ -332,13 +335,14 @@ class Gate:
         return True
 
     # -- the cookie
-    def _mac(self, exp):
-        d = hmac.new(self.key, b"%d" % exp, hashlib.sha256).digest()
+    def _mac(self, exp, key=None):
+        d = hmac.new(key or self.key, b"%d" % exp, hashlib.sha256).digest()
         return base64.urlsafe_b64encode(d).decode("ascii").rstrip("=")
 
-    def token(self):
+    def token(self, key=None):
+        """A cookie's token, signed with `key`: by default the key of the hash in use."""
         exp = int(self.now()) + self.lifetime_s
-        return "%d.%s" % (exp, self._mac(exp))
+        return "%d.%s" % (exp, self._mac(exp, key))
 
     def valid(self, tok):
         """True for a token this gate made that has not run out. One made for
@@ -371,18 +375,35 @@ class Gate:
             self._lock, self._loop = asyncio.Lock(), loop
         return self._lock
 
-    async def check_password(self, password):
-        """scrypt, one check at a time and off the event loop. A wrong password
-        waits `fail_delay_s` more, so guessing is slow as well as hopeless. The
-        hash file is looked at first, every time."""
+    async def _opens(self, password):
+        """The hash `password` was checked against and opens, or None. scrypt, one
+        check at a time and off the event loop. A wrong password waits `fail_delay_s`
+        more, so guessing is slow as well as hopeless. The hash file is looked at
+        first, every time. A hash replaced while scrypt ran (SIGHUP, or a change
+        another request saw) is a no: the answer was for a password that may no
+        longer open the page, and whoever gave it signs in again."""
         self.refresh(throttle=False)
-        ok = False
+        opened = None
         if password and len(password) <= MAX_PASSWORD:
             async with self._lock_here():
-                ok = await asyncio.to_thread(verify_password, password, self.stored)
-        if not ok and self.fail_delay_s:
+                stored = self.stored
+                if (await asyncio.to_thread(verify_password, password, stored)
+                        and stored == self.stored):
+                    opened = stored
+        if opened is None and self.fail_delay_s:
             await asyncio.sleep(self.fail_delay_s)
-        return ok
+        return opened
+
+    async def check_password(self, password):
+        """Whether `password` opens the page (`_opens`)."""
+        return await self._opens(password) is not None
+
+    async def sign_in(self, password):
+        """The cookie token `password` earns, or None. Signed with the key of the hash
+        it was checked against: a hash replaced at any moment after the check leaves a
+        token the gate refuses, never a session a revoked password opened."""
+        stored = await self._opens(password)
+        return None if stored is None else self.token(self._key_for(stored))
 
     async def check_basic(self, value):
         """`Authorization: Basic <value>`, with the password after any user name.
@@ -638,9 +659,10 @@ class AuthMiddleware:
             else:
                 form = _form(body)
                 nxt = safe_next(form.get("next", "/"))
-                if await self.gate.check_password(form.get("password", "")):
+                tok = await self.gate.sign_in(form.get("password", ""))
+                if tok is not None:
                     secure = scope.get("scheme") == "https"
-                    resp = _see_other(nxt, self.gate.set_cookie(self.gate.token(), secure))
+                    resp = _see_other(nxt, self.gate.set_cookie(tok, secure))
                 else:
                     resp = self.page(nxt, status=401, error="Wrong password.")
         else:
