@@ -103,7 +103,10 @@ test('no feed holds a record: the setup screen, which names every folder it look
   assert.match(text, /rc-dashboard check-feeds/);
   // the shell gives way to it, and no green light shines over it
   const app = readFileSync(fileURLToPath(new URL('../src/App.tsx', import.meta.url)), 'utf8');
-  assert.match(app, /if \(empty && tab\.k !== 'feeds'\) return <SetupScreen/);
+  // ... every tab but Feeds, where it looked, and Trend, whose roll-up table outlives the
+  // day-files it was made from
+  assert.match(app, /const setup = empty && tab\.k !== 'feeds' && tab\.k !== 'trend';/);
+  assert.match(app, /if \(setup\) return <SetupScreen/);
   assert.match(app, /live\.transport === 'ws' && !empty \? '' : ' off'/);
 });
 

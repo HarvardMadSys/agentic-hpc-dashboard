@@ -123,7 +123,9 @@ Research-integrity constraints: breaking one is a reporting error, not a styling
    dash, and a tab says `none` only of a body the service reduced (`hasBody`), and a plate's
    note says *not checked*, with why, of a panel not present, never `0`. When **no feed holds a
    record at all**, the tabs give way to one setup screen (`components/SetupScreen.tsx`): where the
-   service looked, folder by folder (`/api/feeds` `candidates`), and the three steps that fix it;
+   service looked, folder by folder (`/api/feeds` `candidates`), and the three steps that fix it.
+   Feeds stays, and so does Trend: its roll-up table holds days whose files are gone (expired, or
+   not yet copied back after a restore), and it says so itself when it holds none;
    the head's pill reads `no data` and the rail's live light goes out. Needs attention is green
    only for a full check: with a source not checked it reads *nothing flagged in what was checked*.
 5. **Nothing fabricated**: no `Math.random()` in `src/` (`npm run check:no-random`), and nothing

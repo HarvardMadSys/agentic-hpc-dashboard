@@ -490,12 +490,16 @@ export default function App() {
     return done;
   }, [land, tab.k, goSec, settled]);
   // No feed holds a record: the tabs give way to the setup screen, which says
-  // where the service looked and what to do (components/SetupScreen.tsx).
+  // where the service looked and what to do (components/SetupScreen.tsx). Not
+  // Feeds, which is where it looked; nor Trend, which reads the roll-up table:
+  // that holds days whose files are gone (expired, or not yet copied back after a
+  // restore), and Trend says so itself when it holds none.
   const empty = noData(feeds.data);
+  const setup = empty && tab.k !== 'feeds' && tab.k !== 'trend';
   // The window and the filters, one strip held at the top while the tab scrolls
   // (lib/sticky.ts). Feeds is about the service, not a window of data: none;
   // nor the setup screen, which has no window to pick.
-  const showControls = tab.k !== 'feeds' && !empty;
+  const showControls = tab.k !== 'feeds' && !setup;
   const controlsRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const stuck = useStickyBar(controlsRef, sentinelRef, showControls);
@@ -629,7 +633,7 @@ export default function App() {
 
   const nClasses = url.cls.length;
   const body = (() => {
-    if (empty && tab.k !== 'feeds') return <SetupScreen feeds={feeds.data!} goFeeds={() => goto('feeds')} />;
+    if (setup) return <SetupScreen feeds={feeds.data!} goFeeds={() => goto('feeds')} />;
     switch (tab.k) {
       case 'live':
         return (

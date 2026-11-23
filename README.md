@@ -85,8 +85,8 @@ as sub-tabs.
 
 **Ask LLM** opens beside any tab, from the head's Ask button, where a site turns it on:
 questions about the window on screen, answered by an agent that cites the panels it read. With
-no data at all, every tab gives way to a setup screen that says where the dashboard looked and
-how to fix it. Ctrl+K (or `/`) goes to any tab, section, user, login node or session.
+no data at all, the tabs give way to a setup screen that says where the dashboard looked and
+how to fix it; Trend stays, since its roll-up table outlives the day-files it was made from. Ctrl+K (or `/`) goes to any tab, section, user, login node or session.
 
 The whole page can be narrowed to classes, users and agent types, over any window the
 service offers. What each tab holds: [`dashboard/web/README.md`](dashboard/web/README.md#tabs);
