@@ -671,11 +671,20 @@ class ShellPiecesTest(Tmp):
                     break
             time.sleep(0.05)
         self.addCleanup(zombie.wait)
-        odd = self.path('a) b')         # a name with ") " in it: /proc/PID/stat's (comm)
-        shutil.copy(shutil.which('sleep'), odd)
-        named = subprocess.Popen([odd, '30'])
+        # a live process whose name has ") Z" in it -- /proc/PID/stat says (x) Z) S ...,
+        # which read from the first ") " is a zombie. It names itself: a copy of sleep is
+        # no sleep where coreutils is one program that goes by the name it is run as.
+        named = subprocess.Popen([sys.executable, '-c', 'import time\n'
+                                  'open("/proc/self/comm", "w").write("x) Z")\ntime.sleep(30)'])
         self.addCleanup(named.wait)
         self.addCleanup(named.kill)
+        for _ in range(100):
+            with open('/proc/%d/comm' % named.pid) as fh:
+                if fh.read().strip() == 'x) Z':
+                    break
+            time.sleep(0.05)
+        else:
+            self.fail('the stand-in never took its name')
         gone = subprocess.Popen(['true'])
         gone.wait()
         for pid, want in ((live.pid, 0), (zombie.pid, 1), (named.pid, 0), (gone.pid, 1)):
