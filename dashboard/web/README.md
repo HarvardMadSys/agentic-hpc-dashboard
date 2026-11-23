@@ -81,8 +81,10 @@ without git) and `built 2026-11-15 14:02`, or `built — (dev server)`.
 
 ## Dependencies
 
-Runtime: **`react` and `react-dom`**, nothing else. The typeface, IBM Plex Sans and Mono, comes
-from Google Fonts (`index.html`), with the browser's fonts as fallback. There is no charting,
+Runtime: **`react` and `react-dom`**, nothing else. The typeface, IBM Plex Sans and Mono, is
+served with the page (`src/fonts/`: the files and Unicode ranges Google Fonts served, under the
+SIL Open Font License, `OFL.txt`), with the browser's fonts as fallback. The page asks no other
+host for anything. There is no charting,
 table or icon library. Every chart is hand-rolled SVG (`src/charts/`, and `PhaseBand`,
 `TrajectoryNav`, `PortraitFigure` and `TreeDiagram`, which draw their own), so no
 code path can add a second value axis and no library theme can substitute a hue for the CSS
