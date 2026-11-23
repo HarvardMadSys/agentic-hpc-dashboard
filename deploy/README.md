@@ -223,7 +223,11 @@ sudo deploy/rc-deploy backup --to /root/rc-dashboard.tar     # deploy/common/bac
 
 [`common/backup.sh`](common/backup.sh) runs `rc-dashboard backup` as the dashboard's account
 (the roll-up table, the salt, the session key, the hash), and with `--settings` keeps
-`/etc/rc-dashboard` beside it as `FILE.settings.tar`. `backup.sh --restore FILE` puts it back.
+`/etc/rc-dashboard` beside it as `FILE.settings.tar`. `backup.sh --restore FILE` puts it back:
+the dashboard stops, its account writes back what the dashboard keeps, root puts the
+password's hash in `/etc/rc-dashboard` as `password.sh` does (and names it in `paths.env` on
+a host that had no password), and the dashboard starts again. A restore that fails starts
+the dashboard again on what it had.
 
 ## Moving the dashboard to another host
 

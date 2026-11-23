@@ -652,6 +652,108 @@ class TestPassword(Rig):
         self.assertIn("commenting out RC_DASH_PASSWORD_HASH", out)
 
 
+RESTORE_STUB = r"""#!/bin/bash
+# the venv's Python, for backup.sh --restore: rc-dashboard restore as its contract has it,
+# writing where the settings it was given say, and saying which settings those were
+echo "python $*" >> "$STUB_LOG"
+if [ "$1" = -m ] && [ "$3" = restore ]; then
+  echo "restore as $(id -un 2>/dev/null) hash_file=${RC_DASH_PASSWORD_HASH_FILE:-} inline=${RC_DASH_PASSWORD_HASH-unset}" >> "$STUB_LOG"
+  if [ -n "${STUB_RESTORE_FAIL:-}" ]; then echo "restore: $STUB_RESTORE_FAIL" >&2; exit 1; fi
+  mkdir -p "$RC_DASH_CACHE_DIR"
+  echo restored-key > "$RC_DASH_CACHE_DIR/session.key"
+  if [ -z "${STUB_RESTORE_NO_HASH:-}" ]; then
+    (umask 027; echo 'scrypt$restored' > "$RC_DASH_PASSWORD_HASH_FILE")
+    echo "  password.hash          -> $RC_DASH_PASSWORD_HASH_FILE"
+  fi
+  exit 0
+fi
+exec python3 "$@"
+"""
+
+
+class TestRestore(Rig):
+    """backup.sh --restore on an installed host, whose ETC (and the password's hash in
+    it) is root's, and which the dashboard's account may only read."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_script("deploy/single/install.sh", "--no-bootstrap", "--no-check")
+        py = os.path.join(self.opt, "venv", "bin", "python")
+        os.unlink(py)
+        with open(py, "w") as fh:
+            fh.write(RESTORE_STUB)
+        os.chmod(py, 0o755)
+        self.tar = os.path.join(self.tmp, "backup.tar")
+        with open(self.tar, "w") as fh:
+            fh.write("a backup\n")
+        self.hashed = os.path.join(self.etc, "password.hash")
+        open(self.log, "w").close()
+
+    def restore(self, code=0, **env):
+        return self.run_script("deploy/common/backup.sh", "--restore", self.tar, code=code, **env)
+
+    def restore_line(self):
+        return [l for l in self.calls().splitlines() if l.startswith("restore as")][0]
+
+    def test_a_host_without_a_password_takes_the_restored_one(self):
+        """Moving: the new host has no password yet. The hash goes in ETC as password.sh
+        puts it, paths.env names it, and the dashboard starts reading it."""
+        out = self.restore()
+        self.assertEqual(self.read(self.hashed), "scrypt$restored\n")
+        self.assertEqual(self.keys(os.path.join(self.etc, "paths.env"))["RC_DASH_PASSWORD_HASH_FILE"],
+                         self.hashed)
+        calls = self.calls()
+        self.assertIn("runuser -u rc-dashboard -- env -C", calls, "the restore runs as the account")
+        self.assertRegex(calls, r"chown root:rc-dashboard \S*/\.password\.hash\.")
+        self.assertIn("systemctl stop rc-dashboard.service", calls)
+        self.assertIn("systemctl start rc-dashboard.service", calls)
+        # the hash went to the account's folder first, never straight into ETC
+        self.assertRegex(self.restore_line(), r"hash_file=\S*/\.restore\.[^/]+/password\.hash ")
+        self.assertIn("naming the hash file in paths.env", out)
+        self.assertEqual([n for n in os.listdir(self.state) if n.startswith(".restore.")], [],
+                         "the account's folder for the restore is gone")
+        self.assertEqual(self.read(os.path.join(self.state, "cache", "session.key")), "restored-key\n")
+
+    def test_a_host_with_a_password_has_it_replaced_without_an_install(self):
+        with open(self.hashed, "w") as fh:
+            fh.write("scrypt$old\n")
+        with open(os.path.join(self.etc, "paths.env"), "a") as fh:
+            fh.write("RC_DASH_PASSWORD_HASH_FILE=%s\n" % self.hashed)
+        out = self.restore()
+        self.assertEqual(self.read(self.hashed), "scrypt$restored\n")
+        self.assertNotIn("naming the hash file", out)
+        self.assertIn("systemctl start rc-dashboard.service", self.calls())
+
+    def test_an_inline_hash_gives_way_to_the_restored_file(self):
+        p = os.path.join(self.etc, "dashboard.env")
+        with open(p) as fh:
+            text = fh.read().replace("RC_DASH_PASSWORD_HASH=\n", "RC_DASH_PASSWORD_HASH='scrypt$old'\n")
+        with open(p, "w") as fh:
+            fh.write(text)
+        out = self.restore()
+        self.assertIn("inline= ", self.restore_line() + " ", "the restore ran without the inline hash")
+        self.assertNotIn("RC_DASH_PASSWORD_HASH", self.keys(p))
+        self.assertIn("commenting out RC_DASH_PASSWORD_HASH", out)
+        self.assertEqual(self.read(self.hashed), "scrypt$restored\n")
+
+    def test_a_backup_without_a_password_leaves_the_hosts_alone(self):
+        with open(self.hashed, "w") as fh:
+            fh.write("scrypt$old\n")
+        self.restore(STUB_RESTORE_NO_HASH="1")
+        self.assertEqual(self.read(self.hashed), "scrypt$old\n")
+        self.assertIn("systemctl start rc-dashboard.service", self.calls())
+
+    def test_a_failed_restore_starts_the_dashboard_again(self):
+        out = self.restore(code=1, STUB_RESTORE_FAIL="the backup is damaged")
+        self.assertIn("restore: the backup is damaged", out)
+        self.assertIn("the dashboard starts again", out)
+        calls = self.calls().splitlines()
+        self.assertLess(calls.index("systemctl stop rc-dashboard.service"),
+                        calls.index("systemctl start rc-dashboard.service"))
+        self.assertFalse(os.path.exists(self.hashed))
+        self.assertEqual([n for n in os.listdir(self.state) if n.startswith(".restore.")], [])
+
+
 class TestCheck(Rig):
     def setUp(self):
         super().setUp()

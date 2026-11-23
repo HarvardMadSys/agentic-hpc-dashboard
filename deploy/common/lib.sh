@@ -161,3 +161,31 @@ set_env_line() {
     { print }
     END { if (!done) print line }' "$f" | put "$f"
 }
+
+# hash_file_unread: whether the dashboard has yet to read ETC/password.hash, put in place
+# by password.sh or backup.sh --restore: paths.env does not name it, or a
+# RC_DASH_PASSWORD_HASH in dashboard.env would stand beside it (both set stop the
+# dashboard: which password opens the page must not be a guess).
+hash_file_unread() {
+  ! grep -q '^RC_DASH_PASSWORD_HASH_FILE=' "$ETC/paths.env" 2>/dev/null ||
+    [ -n "$(env_value "$ETC/dashboard.env" RC_DASH_PASSWORD_HASH 2>/dev/null)" ]
+}
+
+# hash_file_name: ETC/password.hash made the one the dashboard reads. A
+# RC_DASH_PASSWORD_HASH in dashboard.env is commented out, the file being the one to
+# keep, and install-dashboard.sh --no-build, in the MODE install.env names, writes
+# paths.env again to name the file and starts (or restarts) the dashboard.
+hash_file_name() {
+  if [ -n "$(env_value "$ETC/dashboard.env" RC_DASH_PASSWORD_HASH 2>/dev/null)" ]; then
+    say "commenting out RC_DASH_PASSWORD_HASH in $ETC/dashboard.env: the hash file replaces it"
+    sed 's/^RC_DASH_PASSWORD_HASH=/# replaced by password.hash: RC_DASH_PASSWORD_HASH=/' \
+      "$ETC/dashboard.env" | put "$ETC/dashboard.env"
+  fi
+  [ -n "${MODE:-}" ] || die "install.env names no MODE: run deploy/common/install-dashboard.sh single|fleet --no-build"
+  say "naming the hash file in paths.env, and starting the dashboard"
+  if [ "$PLAN" = 1 ]; then
+    run "$here/install-dashboard.sh" "$MODE" --no-build
+  else
+    "$here/install-dashboard.sh" "$MODE" --no-build
+  fi
+}

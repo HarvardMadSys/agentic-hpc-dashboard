@@ -73,22 +73,8 @@ fi
 say "$ETC/password.hash: the dashboard reads it again when it changes"
 run install -m 640 -o root -g "$SERVICE_USER" "$mine" "$ETC/password.hash"
 
-first=0
-grep -q '^RC_DASH_PASSWORD_HASH_FILE=' "$ETC/paths.env" 2>/dev/null || first=1
-if [ -n "$(env_value "$ETC/dashboard.env" RC_DASH_PASSWORD_HASH 2>/dev/null)" ]; then
-  say "commenting out RC_DASH_PASSWORD_HASH in $ETC/dashboard.env: the hash file replaces it"
-  sed 's/^RC_DASH_PASSWORD_HASH=/# replaced by password.hash: RC_DASH_PASSWORD_HASH=/' \
-    "$ETC/dashboard.env" | put "$ETC/dashboard.env"
-  first=1
-fi
-if [ "$first" = 1 ]; then
-  [ -n "$MODE" ] || die "install.env names no MODE: run deploy/common/install-dashboard.sh single|fleet --no-build"
-  say "naming the hash file in paths.env, and starting the dashboard"
-  if [ "$PLAN" = 1 ]; then
-    run "$here/install-dashboard.sh" "$MODE" --no-build
-  else
-    "$here/install-dashboard.sh" "$MODE" --no-build
-  fi
+if hash_file_unread; then
+  hash_file_name
 else
   say "the dashboard reads the new hash within a few seconds; everyone signs in again"
 fi
