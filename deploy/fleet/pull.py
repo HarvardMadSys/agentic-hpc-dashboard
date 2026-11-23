@@ -808,6 +808,16 @@ class Loop(object):
     def reload(self):
         try:
             new = load(self.path)
+        except NoNodes as e:
+            # The last node taken out is a reload like any other: every puller
+            # retires. Kept as "a broken file", it went on copying a node the
+            # settings no longer named, and undid a purge of its copy. rc-pull
+            # stays up, idle, so the reload that names a node again reaches it.
+            retired = [self.retire(n) for n in list(self.nodes)]
+            for t in retired:
+                t.join(30)
+            say("reload: %s; every node retired, and rc-pull waits for one to be named" % e)
+            return
         except ConfigError as e:
             say("reload: %s; every node stays as it was" % e)
             return

@@ -671,6 +671,44 @@ class TestReload(StubRig):
         self.assertIn("every node stays as it was", out)
         self.assertIn("did you mean FLEET_HOSTS", out)
 
+    def test_sighup_with_no_node_left_retires_them_all(self):
+        """The last node taken out is a reload like any other: it stops being pulled
+        (kept as "a broken file", it went on being copied), and the loop stays up for
+        the reload that names a node again."""
+        self.settings("n1")
+        p = subprocess.Popen([sys.executable, SCRIPT, "--config", self.conf, "loop"],
+                             env=dict(os.environ, RSYNC_LOG=self.rsync_log),
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             universal_newlines=True)
+        n1 = os.path.join(self.mirror, ".state", "n1.json")
+
+        def wait_for(path, newer_than=0):
+            deadline = time.time() + 30
+            while not (os.path.exists(path) and os.stat(path).st_mtime > newer_than):
+                self.assertLess(time.time(), deadline, "%s never written" % path)
+                time.sleep(0.1)
+
+        try:
+            wait_for(n1)
+            self.settings("")
+            p.send_signal(signal.SIGHUP)
+            time.sleep(1.5)
+            t_gone = os.stat(n1).st_mtime
+            time.sleep(5 + 2)   # one interval (the rig's FLEET_INTERVAL_S) and then some
+            self.assertEqual(os.stat(n1).st_mtime, t_gone, "n1 was taken out and still passes")
+            self.assertIsNone(p.poll(), "the loop ended with no node left")
+            self.settings("n1")
+            p.send_signal(signal.SIGHUP)
+            wait_for(n1, newer_than=t_gone)
+            p.send_signal(signal.SIGTERM)
+            out, _ = p.communicate(timeout=30)
+        finally:
+            if p.poll() is None:
+                p.kill()
+                p.communicate()
+        self.assertEqual(p.returncode, 0, out)
+        self.assertIn("every node retired, and rc-pull waits for one to be named", out)
+
 
 class TestAliases(unittest.TestCase):
     def load(self, text):
