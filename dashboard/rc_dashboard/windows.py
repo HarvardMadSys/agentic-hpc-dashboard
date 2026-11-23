@@ -1530,13 +1530,19 @@ class WindowRegistry:
         read."""
         with self.lock:
             looked = view.held(view._replay)
+            # Counted under the lock: while the files are read below, the tail
+            # holds more, and past the cap what it lets go of joins the run of
+            # records let go that `looked` ends with -- counted after, those
+            # were counted twice, and a notice held since took a decision made
+            # before it came.
+            checked = sum(len(e) if type(e) is LetGo else 1 for e in looked)
         paths = {e[1] for e in looked if type(e) is not LetGo and e[0] is None}
         out = {}
         for path in paths:
             keys = [k for k in (path, _twin(path)) if k in seam]
             look = Look(path, [seam[k][2] for k in keys])
             out[path] = bool(keys) and all(look.holds(seam[k]) for k in keys)
-        return out, sum(len(e) if type(e) is LetGo else 1 for e in looked)
+        return out, checked
 
     def refresh(self):
         """Re-materialise every ready view, and re-scan the ones that drifted.

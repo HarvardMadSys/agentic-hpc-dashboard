@@ -826,6 +826,62 @@ class SeamTest(CacheCase):
                 if cap >= 12:
                     self.assertEqual(dropped, 0)
 
+    def test_a_cut_noticed_while_the_notices_are_checked_is_not_taken_as_checked(self):
+        # The review's case: the check reads the files outside the lock, and
+        # the tail goes on meanwhile -- here it notices the file cut again,
+        # then holds the 2 records written after. Past the cap, those records
+        # went into the run of records let go that the check had already
+        # taken, so counted once the lock was let go they were counted twice:
+        # `checked` ran past the second notice, which then took the first
+        # notice's decision, kept a seam that no longer describes the file, and
+        # skipped the records after it against that seam.
+        for cap in (1, 2, 3, 4, 5, 6, 7, 8, 11, 13, windows.REPLAY_CAP):
+            with self.subTest(cap=cap):
+                self.root = os.path.join(self.tmp, "ebpf-checking-%d" % cap)
+                self.append("h1.exits.jsonl", [exit_rec(self.now - 900 + i, 100 + i)
+                                               for i in range(20)])
+                agg = self.aggregator()
+                reg = agg.panels_by_window
+
+                def more_then_cut():
+                    self.append("h1.exits.jsonl", [exit_rec(self.now - 600 + i, 300 + i)
+                                                   for i in range(5)])
+                    self.assertEqual(agg.poll_once(), 5)
+                    self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 60 + i, 500 + i)
+                                                      for i in range(3)])
+
+                def noticed():
+                    self.assertEqual(agg.poll_once(), 3)
+                checking, real_check, real_look = [], reg.restarts_checked, windows.Look
+
+                def check(*a, **k):
+                    checking.append(True)
+                    try:
+                        return real_check(*a, **k)
+                    finally:
+                        checking.pop()
+
+                def look(*a, **k):
+                    # the tail, once the check has read the file and before it
+                    # counts what it looked at, outside the lock
+                    got = real_look(*a, **k)
+                    if checking and checking[0] is True:
+                        checking[0] = False
+                        self.cut_short("h1.exits.jsonl", [exit_rec(self.now - 30 + i, 700 + i)
+                                                          for i in range(2)])
+                        self.assertEqual(agg.poll_once(), 2)
+                    return got
+                with mock.patch.object(windows, "REPLAY_CAP", cap), \
+                        mock.patch.object(windows, "Look", look), \
+                        mock.patch.object(reg, "restarts_checked", check):
+                    view = self.building(agg, before_plan=more_then_cut, after_scan=noticed)
+                dropped = view.status()["replay_dropped"]
+                # the 3 the build read, the 5 held before the first cut, and the
+                # 2 written after the second
+                self.assertEqual(self.calls(view) + dropped, 10)
+                if cap >= 12:
+                    self.assertEqual(dropped, 0)
+
 
 class SealedDayTest(CacheCase):
     """A window reads a sealed day from its replica (`history.py`): one whose
