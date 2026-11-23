@@ -1,0 +1,223 @@
+"""deploy/rc-deploy, the front door: init's four questions and the kit they call for, and
+each command handed to its kit's scripts. RC_DEPLOY_ECHO=1 shows the kit's command
+instead of running it; the settings files, install.env and fleet.env are temporary, and
+systemctl is a stand-in that logs its calls."""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+TOOL = os.path.join(REPO, "deploy", "rc-deploy")
+
+SYSTEMCTL = '''#!/bin/bash
+echo "systemctl $*" >> "$STUB_LOG"
+exit 0
+'''
+
+
+class Rig(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rc-deploy-")
+        self.site = os.path.join(self.tmp, "site.env")
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin)
+        with open(os.path.join(self.bin, "systemctl"), "w") as fh:
+            fh.write(SYSTEMCTL)
+        os.chmod(os.path.join(self.bin, "systemctl"), 0o755)
+        self.log = os.path.join(self.tmp, "calls.log")
+        self.etc = os.path.join(self.tmp, "etc")
+        self.state = os.path.join(self.tmp, "state")
+        os.makedirs(self.etc)
+        self.install_env = os.path.join(self.tmp, "install.env")
+        with open(self.install_env, "w") as fh:
+            fh.write("MODE=fleet\nETC=%s\nSTATE=%s\nOPT=%s/opt\n" % (self.etc, self.state, self.tmp))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def tool(self, *args, code=0, stdin="", echo=True, **env):
+        e = dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"], STUB_LOG=self.log,
+                 INSTALL_ENV=self.install_env, RC_DEPLOY_AS_ROOT="1",
+                 RC_DEPLOY_HISTORY=os.path.join(self.tmp, "history"), USER="alice")
+        if echo:
+            e["RC_DEPLOY_ECHO"] = "1"
+        e.update(env)
+        p = subprocess.run([sys.executable, TOOL, "--site", self.site] + list(args), env=e,
+                           input=stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           universal_newlines=True, timeout=60)
+        self.assertEqual(p.returncode, code, p.stdout)
+        return p.stdout
+
+    def keys(self):
+        out = {}
+        with open(self.site) as fh:
+            for line in fh:
+                m = re.match(r"^([A-Z_]+)=(.*)$", line.rstrip("\n"))
+                if m:
+                    out[m.group(1)] = m.group(2)
+        return out
+
+
+class TestInit(Rig):
+    def test_one_server_with_root(self):
+        out = self.tool("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes")
+        k = self.keys()
+        self.assertEqual(k["KIT"], "single")
+        self.assertEqual((k["SLURM"], k["NODE_NOUN"], k["SITE_NAME"]),
+                         ("yes", '"login nodes"', '"login nodes · live"'))
+        self.assertIn("the kit: single", out)
+
+    def test_slurm_is_asked_not_taken_from_root(self):
+        self.tool("init", "--yes", "--set", "SLURM=no", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes")
+        k = self.keys()
+        self.assertEqual((k["KIT"], k["SLURM"], k["NODE_NOUN"]), ("single", "no", "servers"))
+
+    def test_root_everywhere_is_a_fleet(self):
+        self.tool("init", "--yes", "--set", "NODES=n1, n2", "--set", "ROOT_ON_NODES=yes",
+                  "--set", "ROOT_ON_DASHBOARD=yes", "--set", "DASH_ADDRESS=10.0.0.5")
+        k = self.keys()
+        self.assertEqual((k["KIT"], k["NODES"], k["DASH_ADDRESS"]), ("fleet", '"n1 n2"', "10.0.0.5"))
+
+    def test_no_root_on_the_nodes_streams(self):
+        out = self.tool("init", "--set", "NODES=login01 login02", "--set", "ROOT_ON_NODES=no",
+                        "--set", "ROOT_ON_DASHBOARD=no", "--set", "DASH_SSH=alice@dash.cluster.org",
+                        "--set", "DASH_ROOT=/data/alice/rc", "--set", "SOURCE_DOMAIN=cluster.org",
+                        "--yes")
+        k = self.keys()
+        self.assertEqual(k["KIT"], "hpc")
+        self.assertEqual((k["SOURCE_USER"], k["SOURCE_NODES"], k["DASH_NODE"], k["DASH_ROOT"]),
+                         ("alice", '"login01 login02"', "dash", "/data/alice/rc"))
+        self.assertIn("no root on the nodes", out)
+        with open(self.site) as fh:
+            self.assertIn("# ---- The source nodes", fh.read(), "the example's notes stay")
+        # what it wrote renders, and passes deploy.sh's --strict check
+        p = subprocess.run([sys.executable, os.path.join(REPO, "hpc", "deploy", "render.py"),
+                            "--strict", os.path.join(REPO, "hpc", "deploy", "stream.json.in"), self.site],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_questions_on_stdin(self):
+        out = self.tool("init", stdin="maybe\nyes\nn1 n2\nyes\nyes\n\n")
+        self.assertIn("is not one of", out, "a word that is not yes or no is asked again")
+        self.assertEqual(self.keys()["KIT"], "fleet")
+
+    def test_which(self):
+        self.tool("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes")
+        self.assertEqual(self.tool("which").strip(), "kit single, settings %s" % self.site)
+
+
+class TestDispatch(Rig):
+    def init(self, kit):
+        sets = {"single": ["NODES=", "ROOT_ON_DASHBOARD=yes"],
+                "fleet": ["NODES=n1", "ROOT_ON_NODES=yes", "ROOT_ON_DASHBOARD=yes"],
+                "hpc": ["NODES=n1", "ROOT_ON_NODES=no", "ROOT_ON_DASHBOARD=no",
+                        "DASH_SSH=alice@dash", "DASH_ROOT=/data/rc"]}[kit]
+        args = ["init", "--yes"]
+        for s in sets:
+            args += ["--set", s]
+        self.tool(*args)
+
+    def test_apply_hands_the_settings_to_the_kit(self):
+        self.init("single")
+        out = self.tool("apply")
+        self.assertRegex(out, r"RUN .*NODE_NOUN='login nodes' .*SLURM=yes .*deploy/single/install\.sh\n")
+        out = self.tool("plan")
+        self.assertRegex(out, r"RUN .*deploy/single/install\.sh --plan\n")
+
+    def test_each_command_to_its_kit(self):
+        self.init("fleet")
+        for args, want in ((["apply"], r"deploy/fleet/install-dashboard\.sh\n"),
+                           (["password", "--rotate"], r"deploy/common/password\.sh --rotate\n"),
+                           (["status"], r"deploy/common/check\.sh --print\n"),
+                           (["backup", "--to", "/b.tar"], r"deploy/common/backup\.sh --to /b\.tar --settings\n"),
+                           (["uninstall", "--purge", "--plan"], r"deploy/common/uninstall\.sh --purge --plan\n")):
+            self.assertRegex(self.tool(*args), r"RUN .*" + want, args)
+        os.unlink(self.site)
+        self.init("hpc")
+        for args, want in ((["apply"], r"SITE_ENV=\S+ \S+/hpc/deploy/deploy\.sh\n"),
+                           (["password"], r"hpc/deploy/password\.sh\n"),
+                           (["rollback"], r"hpc/deploy/rollback\.sh\n"),
+                           (["backup"], r"hpc/deploy/backup\.sh\n"),
+                           (["uninstall"], r"hpc/deploy/uninstall\.sh\n")):
+            self.assertRegex(self.tool(*args), r"RUN .*" + want, args)
+
+    def test_refusals(self):
+        out = self.tool("apply", code=1)
+        self.assertIn("rc-deploy init", out)
+        self.init("single")
+        self.assertIn("no nodes to add", self.tool("add-node", "n2", code=1))
+        with open(self.site, "a") as fh:
+            fh.write("KIT=cluster\n")
+        self.assertIn("one of single, fleet, hpc", self.tool("apply", code=1))
+
+
+class TestNodes(Rig):
+    def setUp(self):
+        super().setUp()
+        self.tool("init", "--yes", "--set", "NODES=n1", "--set", "ROOT_ON_NODES=yes",
+                  "--set", "ROOT_ON_DASHBOARD=yes")
+        self.fleet = os.path.join(self.etc, "fleet.env")
+        with open(self.fleet, "w") as fh:
+            fh.write("# the nodes\nFLEET_HOSTS=n1\nFLEET_MIRROR=%s/mirror\n" % self.state)
+
+    def read(self):
+        with open(self.fleet) as fh:
+            return fh.read()
+
+    def test_a_node_added_reloads_the_copy_and_nothing_else(self):
+        out = self.tool("add-node", "n2=10.0.0.2:/scratch/ebpfm:", echo=False)
+        self.assertIn('FLEET_HOSTS+=" n2=10.0.0.2:/scratch/ebpfm:"\n', self.read())
+        with open(self.log) as fh:
+            calls = fh.read()
+        self.assertIn("systemctl reload rc-pull.service", calls)
+        self.assertNotIn("restart", calls)
+        self.assertIn("no restart", out)
+
+    def test_a_line_pull_refuses_leaves_the_file_as_it_was(self):
+        before = self.read()
+        self.tool("add-node", "n2=host:-x", code=1, echo=False)
+        self.assertEqual(self.read(), before)
+        self.assertIn("already", self.tool("add-node", "n1", code=1, echo=False))
+
+    def test_a_node_taken_out(self):
+        with open(self.fleet, "a") as fh:
+            fh.write('FLEET_HOSTS+=" n2=10.0.0.2"\nFLEET_HOSTS+=" n3"\n')
+        os.makedirs(os.path.join(self.state, "mirror", "ebpf", "n2"))
+        out = self.tool("remove-node", "n2", echo=False)
+        text = self.read()
+        self.assertIn('FLEET_HOSTS="n1 n3"\n', text)
+        self.assertNotIn("n2", text)
+        self.assertIn("# the nodes\n", text)
+        self.assertIn("its copy stays", out)
+        self.assertTrue(os.path.exists(os.path.join(self.state, "mirror", "ebpf", "n2")))
+        self.tool("remove-node", "n3", "--purge-copy", echo=False)
+        self.assertIn("not in FLEET_HOSTS", self.tool("remove-node", "n9", code=1, echo=False))
+
+    def test_hpc_nodes_go_into_site_env(self):
+        os.unlink(self.site)
+        self.tool("init", "--yes", "--set", "NODES=login01", "--set", "ROOT_ON_NODES=no",
+                  "--set", "ROOT_ON_DASHBOARD=no", "--set", "DASH_SSH=alice@dash",
+                  "--set", "DASH_ROOT=/data/rc")
+        out = self.tool("add-node", "login02")
+        self.assertEqual(self.keys()["SOURCE_NODES"], '"login01 login02"')
+        self.assertRegex(out, r"RUN SITE_ENV=\S+ \S+/hpc/deploy/deploy\.sh\n")
+        self.tool("remove-node", "login01")
+        self.assertEqual(self.keys()["SOURCE_NODES"], "login02")
+
+
+class TestHelp(unittest.TestCase):
+    def test_help(self):
+        p = subprocess.run([sys.executable, TOOL, "--help"], stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, universal_newlines=True)
+        self.assertEqual(p.returncode, 0)
+        for word in ("init", "add-node", "rollback", "uninstall", "Slurm", "hpc/deploy/site.env"):
+            self.assertIn(word, p.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()
