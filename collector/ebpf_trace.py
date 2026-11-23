@@ -6030,11 +6030,15 @@ def main():
         if v == '0':
             sys.stderr.write('warning: %s=0 — the dstate_*/blkio_* fields will read 0 '
                              '(run `ebpfm.sh bootstrap` to set it)\n' % k)
-    # `ebpfm.sh overhead` waits for "running on" in this line
+    # `ebpfm.sh overhead` waits for "running on" in this line, and `start` reads the
+    # features from it. Flushed: Python before 3.9 (EL8's 3.6) block-buffers a stderr
+    # that is a file or the journal's pipe, so the line, and the warnings above it,
+    # would wait for 8 KiB more or for the exit.
     sys.stderr.write('ebpfm %s running on %s -> %s/<date>/%s.{snapshot,exits}.jsonl '
                      '(features: %s)\n'
                      % (version or '(version unknown)', HOSTNAME, OUTPUT_DIR, HOSTNAME,
                         ','.join(sorted(feats)) or 'base'))
+    sys.stderr.flush()
 
     start = time.time()
     last_gc = last_res = last_resync = start

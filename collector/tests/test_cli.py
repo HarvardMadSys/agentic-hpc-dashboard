@@ -628,7 +628,8 @@ class ShellPiecesTest(Tmp):
                   'os.makedirs(d, exist_ok=True)\n'
                   'open(os.path.join(d, "node7.snapshot.jsonl"), "a").write(json.dumps('
                   '{"event": "meta", "collector_pid": os.getpid()}) + "\\n")\n'
-                  'sys.stderr.write("ebpfm v running on node7 (features: core)\\n")\ntime.sleep(30)\n')
+                  'sys.stderr.write("ebpfm v running on node7 (features: core)\\n")\n'
+                  'sys.stderr.flush()\ntime.sleep(30)\n')
         w = self.path('w.py')
         with open(w, 'w') as fh:
             fh.write(writer)
