@@ -329,8 +329,8 @@ reproduces a fresh scan's panels exactly (`tests/test_window_cache.py`) and keep
 (`cache.note` says which failed):
 
 - the same code and config: a fingerprint of the reducers, the normaliser, the scan and every config
-  key outside `server`, `anonymize`, `ui`, `ask` and `history`, so a changed way of counting never
-  resumes counts made the old way;
+  key outside `server`, `anonymize`, `ui`, `ask`, `history` and `rollup`, so a changed way of
+  counting never resumes counts made the old way;
 - the same files: each one it read still there with the same inode *and* first 4 KB, at least as
   long, and a line ending at the saved offset (a day gzipped since is read on from its `.gz`, the
   same bytes at the same offsets);

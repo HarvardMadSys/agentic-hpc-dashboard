@@ -21,8 +21,8 @@ RC_BACKEND=http://127.0.0.1:8080 npm run dev:real   # /api, /ws, /login, /logout
 ```
 
 `npm run dev` needs no backend: `mock/plugin.ts` answers `/ws` and the routes the tabs are drawn
-from (`/api/config`, `feeds`, `windows`, `panels`, `live`, `trajectories`, `trajectory`, `users`,
-`user`) out of `mock/api.json`, which it re-reads on every request. Any other
+from (`/api/config`, `feeds`, `windows`, `panels`, `trend`, `live`, `trajectories`, `trajectory`,
+`users`, `user`) out of `mock/api.json`, which it re-reads on every request. Any other
 route (the collectors' health, Active users' searches and accounts, the commands behind an I/O
 number, Ask) is a 404 there, so what reads it says it was not returned.
 `src/api/client.ts` has no mock branch: dev runs the production code path.
@@ -195,9 +195,9 @@ shown on it.
 
 `src/components/WindowPicker.tsx`, in one control bar with the class filter and the user and
 agent-type dropdowns: everything that says what is on screen. The bar sticks to the top as a tab
-scrolls (`src/lib/sticky.ts`; on a phone, 640px and below, it scrolls with the page) and
-publishes its height as `--controls-h`, the page's `scroll-padding-top`, so nothing the browser
-scrolls to lands under it.
+scrolls (`src/lib/sticky.ts`; on a phone, 640px and below, it is one row that scrolls sideways,
+short enough to stick there too) and publishes its height as `--controls-h`, the page's
+`scroll-padding-top`, so nothing the browser scrolls to lands under it.
 
 The window is `?win=<minutes>`, and this is its only control: Live's plates count it too. It
 offers the service's presets, filtered against retention, after the service's floor
@@ -326,10 +326,10 @@ five failed attempts in a row it also polls every 15 s for what the socket would
 socket up for 75 s resets the wait and ends the polling: a proxy that accepts the upgrade and
 drops it soon after would otherwise be knocked on every second. A socket not open within 15 s, or
 silent for 75 s once open (the service sends `feeds` every 30 s), is closed and replaced. The
-transport is always named, at the rail's foot (`updates streaming` / `every 15 s` /
-`connecting…` / `disconnected`) and in the header's pill (`live` / `refreshing every 15 s` /
-`connecting…` / `disconnected · retrying`): a frozen chart that looks live is worse than one
-labelled as polled. A `rebuilt` frame re-reads `/api/panels`, and a `feeds` frame supersedes the
+transport is always named, at the rail's foot (`streaming` / `every 15 s` / `connecting…` /
+`disconnected`, then how long ago the last update came) and in the header's pill (`live` /
+`refreshing every 15 s` / `connecting…` / `disconnected · retrying`): a frozen chart that looks
+live is worse than one labelled as polled. A `rebuilt` frame re-reads `/api/panels`, and a `feeds` frame supersedes the
 REST feeds report. The header's refresh asks for everything again: the live frame, the windows,
 the feeds, the panels and the sessions.
 
