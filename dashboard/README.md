@@ -235,7 +235,8 @@ waits for the store.
 types at the same offsets, and a time search or a filtered read makes the same probes, stops at the
 same record and counts the same things. So switching the store on or off, or moving it, changes no
 answer and rebuilds no saved window or hour; `tests/e2e_history.py` serves one feed with the store
-off and then on and diffs every API and saved state.
+off and then on and diffs every API and saved state. CI runs it on every pull request, as is and
+with `--restart --seal-between` (`e2e-history` in `.github/workflows/ci.yml`).
 
 **The store.** `history.dir` holds one root per source root, made 0700 because it holds every
 user's command lines:
@@ -497,8 +498,14 @@ three things instead of assuming them:
   once the hour still open at its build has closed ("Disk I/O is each process's own").
 - **The seam.** A build reads the day-files while the tail advances through them, so a live record
   is skipped only if the build already read its line or it is older than the window's start
-  (`live_skipped`: `already_read`, `before_window`), and rows that overflow the replay buffer are
-  published as `replay_dropped`.
+  (`live_skipped`: `already_read`, `before_window`). What the tail reads during a build is held and
+  replayed once the build is in. Past 20,000 held (`REPLAY_CAP`) the oldest is let go, kept only as
+  where and when it was read, and judged at the replay like the rest: one the build did not read
+  is lost, and counted in `replay_dropped`. The newest are the ones a build has not read, so those
+  are kept. A build keeps at most 2,000,000 records let go (`LET_GO_CAP`, about 48 MB). Past that,
+  a record let go keeps nothing and is counted in `replay_dropped` as it goes, read or not, so the
+  count is an upper bound. While a build runs, `replay_hold` says how many records it holds whole
+  and how many it has let go: a build too slow for the tail shows as `let_go` climbing.
 
 Trajectory sessions are never evicted inside the window (`max(reducers.trajectories.idle_evict_s,
 window)`), so `reducers.trajectories.max_sessions` (150 000 keys per held window, ~6 KB each, ~950
@@ -523,8 +530,8 @@ reproduces a fresh scan's panels exactly (`tests/test_window_cache.py`) and keep
 (`cache.note` says which failed):
 
 - the same code and config: a fingerprint of the reducers, the normaliser, the scan and every config
-  key outside `server`, `anonymize`, `ui`, `ask` and `history`, so a changed way of counting never
-  resumes counts made the old way;
+  key outside `server`, `anonymize`, `ui`, `ask`, `history` and `rollup`, so a changed way of
+  counting never resumes counts made the old way;
 - the same files: each one it read still there with the same inode *and* first 4 KB, at least as
   long, and a line ending at the saved offset (a day gzipped since is read on from its `.gz`, the
   same bytes at the same offsets);
@@ -638,7 +645,7 @@ window on a busy node can take ~1 GB.
 | `GET /api/io/commands?<filters>&window_min=&apid=&host=&cwd=` | starts a lookup of every command behind an I/O figure, over the window's records (`iocmds.py`); `apid` and `host` name the agents as the page drew them, `cwd` a directory |
 | `GET /api/io/commands/{job}?offset=&limit=&sort=&dir=` | that lookup's state and, once done, a page of its rows (200, by `rd_mb`, largest first, unless asked otherwise) |
 | `WS /ws` | push: `live`, `feeds`, `rebuilt`, `backfill`, `windows`; accepts `{"type":"window","minutes":N}`. Each reader has a sender of its own holding the newest frame of each kind, so a slow reader holds up neither the tail nor the other readers; one that takes no frame for 5 s is dropped (close 1008), and past 64 readers one is turned away (close 1013: the page retries, then polls) |
-| `GET /api/health` | `ok` false, and `why`, when the service is not doing its work: the tail has not moved (no poll ended, no batch handed over) for 5 poll intervals (5 s at least); a background loop failed its last 3 rounds in a row; or a view could not take a record in 3 of the tail's batches in a row. One error alone flips nothing. Also `ingest`, each loop's last error and `streak` (`loops`), the readers (`websocket`), the backfill, the windows, `anonymize`'s counts and the memos. A loop's or a view's error is also logged to stderr when it changes, and once a minute while it repeats |
+| `GET /api/health` | `ok` false, and `why`, when the service is not doing its work: the tail has not moved (no poll ended, no batch handed over) for 5 poll intervals (5 s at least); a background loop failed its last 3 rounds in a row; or a view could not take a record in 3 of the tail's batches in a row. One error alone flips nothing. Also `ingest`, each loop's last error and `streak` (`loops`), the readers (`websocket`), the backfill, the windows, the garbage collector's collections and how often the heap's free pages were handed back (`gc`: `trims`, `last_trim_ms`), `anonymize`'s counts and the memos. A loop's or a view's error is also logged to stderr when it changes, and once a minute while it repeats |
 | `GET /login`, `POST /login` | the sign-in form, and signing in: a session cookie, then back to `next` ([Password](#password)) |
 | `POST /logout` | signing out: the cookie cleared, then the form |
 
@@ -1488,7 +1495,7 @@ GPU-hours count only jobs with GPUs and a time limit on the command line, as the
 | `rc_dashboard/redact.py` | credentials masked in command lines before anything is served |
 | `rc_dashboard/anonymize.py` | stable aliases for the names in everything the service sends out ([Anonymized names](#anonymized-names)) |
 | `rc_dashboard/jsonout.py` | JSON out: serialized with orjson on the request's worker thread, gzipped when the reader takes it; the method notes left out of what the page reads (`strip_basis`) |
-| `rc_dashboard/gcwatch.py` | how long Python's garbage collector holds the process, and keeping it short |
+| `rc_dashboard/gcwatch.py` | how long Python's garbage collector holds the process, and keeping it short; handing the heap's free pages back to the system (`malloc_trim`) |
 | `rc_dashboard/ask.py` | a question about the window on screen, answered by an agent CLI on this host ([Ask LLM](#ask-llm)) |
 | `rc_dashboard/demo/` | demo mode: the synthetic feed (`world` plans and builds it, `cast` the people, `sessions`/`agents` what each runs, `host` each node's own records, `records` the records as the collector writes them, `feed` the files), and the overrides that point the service at it |
 | `web/` | React + Vite + TS; `dist/` is what the service serves |

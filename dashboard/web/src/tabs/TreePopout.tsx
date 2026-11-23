@@ -371,7 +371,7 @@ function GroupDetails({ g }: { g: ProcGroup }) {
         <Pair k="longest run">{g.dur_max != null ? dur(g.dur_max) : DASH}</Pair>
         <Pair k="own CPU">{g.cpu != null ? `${fmt(g.cpu)} s` : DASH}</Pair>
         <Pair k="Σ CPU">{g.sub_cpu != null ? `${fmt(g.sub_cpu)} s` : DASH}</Pair>
-        <Pair k="exits">
+        <Pair k="events">
           {exits.length ? exits.map(([c, n]) => (
             <span key={c} className={c !== '0' ? 'bad' : undefined}>{`${c} ×${fint(n)} `}</span>
           )) : DASH}

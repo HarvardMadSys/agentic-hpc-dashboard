@@ -73,7 +73,7 @@ remote-IDE servers), or **human** (a person at a terminal). Every signal in plai
 
 | tab | shows |
 |---|---|
-| **Live** | what needs attention now; processes exited per 5 minutes, by class; each class's share of the nodes' CPU, memory, disk and network and of what was asked of Slurm; who is active |
+| **Live** | what needs attention now; processes exited per minute (per 5 minutes past an hour's window), by class; each class's share of the nodes' CPU, memory, disk and network and of what was asked of Slurm; who is active |
 | **Trend** | each class's processes, CPU, users and Slurm submissions per day, week or month over up to a year, from a roll-up table kept as records are ingested |
 | **Users** | a portrait of each user from how they use coding agents, and their sessions, each opening its process tree under the portrait |
 | **Agents** | every agent and its subagents; where each one's processes ran and wrote (its blast radius); the mix of tools they ran; the commands that failed; then every session, ranked, and an inspector that reads one as tasks, phases and its process tree |

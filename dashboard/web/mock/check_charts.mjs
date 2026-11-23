@@ -1,17 +1,21 @@
-/* A self-check for the chart tick and sizing rules in `src/charts/scale.ts`.
+/* A self-check for the chart tick and sizing rules in `src/charts/scale.ts`, and
+ * the Live rate chart's buckets in `src/lib/rate.ts`.
  *
  *   npm run check:charts        (node --test mock/check_charts.mjs)
  *
  * Like check_phases.mjs, it is not part of `npm run build` or `npm run typecheck`,
- * and nothing under `src/` imports it. It loads the real module (node strips the
+ * and nothing under `src/` imports it. It loads the real modules (node strips the
  * types). It pins the claim the fluid charts make: a chart drawn at its natural
  * width keeps the ticks it had before it was fluid, a wider one gains none, and a
  * narrow one thins them rather than overprinting them. And the value axis: every
- * tick of one axis written alike, and a count axis in whole steps.
+ * tick of one axis written alike, and a count axis in whole steps. And the rate
+ * chart draws a line at every window the control offers, the 5-minute floor too,
+ * and an hour's line runs to the last whole minute.
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { axisFmt, niceTicks, tickTarget, timeTicks } from '../src/charts/scale.ts';
+import { rateBucketS, rateSeries, rateWords } from '../src/lib/rate.ts';
 
 /** an axis's labels, as the charts write them when no formatter is given */
 const labels = (max, integer = false) => {
@@ -94,4 +98,76 @@ test('a 24h window keeps its 6 h step from the natural width down to a phone', (
 
 test("the rate chart's 24h window keeps its 3 h step at its natural width", () => {
   assert.equal(step(timeTicks(x0, day, tickTarget(1060, 10))), 3);
+});
+
+/* ------------------------------------------------------------------ the rate chart's buckets */
+
+/** The live tier's rows for a window of `min` minutes ending in the minute still
+ *  filling at `end`, as `RollingBuckets.series` gives them: one a minute, oldest
+ *  first, `fill(i)` the agent count of the i-th (null: a minute with no record). */
+function rows(end, min, fill = () => 1) {
+  const out = [];
+  for (let i = 0; i < min; i++) {
+    const epoch = end - (min - 1 - i) * 60;
+    const v = fill(i);
+    out.push({ t: '', epoch, agent: v, human: v == null ? null : 0, ide: v == null ? null : 0 });
+  }
+  return out;
+}
+// 14:03 UTC, so a 5-minute bucket boundary (14:00, 13:55) falls inside every short window
+const end = Date.UTC(2026, 0, 10, 14, 3) / 1000;
+
+test('the rate chart plots the minutes up to an hour, and sums into 5 minutes past it', () => {
+  assert.equal(rateBucketS(5, 60), 60); // the floor: no whole 5-minute bucket fits in it
+  assert.equal(rateBucketS(15, 60), 60);
+  assert.equal(rateBucketS(60, 60), 60); // the 1 h preset: 5-minute buckets ended 5 to 10 minutes back
+  assert.equal(rateBucketS(61, 60), 300);
+  assert.equal(rateBucketS(360, 60), 300); // the 6 h preset: 72 points
+  assert.equal(rateBucketS(1440, 60), 300); // a day: 288 points, not 1,440
+  assert.equal(rateBucketS(undefined, 60), 60); // no frame yet
+  assert.equal(rateBucketS(1440, 600), 600); // bins coarser than 5 minutes are never split
+});
+
+test('the rate chart says which bucket it drew', () => {
+  assert.deepEqual(rateWords(60), { per: 'per minute', unit: 'min', one: 'minute' });
+  assert.deepEqual(rateWords(300), { per: 'per 5 minutes', unit: '5 min', one: '5 minutes' });
+});
+
+test('an hour runs to the last whole minute; in 5-minute buckets it stopped 5 to 10 minutes back', () => {
+  const r = rows(end, 60);
+  const [minutes] = rateSeries(r, ['agent'], 60, rateBucketS(60, 60), 0);
+  assert.equal(minutes.length, 59);
+  assert.equal(end - minutes[minutes.length - 1].x, 60); // 14:02, at 14:03
+  const [fives] = rateSeries(r, ['agent'], 60, 300, 0);
+  assert.equal(end - fives[fives.length - 1].x, 8 * 60); // 13:55, at 14:03
+});
+
+test('the 5-minute window draws its whole minutes, and not the one still filling', () => {
+  const r = rows(end, 5, (i) => i + 1);
+  const [agent, human] = rateSeries(r, ['agent', 'human'], 60, rateBucketS(5, 60), 0);
+  assert.deepEqual(agent.map((p) => p.y), [1, 2, 3, 4]);
+  assert.deepEqual(agent.map((p) => p.x), r.slice(0, 4).map((x) => x.epoch));
+  assert.deepEqual(human.map((p) => p.y), [0, 0, 0, 0]);
+  // summed into 5 minutes, the same rows drew nothing: the reason for the rule
+  assert.deepEqual(rateSeries(r, ['agent'], 60, 300, 0)[0], []);
+});
+
+test('5-minute buckets are whole and on the clock, a hole kept a hole', () => {
+  // the minutes of 13:15-13:19 hold no record at all; one minute of 13:20-13:24 has a record
+  const hole = (i) => {
+    const m = (end - (59 - i) * 60) / 60 % 60;
+    if (m >= 15 && m < 20) return null;
+    if (m >= 20 && m < 25) return m === 22 ? 7 : null;
+    return 1;
+  };
+  const [agent] = rateSeries(rows(end, 60, hole), ['agent'], 60, 300, 0);
+  // 13:04-14:03: 13:04 starts a bucket that began before the window, and 14:00 is still filling
+  assert.equal(agent[0].x, Date.UTC(2026, 0, 10, 13, 5) / 1000);
+  assert.equal(agent[agent.length - 1].x, Date.UTC(2026, 0, 10, 13, 55) / 1000);
+  assert.equal(agent.length, 11);
+  for (const p of agent) assert.equal((p.x / 60) % 5, 0);
+  const at = (h, m) => agent.find((p) => p.x === Date.UTC(2026, 0, 10, h, m) / 1000).y;
+  assert.equal(at(13, 10), 5);
+  assert.equal(at(13, 15), null); // no record in any of its minutes: a hole, not 0
+  assert.equal(at(13, 20), 7); // a minute with no record adds nothing to one that has
 });

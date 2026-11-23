@@ -45,13 +45,20 @@ from . import gz, replica
 from . import fastjson
 
 # What the tree (`proctree.TreeBuilder`) and the inspector's loop read of a
-# record: a part sends back these keys alone. tests/test_keysearch.py checks the
-# trees built from them against the trees built from whole records.
+# record: a part sends back these keys alone. The last three are the own-I/O
+# join's (reducers/own_io.py): what a parent takes back is held by `host` and
+# pid, an exit whose `child_cpu_s` is 0 takes back none, and an agent runtime is
+# known by `tree_root_pid`. Left out, a tree built from a part's records took
+# back what one built from whole records did not, and a session read from a
+# sealed day's replica showed other disk and syscall bytes than the same session
+# read from its .gz. tests/test_keysearch.py checks the trees built from these
+# keys against the trees built from whole records, and that the tree asks for
+# no key a record holds and a part leaves out.
 INSPECT_KEYS = ("event", "pid", "ppid", "_ts_epoch", "_sid", "_command", "_eff", "_role",
                 "_purpose", "_kv", "_a3", "args", "cwd", "depth", "user", "agent_type",
                 "start", "duration_s", "cpu_s", "exit_code", "signal", "core_dumped",
                 "argv_source", "duration_src", "io", "net_tx_bytes", "net_rx_bytes",
-                "age_s")
+                "age_s", "host", "child_cpu_s", "tree_root_pid")
 PLAIN_CHUNKS = 2         # a plain file's CHUNKs to a part
 PRIME = 2                # parts handed out for each file when the read is planned
 AHEAD = 2                # parts in flight past the workers, for the file being read

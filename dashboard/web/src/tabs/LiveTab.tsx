@@ -1,7 +1,7 @@
 /* Live tier.
  *
  * Websocket-driven, with nothing invented between frames. The rate chart plots
- * `null` bins as gaps: 5 minutes in which the collector wrote no record are a hole
+ * `null` bins as gaps: a bucket in which the collector wrote no record is a hole
  * in the line, because a 0 there would be a claim that the cluster was idle.
  */
 import { Fragment, memo, useMemo, useState } from 'react';
@@ -25,15 +25,12 @@ import { useNodeWords } from '../lib/nodes';
 import { pick } from '../lib/panels';
 import type { Panels } from '../lib/panels';
 import { offsetAt } from '../lib/zone';
+import { rateBucketS, rateSeries, rateWords } from '../lib/rate';
 
 /* ------------------------------------------------------------- helpers */
 
 /** No live frame yet: one empty list, so a memo keyed on the bins holds. */
 const NO_BINS: LiveResponse['rate'] = [];
-
-/** The rate chart's bucket: the service's per-minute bins summed into this. */
-const RATE_BIN_S = 300;
-const RATE_LBL = '5 min';
 
 /** The newest bucket that actually carried a value. */
 function latestPt(pts: LinePt[]): number | null {
@@ -184,47 +181,17 @@ export const LiveTab = memo(function LiveTab({
   }, [feeds]);
 
   // Every class's points in one pass over the bins -- a week is 10,080 of them
-  // -- made again only when the frame or the classes shown change. The service
-  // bins by the minute; the chart sums them into RATE_BIN_S buckets on local
-  // wall-clock multiples, so a 24 h line is 288 points, not 1,440 jittery ones.
-  // A bucket whose minutes are all holes stays a hole; in one with any record a
-  // class's holes add nothing. Only whole buckets are drawn: the newest row is
-  // the minute still filling, and the oldest bucket can start before the window,
-  // so either edge would always read low.
+  // -- made again only when the frame, the window or the classes shown change.
+  // The service bins by the minute; a window longer than an hour sums them into
+  // 5-minute buckets, so a 24 h line is 288 points, not 1,440 jittery ones, and
+  // an hour or less plots the minutes, so its line runs to within a minute or
+  // two of now (`lib/rate.ts`).
+  const binS = L?.window?.bin_s ?? 60;
+  const bucketS = rateBucketS(L?.window?.minutes, binS);
+  const words = rateWords(bucketS);
   const series: LineSeries[] = useMemo(() => {
-    const pts: LinePt[][] = cls.map(() => []);
-    const binS = L?.window?.bin_s ?? 60;
-    const per = Math.max(1, Math.round(RATE_BIN_S / binS));
-    // seconds west of UTC in the page's zone (lib/zone.ts), as getTimezoneOffset counts
-    const tz = -offsetAt(Date.now());
-    const lastE = rate.length ? Number(rate[rate.length - 1].epoch) : NaN;
-    let bx = NaN;
-    let seen = 0;
-    let acc: (number | null)[] = cls.map(() => null);
-    const flush = () => {
-      // x is the bucket's epoch, not its index: the window slides every minute,
-      // and a zoom held in indices would drift off the times picked.
-      if (Number.isFinite(bx) && seen === per && bx + per * binS <= lastE) {
-        for (let k = 0; k < cls.length; k++) pts[k].push({ x: bx, y: acc[k] });
-      }
-    };
-    for (const r of rate) {
-      const x = Number(r.epoch);
-      if (!Number.isFinite(x)) continue;
-      const b = Math.floor((x - tz) / (per * binS)) * per * binS + tz;
-      if (b !== bx) {
-        flush();
-        bx = b;
-        seen = 0;
-        acc = cls.map(() => null);
-      }
-      seen++;
-      for (let k = 0; k < cls.length; k++) {
-        const v = r[cls[k]];
-        if (typeof v === 'number') acc[k] = (acc[k] ?? 0) + v;
-      }
-    }
-    flush();
+    // buckets on the page zone's wall clock (lib/zone.ts): seconds west of UTC, as getTimezoneOffset counts
+    const pts = rateSeries(rate, cls, binS, bucketS, -offsetAt(Date.now()));
     return cls.map((c, k) => {
       const last = c === 'agent' ? latestPt(pts[k]) : null;
       return {
@@ -233,11 +200,13 @@ export const LiveTab = memo(function LiveTab({
         // the class's word at the line's end: told apart without its colour
         tag: CLS_LBL[c],
         area: c === 'agent',
-        mark: c === 'agent' ? (last != null ? fint(last) + '/' + RATE_LBL : null) : null,
+        mark: c === 'agent' ? (last != null ? fint(last) + '/' + words.unit : null) : null,
         pts: pts[k],
       };
     });
-  }, [rate, cls, L?.window?.bin_s]);
+  }, [rate, cls, binS, bucketS, words.unit]);
+  // Bins, but not one whole bucket of them yet: say so, not "no bins".
+  const drawn = series.some((s) => s.pts.length > 0);
 
   /* X ticks that stay legible at ANY window, and at any zoom into it: a round
    * interval that lands ~10 ticks across what is on screen, on LOCAL wall-clock
@@ -325,12 +294,12 @@ export const LiveTab = memo(function LiveTab({
 
       <div className="grid wide">
         <Panel
-          title={`Processes exited per 5 minutes · last ${windowLbl}`}
+          title={`Processes exited ${words.per} · last ${windowLbl}`}
           span
           live
           feed={liveFeed?.name ?? 'live'}
-          empty={!rate.length}
-          emptyWhat="the live window holds no bins"
+          empty={!drawn}
+          emptyWhat={rate.length ? `no whole ${words.one} in the window yet` : 'the live window holds no bins'}
         >
           <Fluid natural={1060}>
             {(W) => (
@@ -342,11 +311,11 @@ export const LiveTab = memo(function LiveTab({
                 xticks={xticks(W)}
                 xfmt={clockLabel}
                 xtip={fullClock}
-                minSpan={3 * Math.max(RATE_BIN_S, L?.window?.bin_s ?? 60)}
-                ylabel={`exited / ${RATE_LBL}`}
+                minSpan={3 * bucketS}
+                ylabel={`exited / ${words.unit}`}
                 xlabel={`last ${windowLbl}`}
                 xname="at"
-                yname={`exited/${RATE_LBL}`}
+                yname={`exited/${words.unit}`}
               />
             )}
           </Fluid>

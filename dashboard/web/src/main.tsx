@@ -4,6 +4,8 @@ import App from './App';
 import { Boundary } from './components/Boundary';
 import { Defs } from './components/Defs';
 import { readTreePop } from './lib/popout';
+// the typeface, served with the page (fonts/fonts.css), before the styles that name it
+import './fonts/fonts.css';
 import './styles.css';
 
 // The process tree popped out of the inspector is a page of its own, loaded

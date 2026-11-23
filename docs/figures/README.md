@@ -175,7 +175,7 @@ time), or in a sealed file's replica by testing its `session_key` and `agent_pid
 (`key_where`); a terminal's or a login scope's key is searched for in the inflated `.gz`. Except in
 a sealed `.gz` with no usable replica, which the service's own process searches, the records found
 are built in `inspect_workers` processes (8, at most the CPUs the service may use;
-`keysearch.py:stream`), each holding only the 28 fields the tree reads (`keysearch.py:INSPECT_KEYS`)
+`keysearch.py:stream`), each holding only the 31 fields the tree reads (`keysearch.py:INSPECT_KEYS`)
 ([API](../../dashboard/README.md#api), "How a read is made").
 
 Bounds, each reported in the response: `inspect_max_records` 150,000 (600,000 newest first),
@@ -356,7 +356,7 @@ other series are on Resources (RE-6 to RE-14), and per-day use is the Trend tab'
 | LV-2 | plate: agent processes exited | BUILD | `tool_mix.by_class[c].calls`, `tool_mix.by_type` | `reducers/tools.py:ToolMixReducer._rows`, `_by_type` · `components/WindowPlates.tsx:WindowPlates` |
 | LV-3 | plate: agent sessions | BUILD (on read) | `trajectories.summary`; `sandbox.approval_by_class_sessions`, `sandbox.by_class_sessions` | `TrajectoryReducer.summary`; `SandboxReducer.result` · `components/WindowPlates.tsx:WindowPlates` |
 | LV-4 | plate: risky agent actions | BUILD | `risk.dangerous.rows`, `risk.secrets.rows`; `sandbox.tool_calls` | `reducers/risk.py:RiskReducer.result` · `components/WindowPlates.tsx:WindowPlates` |
-| LV-5 | chart: processes exited per 5 minutes | LIVE | `rate` | `buckets.py:RollingBuckets.series` · `tabs/LiveTab.tsx:LiveTab`, `charts/primitives.tsx:Lines` |
+| LV-5 | chart: processes exited per minute, or per 5 minutes | LIVE | `rate` | `buckets.py:RollingBuckets.series` · `tabs/LiveTab.tsx:LiveTab`, `lib/rate.ts:rateSeries`, `charts/primitives.tsx:Lines` |
 | LV-6 | table: who uses what | BUILD | `tool_mix`, `io_process`, `resources`, `trajectories.summary`, `slurm` | (no reducer of its own) · `tabs/OverviewTab.tsx:OverviewTab` |
 | LV-7 | active users: running now (chips) | LIVE | `users.running_by_type` | `LiveReducer.users`, `_running` · `tabs/LiveUsers.tsx:Summary` |
 | LV-8 | active users: one row per account (table) | LIVE; `/api/live/users` past the frame | `users.rows`, `users.rows_total` | `LiveReducer.users`, `_row` · `tabs/LiveUsers.tsx:UsersPanel` |
@@ -419,17 +419,20 @@ other series are on Resources (RE-6 to RE-14), and per-day use is the Trend tab'
   cache holds 50,000 command lines and is cleared when full; uncached, matching was half of a window
   build (`risk.py`).
 
-#### LV-5 processes exited per 5 minutes
+#### LV-5 processes exited per minute, or per 5 minutes
 
-- **Shows:** processes exited in each 5 minutes of the window, a line per class.
+- **Shows:** processes exited in each minute of the window, a line per class; in a window longer
+  than an hour, in each 5 minutes.
 - **Records:** `exit`: `_a3`, `_ts_epoch`.
 - **Computation:** `LiveReducer._exit` adds each exit to its minute's bin by class
   (`RollingBuckets.add`). A minute no record landed in is null for every class; in a minute with
   records, a class with none is 0. `RollingBuckets.series` gives a row per minute, oldest first, made
-  again only when a record landed in its bin since (`_rows`, keyed on each bin's version). The page
-  sums the minutes into 5-minute buckets on local wall-clock multiples (`LiveTab`, `RATE_BIN_S`)
-  and draws only whole buckets: the newest holds the minute still filling, and the oldest can start
-  before the window.
+  again only when a record landed in its bin since (`_rows`, keyed on each bin's version). In a
+  window longer than an hour the page sums the minutes into 5-minute buckets on local wall-clock
+  multiples (`lib/rate.ts:rateBucketS`), so a day is 288 points; an hour or less draws the minutes,
+  since at the 5-minute floor no whole 5-minute bucket fits, and an hour of them ended 5 to 10
+  minutes before now. Only whole buckets are drawn (`rateSeries`): the newest holds the minute
+  still filling, and the oldest can start before the window.
 - **Cost:** a dict increment a record; per frame, one pass over the window's bins (10,080 at 7 d),
   most of them cached rows. A record stamped more than `live.clock_skew_s` (120 s) ahead is dropped
   and counted.

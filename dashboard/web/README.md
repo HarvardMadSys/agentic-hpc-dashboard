@@ -21,8 +21,8 @@ RC_BACKEND=http://127.0.0.1:8080 npm run dev:real   # /api, /ws, /login, /logout
 ```
 
 `npm run dev` needs no backend: `mock/plugin.ts` answers `/ws` and the routes the tabs are drawn
-from (`/api/config`, `feeds`, `windows`, `panels`, `live`, `trajectories`, `trajectory`, `users`,
-`user`) out of `mock/api.json`, which it re-reads on every request. Any other
+from (`/api/config`, `feeds`, `windows`, `panels`, `trend`, `live`, `trajectories`, `trajectory`,
+`users`, `user`) out of `mock/api.json`, which it re-reads on every request. Any other
 route (the collectors' health, Active users' searches and accounts, the commands behind an I/O
 number, Ask) is a 404 there, so what reads it says it was not returned.
 `src/api/client.ts` has no mock branch: dev runs the production code path.
@@ -55,7 +55,7 @@ npm run check        # check:no-random, then every mock/check_*.mjs (by glob) un
 npm run check:no-random # no Math.random() anywhere in src/ (rule 5)
 npm run check:phases  # every task and phase of every fixture row is worded and drawn
 npm run check:figures # every fixture user's portrait figure agrees with their row
-npm run check:charts # the chart tick and width rules in src/charts/scale.ts
+npm run check:charts # the chart tick and width rules in src/charts/scale.ts; the rate chart draws at every window
 npm run check:css    # every stylesheet closes its blocks, no rule nested in a rule
 npm run check:shares # a class's share is out of every class counted, whatever the chips show
 npm run check:panels # a panel not reduced, waited for or building is never "none" or 0
@@ -82,8 +82,10 @@ without git) and `built 2026-11-15 14:02`, or `built — (dev server)`.
 
 ## Dependencies
 
-Runtime: **`react` and `react-dom`**, nothing else. The typeface, IBM Plex Sans and Mono, comes
-from Google Fonts (`index.html`), with the browser's fonts as fallback. There is no charting,
+Runtime: **`react` and `react-dom`**, nothing else. The typeface, IBM Plex Sans and Mono, is
+served with the page (`src/fonts/`: the files and Unicode ranges Google Fonts served, under the
+SIL Open Font License, `OFL.txt`), with the browser's fonts as fallback. The page asks no other
+host for anything. There is no charting,
 table or icon library. Every chart is hand-rolled SVG (`src/charts/`, and `PhaseBand`,
 `TrajectoryNav`, `PortraitFigure` and `TreeDiagram`, which draw their own), so no
 code path can add a second value axis and no library theme can substitute a hue for the CSS
@@ -178,7 +180,8 @@ word shows on hover (the word is underlined, dotted): what is measured, and what
 | **agent**, **agent type** | an AI coding agent (one running copy of one, as the Agents tab counts them), and which it is: Claude Code, Codex, … | a run of one: that is a session |
 | **session** | one run of an agent or an IDE and everything it started, or one person's terminal login | trajectory, tree, run |
 | **process tree** | a session's processes, each under the one that started it | trajectory |
-| **process** | one program that ran; the collector records it when it exits | event, exits (as a count) |
+| **process** | one program that ran; the collector records it when it exits | exits (as a count) |
+| **event** | the record of a process's exit, as the collector writes it; a count of events counts processes that exited | exits |
 | **tool call** | a command an agent issued itself; what that command started counts as processes | call, command of its own |
 | **login node** | a machine the collector watches, in the site's own word (`ui.node_noun`, `src/lib/nodes.ts`) | host, machine |
 | **start folder** | the directory an agent was started in | home: that is a user's home folder |
@@ -210,9 +213,9 @@ shown on it.
 
 `src/components/WindowPicker.tsx`, in one control bar with the class filter and the user and
 agent-type dropdowns: everything that says what is on screen. The bar sticks to the top as a tab
-scrolls (`src/lib/sticky.ts`; on a phone, 640px and below, it scrolls with the page) and
-publishes its height as `--controls-h`, the page's `scroll-padding-top`, so nothing the browser
-scrolls to lands under it.
+scrolls (`src/lib/sticky.ts`; on a phone, 640px and below, it is one row that scrolls sideways,
+short enough to stick there too) and publishes its height as `--controls-h`, the page's
+`scroll-padding-top`, so nothing the browser scrolls to lands under it.
 
 The window is `?win=<minutes>`, and this is its only control: Live's plates count it too. It
 offers the service's presets, filtered against retention, after the service's floor
@@ -303,9 +306,9 @@ How each figure is computed is in [`docs/figures`](../../docs/figures/README.md)
 
 | tab | source | holds |
 |---|---|---|
-| **Live** | `WS /ws`, `GET /api/live`, `/api/panels?window_min=` | *Needs attention* (`src/tabs/Attention.tsx`): what the service already flags, each linking to its panel, and every source it could not check named, never read as an all-clear; one row of plates over the window; the rate of processes exited per 5 minutes, the one time series the tab keeps; *Who uses what* (`src/tabs/OverviewTab.tsx`; `?tab=overview` lands on it); *Active users* (`src/tabs/LiveUsers.tsx`); the login nodes right now. The window's other series are on Resources, and per-day use is Trend's |
+| **Live** | `WS /ws`, `GET /api/live`, `/api/panels?window_min=` | *Needs attention* (`src/tabs/Attention.tsx`): what the service already flags, each linking to its panel, and every source it could not check named, never read as an all-clear; one row of plates over the window; the rate of processes exited, per minute in a window of up to an hour and per 5 minutes in a longer one (`src/lib/rate.ts`), the one time series the tab keeps; *Who uses what* (`src/tabs/OverviewTab.tsx`; `?tab=overview` lands on it); *Active users* (`src/tabs/LiveUsers.tsx`); the login nodes right now. The window's other series are on Resources, and per-day use is Trend's |
 | **Usage › Trend** (`?tab=trend`) | `/api/trend?days=&by=` | each class's use over the long run, never the window and not narrowed by the filter, so the window picker is not shown: *Over the year*, from the roll-up table the service writes as it ingests (`rc_dashboard/rollup.py`) -- processes and CPU a day, users, users of each agent -- by day, week or month over 30 days to a year, a stretch with no record a hole; and *Each week* (or day, or month), the same as a table. The one place for per-day use (`src/tabs/TrendTab.tsx`) |
-| **Users** | `/api/users`, `/api/user?name=` | every user with an agent session in the window (`src/tabs/UsersTab.tsx`), one row each, opening the user's **portrait** (`?portrait=`): their figure, drawn from their numbers (`src/components/PortraitFigure.tsx`), how they leverage agents, the numbers and rules behind it, and every session, each opening its process tree under the portrait (`?traj=`), whose *all their sessions →* opens the Agents tab's list narrowed to them (`?tuser=`). The service holds every threshold (`rc_dashboard/portraits.py`); the page words what it counted (`src/lib/portraits.ts`) |
+| **Users** | `/api/users`, `/api/user?name=` | every user with an agent session in the window (`src/tabs/UsersTab.tsx`), one row each, opening the user's **portrait** (`?portrait=`): their figure, drawn from their numbers (`src/components/PortraitFigure.tsx`), how they leverage agents, the numbers and rules behind it, and every session, each opening its process tree under the portrait (`?traj=`), whose *all their sessions →* opens the Sessions tab's list narrowed to them (`?tuser=`). The service holds every threshold (`rc_dashboard/portraits.py`); the page words what it counted (`src/lib/portraits.ts`) |
 | **Agents › Agents** (`?tab=agents`; `?tab=cascades` opens it too) | `cascades`, `tool_mix` | every agent tree, by user or as one list (`src/tabs/AgentsTab.tsx`), agents with **subagents** kept apart from **hosted** sessions; per agent, **Workspace & blast radius**, alone or with its subagents: where its processes ran and the bytes they moved (measured), the paths its command lines named (inferred, drawn dashed), writes and deletes outside its start folder; depth and fan-out; **Tool mix** and **Top tools** (`src/tabs/ToolPanels.tsx`); *Commands that failed* (`src/tabs/ExitsPanel.tsx`) |
 | **Agents › Sessions** (`?tab=sessions`; `?tab=trajectories` opens it too) | `/api/trajectories?rank=&window_min=` | the Sessions sub-tab (`src/tabs/TrajectoriesTab.tsx`), re-read every 5 s while it is open, its first session open beside the list until one is picked: sessions ranked by a switcher that only reorders, each row a band of its phases and a line naming its tasks ([below](#sessions-tasks-phases-and-processes)); a row opens the **inspector** (`/api/trajectory`, `?traj=`; `src/tabs/OpenSession.tsx`, which the Users tab opens too): who ran the session and what it came to, **What it did**, then **Processes**, read oldest or newest first, with every bound of the read stated |
 | **Risk › Security** (`?tab=security`; `?tab=sandbox` opens it too) | `sandbox`, `risk`, `cascades` | *Security checks* (`src/tabs/SecurityTab.tsx`) on launch, confinement, exposure and reach, each with its share of what its axis could judge and a link to its panel, and no threshold of its own: a check that found none is a ring, one not made (its panel not in, or the agent class filtered out) a dashed ring and the reason. Then the **sandbox** panels (`src/tabs/SandboxTab.tsx`), and *Writes outside the start folder*, by kind of place, the most alarming first (`src/lib/places.ts`), then by user; those paths are read from command text, not measured |
@@ -362,10 +365,10 @@ five failed attempts in a row it also polls every 15 s for what the socket would
 socket up for 75 s resets the wait and ends the polling: a proxy that accepts the upgrade and
 drops it soon after would otherwise be knocked on every second. A socket not open within 15 s, or
 silent for 75 s once open (the service sends `feeds` every 30 s), is closed and replaced. The
-transport is always named, at the rail's foot (`updates streaming` / `every 15 s` /
-`connecting…` / `disconnected`) and in the header's pill (`live` / `refreshing every 15 s` /
-`connecting…` / `disconnected · retrying`): a frozen chart that looks live is worse than one
-labelled as polled. A `rebuilt` frame re-reads `/api/panels`, and a `feeds` frame supersedes the
+transport is always named, at the rail's foot (`streaming` / `every 15 s` / `connecting…` /
+`disconnected`, then how long ago the last update came) and in the header's pill (`live` /
+`refreshing every 15 s` / `connecting…` / `disconnected · retrying`): a frozen chart that looks
+live is worse than one labelled as polled. A `rebuilt` frame re-reads `/api/panels`, and a `feeds` frame supersedes the
 REST feeds report. The header's refresh asks for everything again: the live frame, the windows,
 the feeds, the panels and the sessions.
 
