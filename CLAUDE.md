@@ -45,7 +45,8 @@ python3 -m unittest discover -s hpc/deploy/tests -q
 - There is no linter or formatter; `npm run typecheck` is the page's static check.
 - `dashboard/tests/e2e_history.py` is outside discovery. After changing the history store, run
   `(cd dashboard && uv run --frozen python tests/e2e_history.py)`: it serves one feed with the
-  store off and on and diffs every API.
+  store off and on and diffs every API. CI runs it too (`e2e-history`), as is and with
+  `--restart --seal-between`.
 - `npm run dev`'s mock answers only the main routes; `npm run dev:real` with
   `RC_BACKEND=http://127.0.0.1:<port>` proxies to a running service.
 

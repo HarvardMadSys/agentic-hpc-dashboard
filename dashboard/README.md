@@ -118,7 +118,8 @@ waits for the store.
 types at the same offsets, and a time search or a filtered read makes the same probes, stops at the
 same record and counts the same things. So switching the store on or off, or moving it, changes no
 answer and rebuilds no saved window or hour; `tests/e2e_history.py` serves one feed with the store
-off and then on and diffs every API and saved state.
+off and then on and diffs every API and saved state. CI runs it on every pull request, as is and
+with `--restart --seal-between` (`e2e-history` in `.github/workflows/ci.yml`).
 
 **The store.** `history.dir` holds one root per source root, made 0700 because it holds every
 user's command lines:

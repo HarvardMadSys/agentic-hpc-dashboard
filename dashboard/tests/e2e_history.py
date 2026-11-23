@@ -64,8 +64,10 @@ Exit status: 0 when every response is identical, 1 on any difference, 2 when
 the run itself could not be made (a service that would not start, a timeout).
 
 Named so `unittest discover` (`test*.py`) passes over it: it starts two services
-and takes a minute or more. The standard library only, beside rc_dashboard's own
-history store for `--seal-between`.
+and takes a minute or more. CI runs it as a job of its own (`e2e-history` in
+.github/workflows/ci.yml), as is and with `--restart --seal-between`. The
+standard library only, beside rc_dashboard's own history store for
+`--seal-between`.
 """
 import argparse
 import atexit
