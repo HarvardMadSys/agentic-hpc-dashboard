@@ -1339,6 +1339,10 @@ class Link:
         self.stall_s = stall_s
         self.retired = threading.Event()   # taken out of the config: no more reconnects
         self.proc = None
+        # Held while a transport is published and while it is retired: either retire()
+        # comes first and the session sees it, or the session's process is the one
+        # close() ends -- never a retirement that finds no process, and then one starts.
+        self._proc_lock = threading.Lock()
         self.connected = False
         self.down_since = time.time()      # None while connected
         self.live = None
@@ -1349,7 +1353,8 @@ class Link:
 
     def close(self):
         """End the current transport, which also ends a read blocked on it."""
-        p = self.proc
+        with self._proc_lock:
+            p = self.proc
         if p is not None and p.poll() is None:
             try:
                 p.terminate()
@@ -1376,7 +1381,8 @@ class Link:
 
     def retire(self):
         """Taken out of the config: end the transport and stop reconnecting."""
-        self.retired.set()
+        with self._proc_lock:
+            self.retired.set()
         self.close()
 
     def run(self):
@@ -1432,17 +1438,22 @@ class Link:
 
     def _session(self):
         self.stderr_tail.clear()
-        self.proc = subprocess.Popen(self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE)
-        self._stderr_thread = threading.Thread(target=self._drain_stderr, args=(self.proc.stderr,),
+        p = subprocess.Popen(self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE)
+        with self._proc_lock:
+            self.proc = p
+            ended = self._ended()
+        self._stderr_thread = threading.Thread(target=self._drain_stderr, args=(p.stderr,),
                                                daemon=True)
         self._stderr_thread.start()
+        if ended:              # retired (or stopped) while it started: run() closes it
+            return
         hello = {"v": PROTOCOL, "days": self.days, "have": self.mirror.inventory()}
         self.proc.stdin.write((json.dumps(hello) + "\n").encode("utf-8"))
         self.proc.stdin.flush()
         src = _Counting(self.proc.stdout, self.stall_s)
         inflater = zlib.decompressobj()
-        while not self.stop.is_set() and not self.paused.is_set():
+        while not self._ended() and not self.paused.is_set():
             before = src.n
             f = read_frame(src)
             if f is None:
