@@ -320,18 +320,22 @@ class Settings(object):
         over the copy's node folders that the dashboard expands again at every rescan, so
         a node added to FLEET_HOSTS needs no restart of it (per_node: one root per node
         named now, colon-separated, as before); and RC_DASH_TRANSPORT_FILES, each node's
-        state file, for the dashboard's status. With no node tier pulled, its variable
-        names a folder that is not there: left empty, the dashboard would look in its
+        state file, for the dashboard's status. The node tier's glob stays while no
+        node's node tier is pulled: it matches nothing until a node added with one has
+        been copied, which the dashboard's next rescan then finds -- add-node reloads
+        rc-pull alone, and writes no paths.env -- and a glob that matches nothing is a
+        missing root, never the dashboard's default places. Per node, an empty list names
+        a folder that is not there instead: left empty, the dashboard would look in its
         default places, and could read this host's own collector."""
         if per_node:
             ebpf = ":".join(self.root("ebpf", n) for n in self.hosts)
             node = ":".join(self.root("node", n) for n in self.hosts
                             if "node" in self.sources_for(n))
+            if not node:
+                node = os.path.join(self.mirror, "node-tier-not-pulled")
         else:
             ebpf = os.path.join(self.mirror, "ebpf", "*")
             node = os.path.join(self.mirror, "node", "*")
-        if not self.pulls_node_tier():
-            node = os.path.join(self.mirror, "node-tier-not-pulled")
         return ("RC_DASH_EBPF_ROOTS=%s\nRC_DASH_NODE_ROOTS=%s\nRC_DASH_TRANSPORT_FILES=%s\n"
                 % (ebpf, node, os.path.join(self.state, "*.json")))
 

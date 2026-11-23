@@ -397,12 +397,14 @@ class TestRun(Rig):
             "RC_DASH_NODE_ROOTS=%s/node/*" % self.mirror,
             "RC_DASH_TRANSPORT_FILES=%s/.state/*.json" % self.mirror])
 
-    def test_without_the_node_tier_its_root_is_named_missing(self):
-        """Empty, the dashboard would look in its default places, this host's own
-        /var/log/ebpfm-login among them."""
+    def test_without_the_node_tier_its_root_still_globs(self):
+        """No node's node tier is pulled: the glob stays, matching nothing, so a node
+        added later with one is found at the dashboard's next rescan (add-node writes no
+        paths.env). Matching nothing, it is a missing root, never the dashboard's default
+        places -- this host's own /var/log/ebpfm-login among them."""
         self.settings(FLEET_NODE_SOURCE="")
         out = self.run_pull("roots")
-        self.assertIn("RC_DASH_NODE_ROOTS=%s/node-tier-not-pulled" % self.mirror, out)
+        self.assertIn("RC_DASH_NODE_ROOTS=%s/node/*\n" % self.mirror, out)
         self.write("n1", "2026-11-21/n1.jsonl", lines(0, 4), tier="ebpfm-login")
         self.run_pull()
         self.assertFalse(os.path.exists(os.path.join(self.mirror, "node")))
@@ -562,8 +564,9 @@ class TestNodesAndFolders(StubRig):
         self.assertIn("RC_DASH_EBPF_ROOTS=%s/ebpf/a:%s/ebpf/b\n" % (self.mirror, self.mirror), out)
         self.assertIn("RC_DASH_NODE_ROOTS=%s/node/a\n" % self.mirror, out)
         self.settings("a:ebpfm: b:ebpfm:")
+        self.assertIn("RC_DASH_NODE_ROOTS=%s/node/*\n" % self.mirror, self.run_pull("roots"))
         self.assertIn("RC_DASH_NODE_ROOTS=%s/node-tier-not-pulled\n" % self.mirror,
-                      self.run_pull("roots"))
+                      self.run_pull("roots", "--per-node"))
 
 
 class TestStatus(StubRig):
