@@ -114,15 +114,27 @@ def set_line(path, key, value, head=None):
 
 
 def write(path, text, mode=0o644):
+    """Replace `path` with `text`, keeping its mode and its owner and group: the
+    installer makes fleet.env 0640 root:rc-dashboard, and a root-owned copy put
+    in its place (0640 root:root) was one rc-pull, which runs as the dashboard's
+    account, could no longer read -- on reload or at its next start."""
     d = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(dir=d, prefix="." + os.path.basename(path))
-    with os.fdopen(fd, "w") as fh:
-        fh.write(text)
-    if os.path.exists(path):
-        os.chmod(tmp, os.stat(path).st_mode & 0o7777)
-    else:
-        os.chmod(tmp, mode)
-    os.rename(tmp, path)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        if os.path.exists(path):
+            st = os.stat(path)
+            os.chmod(tmp, st.st_mode & 0o7777)
+            if hasattr(os, "chown") and (st.st_uid, st.st_gid) != (os.getuid(), os.getgid()):
+                os.chown(tmp, st.st_uid, st.st_gid)
+        else:
+            os.chmod(tmp, mode)
+        os.rename(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
 
 
 def yesno(key, value):
@@ -479,6 +491,12 @@ def cmd_remove_node(args):
     run(["systemctl", "reload", "rc-pull.service"], check=False)
     state = installed("STATE", "/var/lib/rc-dashboard")
     copy = [os.path.join(state, "mirror", t, name) for t in ("ebpf", "node")]
+    # Its pull state goes whatever happens to its copy: nothing pulls it now,
+    # and a state file left behind aged past status.stale_s into a copy
+    # failure the hourly check reported for good.
+    pulled = os.path.join(state, "mirror", ".state", name + ".json")
+    if os.path.exists(pulled) or os.environ.get("RC_DEPLOY_ECHO"):
+        run(["rm", "-f", pulled])
     if args.purge_copy:
         run(["rm", "-rf"] + copy)
     else:

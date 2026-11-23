@@ -198,6 +198,35 @@ class TestNodes(Rig):
         self.tool("remove-node", "n3", "--purge-copy", echo=False)
         self.assertIn("not in FLEET_HOSTS", self.tool("remove-node", "n9", code=1, echo=False))
 
+    def test_a_node_taken_out_leaves_no_pull_state(self):
+        """Nothing pulls it any more: a state file left behind aged into a copy failure
+        the hourly check reported for good. It goes, whether the copy stays or not."""
+        with open(self.fleet, "a") as fh:
+            fh.write('FLEET_HOSTS+=" n2"\n')
+        states = os.path.join(self.state, "mirror", ".state")
+        os.makedirs(states)
+        for n in ("n1", "n2"):
+            with open(os.path.join(states, n + ".json"), "w") as fh:
+                fh.write('{"ok": true}\n')
+        self.tool("remove-node", "n2", echo=False)
+        self.assertEqual(os.listdir(states), ["n1.json"])
+
+    def test_fleet_env_keeps_its_mode_and_owner(self):
+        """The installer makes fleet.env 0640 root:rc-dashboard; rc-pull reads it as the
+        dashboard's account. A copy put in its place must be readable to it as before."""
+        os.chmod(self.fleet, 0o640)
+        group = os.getgid()
+        if os.getuid() == 0:
+            group = 1 if os.getgid() != 1 else 2
+            os.chown(self.fleet, 0, group)
+        self.tool("add-node", "n2", echo=False)
+        self.tool("remove-node", "n2", echo=False)
+        st = os.stat(self.fleet)
+        self.assertEqual(st.st_mode & 0o7777, 0o640)
+        self.assertEqual(st.st_gid, group)
+        self.assertEqual([n for n in os.listdir(self.etc) if n.startswith(".")], [],
+                         "no temporary file left beside it")
+
     def test_hpc_nodes_go_into_site_env(self):
         os.unlink(self.site)
         self.tool("init", "--yes", "--set", "NODES=login01", "--set", "ROOT_ON_NODES=no",
