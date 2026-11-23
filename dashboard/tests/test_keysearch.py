@@ -260,9 +260,10 @@ class KeySearchTest(unittest.TestCase):
                 exit_(3, 600, 101, 30, 40, 25.0, 0.0, "cat"),
                 exit_(4, 101, 1, 0, 100, 200.0, 1.5, "claude")]
 
-    def tree_of(self, feed, root, members, newest=False):
+    def tree_of(self, feed, root, members, newest=False, own_cap=None):
         lim = proctree._limits(self.cfg)
-        b = proctree.TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest)
+        b = proctree.TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest,
+                                 own_cap=own_cap)
         for r in feed:
             b.feed(r)
         tree, rs = b.render(b.resolve(root, members, lambda pid: None), lim["inspect_nodes"])
@@ -294,14 +295,52 @@ class KeySearchTest(unittest.TestCase):
         mixed = [keysearch.compact(r) if i % 2 else r for i, r in enumerate(recs)]
         self.assertEqual(self.tree_of(mixed, 101, {101}), whole)
 
+    def test_under_the_joins_cap_a_runtime_is_kept_as_from_whole_records(self):
+        """Past the join's cap, which the service sets (`own_cap`), a parent held
+        for its own exit is let go, an agent runtime's last while runtimes keep
+        within their share: what `tree_root_pid` tells. Sent back without it,
+        the agent's tool call was let go first, and the agent kept as its own
+        the 60 MB that call read."""
+        norm = Normalizer(self.cfg)
+
+        def exit_(i, pid, ppid, start, end, rd_mb, child_cpu_s, command):
+            rec = full("exit", i)
+            rec.update(pid=pid, ppid=ppid, tree_root_pid=101, agent_pid=101, user="ann",
+                       start=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(T0 + start)),
+                       duration_s=end - start, ts_epoch=T0 + end, child_cpu_s=child_cpu_s,
+                       session_key="claude:101", agent_type="claude-code",
+                       command=command, args=command,
+                       io={"scope": "process", "rd_mb": rd_mb, "wr_mb": 0.0,
+                           "rchar_mb": rd_mb, "wchar_mb": 0.0})
+            return norm.normalize(rec)
+        # the agent's tool call is held for 101; then two other parents' children
+        # are held, three in all, past a cap of 2
+        recs = [exit_(1, 500, 101, 10, 20, 60.0, 0.0, "grep"),
+                exit_(2, 701, 700, 30, 35, 7.0, 0.0, "sort"),
+                exit_(3, 801, 800, 40, 45, 9.0, 0.0, "wc"),
+                exit_(4, 700, 101, 25, 50, 20.0, 1.0, "bash"),
+                exit_(5, 800, 101, 38, 60, 30.0, 1.0, "bash"),
+                exit_(6, 101, 1, 0, 100, 200.0, 1.5, "claude")]
+        whole = self.tree_of(recs, 101, {101}, own_cap=2)
+        self.assertEqual(self.tree_of([keysearch.compact(r) for r in recs], 101, {101},
+                                      own_cap=2), whole)
+        # the fixture reaches what `tree_root_pid` decides
+        unmarked = [{k: v for k, v in keysearch.compact(r).items() if k != "tree_root_pid"}
+                    for r in recs]
+        self.assertNotEqual(self.tree_of(unmarked, 101, {101}, own_cap=2), whole)
+
     def test_the_tree_asks_for_no_key_a_part_leaves_out(self):
         """Every key the tree reads of a record that holds it is one a part sends
         back: one left out reads None from a part's record and its value from a
         whole one, and the two trees differ, where a test of whole against sent
-        back may not reach the code that reads it."""
+        back may not reach the code that reads it. The guard is as wide as its
+        fixtures: a key read only of a kind of record they hold none of, or only
+        when it is present, gets past it."""
 
         class Asked(dict):
-            """A record that remembers the keys it was asked for."""
+            """A record that remembers the keys it was asked for: through `get`,
+            `[]` and `in`, as the tree and the join read a record. A read
+            through `items()`, `dict(rec)` or `{**rec}` would get past it."""
             __slots__ = ("asked",)
 
             def __init__(self, rec):
