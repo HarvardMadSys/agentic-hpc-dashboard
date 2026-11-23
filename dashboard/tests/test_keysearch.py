@@ -237,6 +237,105 @@ class KeySearchTest(unittest.TestCase):
         self.assertEqual(trees[2], trees[0])
         self.assertEqual(trees[3], trees[1])
 
+    def family(self):
+        """An agent's session in which the own-I/O join (reducers/own_io.py) has
+        work to do, `io` read at process scope: an earlier holder of pid 500 left
+        a child that outlived it (40 MB), and pid 500 again, a tool call, says it
+        reaped no child (`child_cpu_s` 0), so those 40 MB stay the orphan's; the
+        agent takes back what its two tool calls carried (60 and 25 MB)."""
+        norm = Normalizer(self.cfg)
+
+        def exit_(i, pid, ppid, start, end, rd_mb, child_cpu_s, command):
+            rec = full("exit", i)
+            rec.update(pid=pid, ppid=ppid, tree_root_pid=101, agent_pid=101, user="ann",
+                       start=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(T0 + start)),
+                       duration_s=end - start, ts_epoch=T0 + end, child_cpu_s=child_cpu_s,
+                       session_key="claude:101", agent_type="claude-code",
+                       command=command, args=command,
+                       io={"scope": "process", "rd_mb": rd_mb, "wr_mb": 0.0,
+                           "rchar_mb": rd_mb, "wchar_mb": 0.0})
+            return norm.normalize(rec)
+        return [exit_(1, 777, 500, 9, 12, 40.0, 0.0, "sleep"),
+                exit_(2, 500, 101, 10, 20, 60.0, 0.0, "grep"),
+                exit_(3, 600, 101, 30, 40, 25.0, 0.0, "cat"),
+                exit_(4, 101, 1, 0, 100, 200.0, 1.5, "claude")]
+
+    def tree_of(self, feed, root, members, newest=False):
+        lim = proctree._limits(self.cfg)
+        b = proctree.TreeBuilder(lim["inspect_hold"], lim["inspect_per_parent"], newest=newest)
+        for r in feed:
+            b.feed(r)
+        tree, rs = b.render(b.resolve(root, members, lambda pid: None), lim["inspect_nodes"])
+        return json.dumps([tree, rs, b.nav(root, T0, b.last)], sort_keys=True, default=str)
+
+    def test_a_processs_own_io_is_the_same_from_the_records_sent_back(self):
+        """The join holds what a parent takes back by `host` and pid, and an exit
+        whose `child_cpu_s` is 0 takes back none: from a part's records it takes
+        back what it takes from whole ones, and so in a read whose files went
+        partly to workers and partly not (a sealed day's replica, and a day with
+        no replica read here)."""
+        recs = self.family()
+        whole = self.tree_of(recs, 101, {101})
+
+        def own(tree):
+            out, todo = {}, [json.loads(tree)[0]]
+            while todo:
+                node = todo.pop()
+                if node.get("pid") is not None:
+                    out[node["pid"]] = node["io"]["rd_mb"]
+                todo.extend(node.get("kids") or ())
+            return out
+        # the join has work in this session: the tool call keeps what it read, and
+        # the agent's own is its figure less what its two tool calls carried
+        self.assertEqual(own(whole)[500], 60.0)
+        self.assertEqual(own(whole)[101], 115.0)
+        sent_back = [keysearch.compact(r) for r in recs]
+        self.assertEqual(self.tree_of(sent_back, 101, {101}), whole)
+        mixed = [keysearch.compact(r) if i % 2 else r for i, r in enumerate(recs)]
+        self.assertEqual(self.tree_of(mixed, 101, {101}), whole)
+
+    def test_the_tree_asks_for_no_key_a_part_leaves_out(self):
+        """Every key the tree reads of a record that holds it is one a part sends
+        back: one left out reads None from a part's record and its value from a
+        whole one, and the two trees differ, where a test of whole against sent
+        back may not reach the code that reads it."""
+
+        class Asked(dict):
+            """A record that remembers the keys it was asked for."""
+            __slots__ = ("asked",)
+
+            def __init__(self, rec):
+                super().__init__(rec)
+                self.asked = set()
+
+            def get(self, k, *default):
+                self.asked.add(k)
+                return super().get(k, *default)
+
+            def __getitem__(self, k):
+                self.asked.add(k)
+                return super().__getitem__(k)
+
+            def __contains__(self, k):
+                self.asked.add(k)
+                return super().__contains__(k)
+
+        members = {"h|%s|agent|apid:101" % DAY, "h|%s|agent|apid:202" % DAY}
+        scanned = [rec for rec, _st in proctree.key_scan(
+            [{"path": self.plain, "start": 0}], Normalizer(self.cfg), T0 - 1, None,
+            proctree.key_patterns(members), where=proctree.key_where(members))]
+        asked, held = set(), set()
+        for recs, root, pids in ((scanned, 101, {101, 202}), (self.family(), 101, {101})):
+            for newest in (False, True):
+                feed = [Asked(r) for r in recs]
+                self.tree_of(feed, root, pids, newest=newest)
+                for r in feed:
+                    asked |= r.asked
+                    held.update(r)
+        # the join's own reads were reached, as the fixture means them to be
+        self.assertTrue({"host", "child_cpu_s", "tree_root_pid"} <= asked)
+        self.assertEqual(sorted((asked & held) - set(keysearch.INSPECT_KEYS)), [])
+
 
 class _Stop(Exception):
     pass
