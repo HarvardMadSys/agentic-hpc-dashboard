@@ -175,7 +175,7 @@ time), or in a sealed file's replica by testing its `session_key` and `agent_pid
 (`key_where`); a terminal's or a login scope's key is searched for in the inflated `.gz`. Except in
 a sealed `.gz` with no usable replica, which the service's own process searches, the records found
 are built in `inspect_workers` processes (8, at most the CPUs the service may use;
-`keysearch.py:stream`), each holding only the 28 fields the tree reads (`keysearch.py:INSPECT_KEYS`)
+`keysearch.py:stream`), each holding only the 31 fields the tree reads (`keysearch.py:INSPECT_KEYS`)
 ([API](../../dashboard/README.md#api), "How a read is made").
 
 Bounds, each reported in the response: `inspect_max_records` 150,000 (600,000 newest first),
