@@ -59,7 +59,7 @@ import time
 from . import feeds as feedmod
 from . import fastjson, redact
 from .config import is_pattern
-from .feedfile import dated_dirs, host_of, iter_lines_reverse, split_name
+from .feedfile import dated_dirs, feed_files, host_of, iter_lines_reverse, split_name
 from .health import CollectorHealth
 from .normalize import epoch_of
 
@@ -252,23 +252,26 @@ def host_files(report):
     return out
 
 
+def _day_of(path):
+    """A day-file's dated folder, or "" for a flat file under a root (an older
+    capture's layout), which so sorts before every day."""
+    d = os.path.basename(os.path.dirname(path))
+    return d if _DAY.fullmatch(d) else ""
+
+
 def newest_by_host(report, skip_sealed=True):
     """{host: epoch} of the newest record of each host in a feed report, read from
     the end of its newest plain day-files (a sealed `.gz` would be inflated whole
     to reach its end; with `skip_sealed` it is left out, which the heartbeat
     stream's own read covers)."""
-    def day_of(path):           # a flat file under a root (older captures) sorts first
-        d = os.path.basename(os.path.dirname(path))
-        return d if _DAY.fullmatch(d) else ""
-
     best = {}
     newest_day = {}
     for f in report.get("files") or []:
         host = f.get("host") or host_of(f["path"])
-        newest_day[host] = max(newest_day.get(host, ""), day_of(f["path"]))
+        newest_day[host] = max(newest_day.get(host, ""), _day_of(f["path"]))
     for f in report.get("files") or []:
         host = f.get("host") or host_of(f["path"])
-        if day_of(f["path"]) != newest_day.get(host):
+        if _day_of(f["path"]) != newest_day.get(host):
             continue
         if skip_sealed and f.get("compressed"):
             continue
@@ -288,16 +291,18 @@ def scan_health(cfg, report, scan_bytes=SCAN_BYTES):
     paths = {}
     for root in report.get("resolved") or []:
         try:
-            listing = dated_dirs(root, days)
+            listing = [p for _d, files in dated_dirs(root, days) for p in files]
+            # a root may also hold flat day-files, as the feed reads them (feeds.resolve_dated)
+            listing += feed_files(root)[-days:]
         except OSError:
             continue
-        for _d, files in listing:
-            for p in files:
-                if _stream_of(p) in ("snapshot", "single"):
-                    paths.setdefault(host_of(p), []).append(p)
+        for p in listing:
+            if _stream_of(p) in ("snapshot", "single"):
+                paths.setdefault(host_of(p), []).append(p)
     newest = {}
     for host, files in paths.items():
-        files.sort(key=lambda p: os.path.basename(os.path.dirname(p)), reverse=True)
+        # the newest day first; a flat file after every dated one, the latest name first
+        files.sort(key=lambda p: (_day_of(p), os.path.basename(p)), reverse=True)
         metas, spent = 0, 0
         for p in files:
             for line in iter_lines_reverse(p):

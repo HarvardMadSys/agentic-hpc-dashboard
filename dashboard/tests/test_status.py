@@ -136,6 +136,17 @@ class Collect(Feed):
         doc = statusmod.collect(self.cfg(), stale_s=50, now=self.now, wall=self.now)
         self.assertTrue(any("node-tier record" in w for w in doc["why"]), doc["why"])
 
+    def test_a_flat_day_file_under_the_root_is_read_for_health(self):
+        """A root may hold its day-files flat, as an older capture does: the feed reads
+        them, and the health scan must too, or a live collector reads unknown (warn)."""
+        shutil.rmtree(os.path.join(self.ebpf, self.day))
+        write(os.path.join(self.ebpf, "h-ok.snapshot.jsonl"),
+              [rec("meta", self.now - 600, "h-ok"),
+               rec("residency_totals", self.now - 30, "h-ok", interval_s=60.0)])
+        doc = statusmod.collect(self.cfg(), now=self.now, wall=self.now)
+        self.assertEqual(self.host(doc, "h-ok")["verdict"], "ok")
+        self.assertEqual(doc["level"], "ok", doc["why"])
+
     def test_the_scan_stops_at_two_starts(self):
         d = os.path.join(self.ebpf, self.day)
         p = os.path.join(d, "h-ok.snapshot.jsonl")
