@@ -655,6 +655,32 @@ class ShellPiecesTest(Tmp):
         self.assertEqual(rc, 4, out)
         self.assertIn('not yet after 2s', out)
 
+    def test_alive_counts_a_zombie_as_exited(self):
+        """stop waits for the tier to exit. A tier `start` left behind is reaped by PID 1,
+        and in a container whose PID 1 reaps nothing it stays a zombie, which kill -0
+        still finds: stop said "stopping" for good."""
+        fn = _fn('_alive')
+        live = subprocess.Popen(['sleep', '30'])
+        self.addCleanup(live.wait)
+        self.addCleanup(live.kill)
+        zombie = subprocess.Popen(['true'])
+        for _ in range(100):            # exited, and left unreaped: a zombie
+            with open('/proc/%d/stat' % zombie.pid) as fh:
+                if fh.read().rsplit(') ', 1)[1].startswith('Z'):
+                    break
+            time.sleep(0.05)
+        self.addCleanup(zombie.wait)
+        odd = self.path('a) b')         # a name with ") " in it: /proc/PID/stat's (comm)
+        shutil.copy(shutil.which('sleep'), odd)
+        named = subprocess.Popen([odd, '30'])
+        self.addCleanup(named.wait)
+        self.addCleanup(named.kill)
+        gone = subprocess.Popen(['true'])
+        gone.wait()
+        for pid, want in ((live.pid, 0), (zombie.pid, 1), (named.pid, 0), (gone.pid, 1)):
+            rc, out, err = _bash(fn + '_alive %d\n' % pid)
+            self.assertEqual(rc, want, (pid, out, err))
+
     def test_the_settings_file_writer(self):
         f = self.path('default-ebpfm')
         with open(f, 'w') as fh:

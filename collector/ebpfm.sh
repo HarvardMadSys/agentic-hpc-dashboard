@@ -1212,6 +1212,16 @@ _pid_runs() {   # _pid_runs PID WORD
     return 1
 }
 
+# Whether PID is a live process. A zombie -- exited, not yet reaped -- has stopped,
+# though kill -0 still finds it: a tier `start` left behind is reaped by PID 1, and in
+# a container whose PID 1 reaps nothing (CI's `tail -f /dev/null`) it stays a zombie.
+_alive() {   # _alive PID
+    kill -0 "$1" 2>/dev/null || return 1
+    local st
+    st="$(sed -n 's/^.*) \(.\).*$/\1/p' "/proc/$1/stat" 2>/dev/null)"
+    [ "$st" != Z ]
+}
+
 _running_pid() {
     [ -f "$PID_FILE" ] || return 1
     local p; p="$(cat "$PID_FILE" 2>/dev/null)"
@@ -1571,8 +1581,8 @@ _node_stop() {
     fi
     if p="$(_node_running_pid)"; then
         kill "$p" 2>/dev/null || { echo "ebpfm: could not signal the node tier's loop (pid $p)" >&2; return 1; }
-        for ((i = 0; i < 20; i++)); do kill -0 "$p" 2>/dev/null || break; sleep 0.25; done
-        if kill -0 "$p" 2>/dev/null; then
+        for ((i = 0; i < 20; i++)); do _alive "$p" || break; sleep 0.25; done
+        if _alive "$p"; then
             echo "node tier stopping on $HOST (pid $p): it exits once its current snapshot is written"
         else
             echo "node tier stopped on $HOST (pid $p)"
@@ -1601,8 +1611,8 @@ _ebpf_stop() {
     if p="$(_running_pid)"; then
         kill -TERM "$p" || { echo "ebpfm: could not signal pid $p" >&2; return 1; }
         printf '%s stopping on %s (pid %s; SIGTERM -> truncated flush) ...' "$NAME" "$HOST" "$p"
-        for ((i = 0; i < 120; i++)); do kill -0 "$p" 2>/dev/null || break; sleep 0.5; done
-        if kill -0 "$p" 2>/dev/null; then echo " still flushing after 60s: it exits once done"
+        for ((i = 0; i < 120; i++)); do _alive "$p" || break; sleep 0.5; done
+        if _alive "$p"; then echo " still flushing after 60s: it exits once done"
         else echo " stopped"; fi
     else
         echo "$NAME not running on $HOST"
