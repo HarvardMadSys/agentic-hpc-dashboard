@@ -16,7 +16,9 @@
  *   session                    one run of an agent or an IDE and all it started,
  *                              or a person's terminal login  not: trajectory, tree, run
  *   process tree               a session's processes, drawn  not: trajectory
- *   process                    one program that ran          not: event, exits (a count)
+ *   process                    one program that ran          not: exits (a count)
+ *   event                      the record of a process's exit, as the
+ *                              collector writes it           not: exits
  *   tool call                  a command an agent issued     not: call, command of its own
  *   login node                 a machine the collector watches, in the site's own
  *                              word (ui.node_noun, nodes.ts) not: host, machine

@@ -163,7 +163,8 @@ word shows on hover (the word is underlined, dotted): what is measured, and what
 | **agent**, **agent type** | an AI coding agent (one running copy of one, as the Agents tab counts them), and which it is: Claude Code, Codex, … | a run of one: that is a session |
 | **session** | one run of an agent or an IDE and everything it started, or one person's terminal login | trajectory, tree, run |
 | **process tree** | a session's processes, each under the one that started it | trajectory |
-| **process** | one program that ran; the collector records it when it exits | event, exits (as a count) |
+| **process** | one program that ran; the collector records it when it exits | exits (as a count) |
+| **event** | the record of a process's exit, as the collector writes it; a count of events counts processes that exited | exits |
 | **tool call** | a command an agent issued itself; what that command started counts as processes | call, command of its own |
 | **login node** | a machine the collector watches, in the site's own word (`ui.node_noun`, `src/lib/nodes.ts`) | host, machine |
 | **start folder** | the directory an agent was started in | home: that is a user's home folder |
