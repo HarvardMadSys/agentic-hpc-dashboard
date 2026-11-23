@@ -1,0 +1,15 @@
+# Rendered by deploy/common/install-dashboard.sh into /etc/systemd/system/rc-dashboard-check.timer.
+# The hourly check: `systemctl list-timers rc-dashboard-check`, and its last finding in
+# `journalctl -u rc-dashboard-check`.
+[Unit]
+Description=rc dashboard: run the check every hour
+Documentation=file://@REPO@/deploy/README.md
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
