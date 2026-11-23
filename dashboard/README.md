@@ -11,45 +11,121 @@ figure on the page computes, from which records, by which read path, and at what
 
 ```bash
 cd dashboard && uv sync --frozen
-uv run --frozen python -m rc_dashboard --check-feeds   # what resolved, what didn't, and why
-(cd web && npm ci && npm run build)                    # builds web/dist/, which the service serves
-uv run --frozen python -m rc_dashboard new-password    # once: prints the hash for dashboard.config.json
-uv run --frozen python -m rc_dashboard serve --port 8080
+(cd web && npm ci && npm run build)          # builds web/dist/, which the service serves
+uv run --frozen rc-dashboard init            # asks; writes dashboard.toml and a password
+uv run --frozen rc-dashboard serve           # the command init printed
 ```
 
-`serve` starts only behind a password ([Password](#password)): put the hash `new-password` prints
-into `dashboard.config.json` as `"server": {"auth": {"password_hash": "..."}}`. Without one it says
-so and exits, because on a login node every user can reach a port on 127.0.0.1. `--open`
-(`RC_DASH_OPEN=1`) serves without a password, for a machine only you can log in to.
+`init` ([First run](#first-run-rc-dashboard-init)) looks for the collector's folders, makes a
+password with its hash in a file of its own, writes a short TOML config, checks the feeds, and
+prints the `serve` command and the `ssh -L` tunnel command to reach the page. By hand, the same is:
 
-Off-cluster, `--check-feeds` exits 1, because the eBPF feed is `required` and absent: point it at a
+```bash
+uv run --frozen rc-dashboard check-feeds     # every place it looked, and what it found there
+uv run --frozen rc-dashboard new-password --install ~/.config/rc-dashboard/password.hash
+cp dashboard.example.toml dashboard.toml     # name that hash file in it, and your feed
+uv run --frozen rc-dashboard serve --port 8080
+```
+
+`serve` starts only behind a password ([Password](#password)): a hash file named by
+`server.auth.password_hash_file` (`RC_DASH_PASSWORD_HASH_FILE`), or the hash itself in
+`server.auth.password_hash`. Without one it says so and exits, because on a login node every user
+can reach a port on 127.0.0.1. `--open` (`RC_DASH_OPEN=1`) serves without a password, for a machine
+only you can log in to.
+
+Off-cluster, `check-feeds` exits 1, because the eBPF feed is `required` and absent: point it at a
 collector root.
 
 ```bash
 RC_DASH_EBPF_ROOTS=/var/log/ebpfm RC_DASH_NODE_ROOTS=/var/log/ebpfm-login \
-  uv run --frozen python -m rc_dashboard serve
+  uv run --frozen rc-dashboard serve
 ```
 
-Reach a remote instance over a tunnel: `ssh -L 8080:127.0.0.1:8080 <host>`. With no cluster,
+Reach a remote instance over a tunnel: `ssh -N -L 8080:127.0.0.1:8080 <host>`. With no cluster,
 [Demo mode](#demo-mode) runs the same service over a synthetic feed it writes itself.
+
+**The command line.** `rc-dashboard <command> --help` gives each command's flags and examples;
+`rc-dashboard --help` lists the commands: `serve` (the default), `demo`, `init`, `check-feeds`,
+`status`, `print-config`, `new-password`, `backup`, `restore`, `rollup` and `version`. From a
+checkout it is `uv run --frozen rc-dashboard ...`, and `python -m rc_dashboard ...` is the same
+program. A flag may come before the command or after it (`--config x.toml serve`), no command is
+`serve`, `--check-feeds` and `--print-config` still work as flags, and the retired `--sacct-dir` and
+`--jobs-csv` are taken and ignored with a warning. `rc-dashboard --version` (or `version`) prints
+`rc-dashboard 0.1.0 (abc1234)`: the commit from the build stamp a wheel or the image carries
+(`rc_dashboard/BUILD.json`), else the checkout's `git rev-parse --short HEAD`, else none
+(`about.py`).
+
+**Installed without a checkout.** A wheel built from `dashboard/` (`uv build --wheel`) carries the
+page when `web/dist` was built first, and the risk profiles, so `pip install rc_dashboard-*.whl`
+gives an `rc-dashboard` that serves the page without Node: the default `server.static_dir` is then
+the copy inside the package, `cache.dir` is `~/.local/state/rc-dashboard`
+(`$XDG_STATE_HOME/rc-dashboard`), no config file is read unless named (`--config`,
+`RC_DASH_CONFIG`), and a relative path in one is beside it. The image
+([`docker/dashboard`](../docker/README.md#the-dashboard)) is that wheel installed; a release tag
+attaches the wheel to its GitHub Release (`.github/workflows/dashboard-image.yml`).
 
 `./run.sh` runs the service with hot reload: `dev` (the default) through Vite's dev server on
 `RC_DASH_UI_PORT` (5173), `build` serving the built page, rebuilt on every edit, `api` the backend
-alone. Its wrappers run it in `build` mode: `run-dev.sh` (:8086) and `run-fasrc.sh` (:8085, a capture
-under a pinned clock) with one site's feed roots, risk profile and site name, which need a password
-hash and serve names as they are (`RC_DASH_ANONYMIZE=0` unless set), and `run-demo.sh` (:8087).
+alone. It reads the feed the config, the `RC_DASH_*` variables or the default candidates name, and
+installs what `uv.lock` pins (`uv run --frozen`). Its wrappers run it in `build` mode: `run-dev.sh`
+(:8086) and `run-fasrc.sh` (:8085, a capture under a pinned clock) with one site's feed roots, risk
+profile, site name and dropped accounts, which need a password hash and serve names as they are
+(`RC_DASH_ANONYMIZE=0` unless set), and `run-demo.sh` (:8087).
+
+### First run: `rc-dashboard init`
+
+Interactive by default: each question shows what it found as the answer given, and Enter takes it.
+`--yes` asks nothing, taking each value from its flag, else from what it found:
+
+```bash
+uv run --frozen rc-dashboard init --yes --ebpf-root /scratch/ebpfm --node-root /scratch/ebpfm-login \
+  --site-name "cluster X login nodes" --no-slurm --port 8080
+```
+
+| flag | | default |
+|---|---|---|
+| `--ebpf-root`, `--node-root` | the collector's folders, repeatable, glob patterns welcome | the first default candidate holding day-files ([The two feeds](#the-two-feeds)); none found, `roots` is left out and the service probes the candidates |
+| `--site-name` | `site.name` | this host's name |
+| `--slurm`, `--no-slurm` | `slurm.enabled` | on when `sbatch` is on PATH or `/etc/slurm` exists |
+| `--port` | `server.port` | 8080 |
+| `--config PATH` | where the config goes | `dashboard/dashboard.toml` (installed without a checkout, `~/.config/rc-dashboard/dashboard.toml`) |
+| `--password-dir DIR` | the password, its netrc and `password.hash` | `~/.config/rc-dashboard` |
+| `--force` | replace a config, or a password, already there | |
+
+It never replaces a config without `--force`, nor writes `dashboard.toml` beside an existing
+`dashboard.config.json` (the service would refuse to choose). A password already in
+`--password-dir` is kept, and its hash file written from it when missing. Then it loads the config
+it wrote, prints `check-feeds`' table, and the next commands: building the page if `web/dist` is
+missing, the exact `serve` command, and `ssh -N -L <port>:127.0.0.1:<port> <you>@<this host>`.
 
 ## Configuration
 
 Each key resolves **separately**: **CLI flag > `RC_DASH_*` env var > config file > built-in
-default**, and a flag you don't pass never outranks the file. Copy
-[`dashboard.config.example.json`](dashboard.config.example.json) to `dashboard.config.json`
-(gitignored; `//`-prefixed keys are comments). `--print-config` prints the resolved tree with each
-key's `_origin`.
+default**, and a flag you don't pass never outranks the file. `print-config` prints the resolved
+tree with each key's `_origin`; `print-config --reference` prints **every setting with its
+built-in default** as a TOML file, each with the variable that sets it (made from `config.py`'s
+defaults, so it cannot drift from the code; `tests/test_config.py` reads it back).
 
-- Path defaults are **candidate lists**, and every candidate that exists is read: `--print-config`
-  lists those (`_existing`), and `--check-feeds` prints the first, or how many it tried when none
-  exists.
+- **The file is TOML or JSON**, the same settings in the same shape: TOML when its name ends in
+  `.toml` (read with `tomllib`), JSON otherwise (`//`-prefixed keys are comments). Start from
+  [`dashboard.example.toml`](dashboard.example.toml), a dozen lines: copy it to
+  `dashboard/dashboard.toml`, or let `init` write one. [`dashboard.config.example.json`](dashboard.config.example.json)
+  is a commented JSON example whose every value is the built-in default (a test holds them equal).
+  Both checks below apply to either format, and a TOML date (`as_of = 2026-11-02T09:00:00`) reads
+  as the text it was written as.
+- **Which file.** `--config` or `RC_DASH_CONFIG`; else `dashboard/dashboard.toml` or
+  `dashboard/dashboard.config.json`, whichever exists. Both existing stops the service, naming the
+  one changed last: keep one.
+- **A relative path in the file is under the repository's root** (`cache.dir = "dashboard/.cache"`,
+  `server.static_dir = "dashboard/web/dist"`), wherever the service is started from, and `~` is a
+  home; installed without a checkout, a relative path is beside the file. The settings this applies
+  to are `config.PATH_KEYS`: the feed roots, `cache.dir`, `history.dir`, `rollup.dir`,
+  `server.static_dir`, `server.auth.password_hash_file`, `ask.system_prompt_file` and
+  `status.transport_files`. `risk.profile` stays under `dashboard/`, as it always was. A path given
+  by a flag or a variable is the shell's, under the working directory.
+- Path defaults are **candidate lists**, and every candidate that exists is read: `print-config`
+  lists those (`_existing`, a glob pattern's matches included), and `check-feeds` prints every
+  candidate and what it found there.
 - **A mistake stops the service rather than loosening it.** A config file named by `--config` or
   `RC_DASH_CONFIG` must exist. A yes/no setting given as text (an `RC_DASH_*` variable, or a string
   in the file) is `1`/`0`, `true`/`false`, `yes`/`no` or `on`/`off`, in any case; anything else
@@ -66,25 +142,66 @@ key's `_origin`.
   [Hourly merge-reduce](#hourly-merge-reduce).
 - `filters.drop_global` (`RC_DASH_DROP_USERS`, comma-separated) drops every record of the accounts
   it names; `filters.drop_agent` (`RC_DASH_DROP_AGENT_USERS`) only their records classed agent,
-  such as a site's monitoring account's. Neither names anyone by default (`run.sh` sets both for
-  its clusters). `/api/feeds` counts what was dropped (`excluded.users`).
-- `site.name` (`RC_DASH_SITE_NAME`) is shown under the sidebar title and in the browser tab, so two
-  instances open side by side are not mistaken for each other.
+  such as a site's monitoring account's. Neither names anyone by default (`run-dev.sh` and
+  `run-fasrc.sh` set both for their site). `/api/feeds` counts what was dropped (`excluded.users`).
+- `site.name` (`RC_DASH_SITE_NAME`) is shown under the sidebar title, in the browser tab and on the
+  sign-in form, so two instances open side by side are not mistaken for each other. Empty, the
+  page and the form name the dashboard's host instead (`/api/config`'s `_meta.host`).
 - `slurm.enabled` (`RC_DASH_SLURM=0`) turns the HPC tab off and skips reducing it, for a cluster
   without Slurm; *Who uses what*'s units asked of Slurm go with it.
+- `ui.show_internal` (`RC_DASH_SHOW_INTERNAL=1`, off by default) lists the Internal tab, the
+  figures whose reading is not settled yet, in the page's rail. Like the rest of `ui`, it changes
+  no number and no saved build.
+- `status.transport_files` and `status.stale_s` are under
+  [Is the collection working?](#is-the-collection-working-status).
+
+### The time zone
+
+The page formats every time in **the service's zone**, not the browser's, so a reader in another
+zone and the service agree on what "09:00" was. `/api/config` carries it as `_meta.tz`:
+`{"name": "America/New_York", "abbrev": "EST", "utc_offset_s": -18000}`, the IANA name from `TZ`,
+else from what `/etc/localtime` links to, else null (the offset still holds), and the abbreviation
+and offset at the service's present. A capture copied from another cluster is in that cluster's
+time: serve it with `TZ` set to that cluster's zone (`TZ=America/New_York uv run --frozen
+rc-dashboard serve --as-of auto ...`), or its days, hours and hours of the day read in this host's.
 
 ## The two feeds
 
 | feed | what it carries | default candidates |
 |---|---|---|
-| `ebpf` (**required**) | the root tier: per-process exit, residency, tcp/conn, submit | `$EBPFM_LOG_ROOT`, `$EBPFM_OUTPUT_DIR`, `$RC_MEASUREMENT_ROOT/ebpfm/logs`, `log/ebpfm`, `log/ebpfm/logs`, `/var/log/ebpfm`, `~/.ebpfm/ebpf` |
-| `ebpf_node` | the unprivileged node tier: load, memory, NFS, per-user cgroup | `$EBPFM_NODE_LOG_ROOT`, `$EBPFM_NODE_OUTPUT_DIR`, `$RC_MEASUREMENT_ROOT/ebpfm/node/logs`, `log/ebpfm_node`, `/var/log/ebpfm-login`, `~/.ebpfm/login`, `log/login` |
+| `ebpf` (**required**) | the root tier: per-process exit, residency, tcp/conn, submit | `$EBPFM_LOG_ROOT`, `$EBPFM_OUTPUT_DIR`, `$RC_MEASUREMENT_ROOT/ebpfm/logs`, `EBPFM_OUTPUT_DIR` in `/etc/default/ebpfm`, `log/ebpfm`, `log/ebpfm/logs`, `/scratch/ebpfm`, `/var/log/ebpfm`, `~/.ebpfm/ebpf` |
+| `ebpf_node` | the unprivileged node tier: load, memory, NFS, per-user cgroup | `$EBPFM_NODE_LOG_ROOT`, `$EBPFM_NODE_OUTPUT_DIR`, `$RC_MEASUREMENT_ROOT/ebpfm/node/logs`, `EBPFM_NODE_OUTPUT_DIR` in `/etc/default/ebpfm`, `log/ebpfm_node`, `/scratch/ebpfm-login`, `/var/log/ebpfm-login`, `~/.ebpfm/login`, `log/login` |
 
-A relative candidate is under the repository's root. `RC_DASH_EBPF_ROOTS` (`--ebpf-root`) and
-`RC_DASH_NODE_ROOTS` (`--node-root`) replace the lists. A root collector on a host with a writable
-`/scratch` writes to `/scratch/ebpfm{,-login}`, which is not a candidate, so name it there. Since
-every candidate that exists is read, `EBPFM_LOG_ROOT` or `EBPFM_OUTPUT_DIR` set where the service
-starts adds a root.
+A relative candidate is under the repository's root. The candidates are where the collector writes
+(`collector/ebpfm.sh`): a root collector under `/scratch` where it is writable and under `/var/log`
+otherwise, an unprivileged one under `~/.ebpfm`, and the folders its own settings file names,
+`/etc/default/ebpfm`, read as its systemd unit reads it (`KEY=VALUE` lines, quotes around a value
+and `#` comments allowed, the last assignment winning). `RC_DASH_EBPF_ROOTS` (`--ebpf-root`) and
+`RC_DASH_NODE_ROOTS` (`--node-root`) replace the lists. Since every candidate that exists is read,
+`EBPFM_LOG_ROOT` or `EBPFM_OUTPUT_DIR` set where the service starts adds a root. A folder reached
+twice (a symlink and its target, a path and a pattern) is read once.
+
+- **A root may be a glob pattern** (`*`, `?`, `[...]`): `RC_DASH_EBPF_ROOTS='/data/mirror/ebpf/*'`.
+  It is matched again at every refresh of the feeds (each 30 s) and by the node history and the
+  history store as they look again, so a node's mirror folder made later is read without a restart:
+  the tail reads its files from their start, as it reads any file first seen after startup. A new
+  folder is a new feed, so the saved hours and builds keyed on the old set are made again, as for a
+  root added by hand. A root with no pattern behaves as it always did.
+- **`check-feeds` prints every candidate** and what it found there, so a feed that is not read says
+  why:
+
+  ```
+  ebpf: looked in 9 place(s) (default(candidate 7/9))
+    /var/log/ebpfm     found (14 files)
+    /scratch/ebpfm     permission denied (you: alice; folder root:ebpfm 0750)
+    /root/.ebpfm/ebpf  missing
+  ```
+
+  A folder this account may not read is `denied` and is not read (the service's account needs the
+  collector's group, `EBPFM_GROUP`); a pattern that matches nothing is `missing`, and a folder
+  with no day-file yet `empty`. `check-feeds` never stops on an unreadable folder. `/api/feeds`
+  carries the same list as each feed's `candidates`: `[{"path", "state": "found" | "empty" |
+  "missing" | "denied", "note"}]`, a pattern's matches each a candidate of their own.
 
 Under a root, a day is a directory of one file per host and stream:
 `<YYYY-MM-DD>/<host>.exits.jsonl[.gz]` and `<host>.snapshot.jsonl[.gz]` for the eBPF tier,
@@ -164,8 +281,9 @@ The eBPF tier's entry in `/api/feeds` carries `history`: `enabled`, `state` (`of
 startup, `converted`, `lookups` (sealed files a reader asked for, answered from a `replica` or read
 as `jsonl`), `held` (replicas held between reads, and their indexes' `bytes`), `swept` (a killed
 conversion's leftovers, removed), `read_failures`, `progress` (`todo`, `done`, `failed`, `records`,
-`bytes_in`, `elapsed_s`) and the latest `errors`. `--check-feeds` says how many sealed files have a
-current replica and how much is left to convert.
+`bytes_in`, `elapsed_s`) and the latest `errors`. `check-feeds` says how many sealed files have a
+current replica and how much is left to convert. A root given as a glob pattern is matched again
+each round, so its new folders are converted too.
 
 A binary `.ebr` day-file under a root is skipped. To read an EBR-only capture, convert it with the
 last `ebr.py`: `git show 2f16731:collector/lib/ebr.py > ebr.py && python3 ebr.py cat x.ebr > x.jsonl`.
@@ -174,8 +292,8 @@ last `ebr.py`: `git show 2f16731:collector/lib/ebr.py > ebr.py && python3 ebr.py
 
 ```bash
 cd dashboard && uv sync --frozen && (cd web && npm ci && npm run build)
-uv run --frozen python -m rc_dashboard demo   # http://127.0.0.1:8080
-./run-demo.sh                                 # the same with hot reload, on :8087
+uv run --frozen rc-dashboard demo   # http://127.0.0.1:8080
+./run-demo.sh                       # the same with hot reload, on :8087
 ```
 
 For showing the dashboard where there is no cluster. `demo` writes a few days of collector records
@@ -199,7 +317,7 @@ no real deployment's saved builds are evicted), `clock.as_of` (the wall clock),
 `panels.preprocess` and `panels.preprocess_wait_s` (every window built before the port opens),
 `site.name` and `site.description`, `server.rdns.enabled` (off: no DNS is asked about made-up
 addresses) and `server.auth.open` (no password unless one is set). Each reads `demo` as its origin
-in `--print-config`. `--ebpf-root`, `--node-root` and `--as-of` are refused.
+in `print-config`. `--ebpf-root`, `--node-root` and `--as-of` are refused.
 
 | flag | env | default | |
 |---|---|---|---|
@@ -221,8 +339,8 @@ history, Ask LLM off, the people's working day in New York time), which
 
 ## A capture from another cluster
 
-A feed collected elsewhere and copied here differs from a live one in two ways, and the service
-handles both without changing a record.
+A feed collected elsewhere and copied here differs from a live one in three ways, and the service
+handles each without changing a record.
 
 **It is compressed.** A `<host>.<stream>.jsonl.gz` day-file is read in place (`gz.py`), and once
 converted its replica answers the selective reads. Every reader addresses a file by byte offset,
@@ -232,6 +350,10 @@ uncompressed stream, so a byte range or a saved build means the same thing in ei
 boslogin06's 2026-10-08..09 (330 MB -> 7.9 GB) indexing takes ~6 s and holds ~32 MB, in the
 process, so each restart indexes again. A plain file wins over its `.gz` copy. A date dir holding no
 day-file is not counted as a day (a copied capture makes its dirs ahead of its files).
+
+**It is in its cluster's time zone.** The page shows every time in the service's zone
+([The time zone](#the-time-zone)): serve the capture with `TZ` set to its cluster's zone, so its
+hours of the day and its local days read as they did there.
 
 **It is old.** On the wall clock every window would end in days of nothing. `clock.as_of`
 (`RC_DASH_AS_OF`, `--as-of`) pins the service's present: `auto` is one second after the newest
@@ -262,6 +384,78 @@ A probe the kernel cannot load (`tcp_accept` without BTF on 4.18) is listed as a
 not change the verdict, since it holds until the kernel changes. A collector writes its lost-event
 count only when it stops, so the run in progress reads "reported when it stops", never 0. Below the
 collectors, an optional data source nobody set up reads "not set up", not red.
+
+Each run in `/api/collectors` (`runs`, and `running`) carries `collector_version`, what its `meta`
+record says wrote it, or null from a collector that does not say. Each host row carries
+`transport`, the copy that brings its files here, when `status.transport_files` names its state
+([below](#is-the-collection-working-status)): a node whose copy fails reads "copy FAILED: ..."
+rather than "collector silent", and a node whose copy never brought a file still has a row
+(verdict `unknown`, reason "no day-file of this host here").
+
+## Is the collection working? (`status`)
+
+`/api/health`'s `ok` is about the service's own loops, and stays true with every collector silent.
+`rc-dashboard status` answers the other question for a monitor, from the same config `serve`
+reads, with no service running (`status.py`): per host, the collector's verdict (above), the age of
+its newest record in each tier, and the state of the copy that brings its files here; then one
+level, and the exit code a check reads.
+
+```bash
+uv run --frozen rc-dashboard status                 # a table; exit 0 ok, 1 warn, 2 crit
+uv run --frozen rc-dashboard status --json --stale 30m
+```
+
+| level | when |
+|---|---|
+| `crit` (exit 2) | the required eBPF feed is missing or empty; a collector is `silent` or `stopped`; a copy has had no good pass for `stale_s`; a host's newest eBPF record is older than `stale_s` while its verdict says nothing |
+| `warn` (exit 1) | a collector is `degraded`, or its files hold no heartbeat (`unknown`); a copy failed its last pass but worked within `stale_s`; a host's newest node-tier record is older than `stale_s`; a transport file cannot be read |
+| `ok` (exit 0) | none of these |
+
+The JSON (`--json`, and `GET /api/status`) is a contract other tools code against
+(`hpc/deploy/check-local.sh`):
+
+```json
+{"level": "ok|warn|crit", "why": ["<host>: collector silent: no heartbeat for 2.0 h ..."],
+ "hosts": [{"host": "login01", "verdict": "ok|degraded|stopped|silent|unknown",
+            "heartbeat_age_s": 42.0,
+            "newest_age_s": {"ebpf": 12.5, "ebpf_node": 210.0},
+            "transport": {"kind": "rsync|stream", "ok": true, "last_ok_age_s": 30.1,
+                          "error": null}}]}
+```
+
+A null is a value nobody measured, never 0: no heartbeat in what was read, no file of that tier for
+the host, a copy that never worked; `transport` is null for a host no transport file names. The
+command reads each host's heartbeat stream (`<host>.snapshot.jsonl`) from its newest end until it
+has the newest run's start and the run before it, at most 64 MB and the newest 8 dated folders (or
+`feeds.ebpf.days`), so a run that started or ended before that is not seen; the service answers from
+what it has read. A pinned clock (`clock.as_of`) is the present for a capture's ages.
+
+| setting | env | default | |
+|---|---|---|---|
+| `status.transport_files` | `RC_DASH_TRANSPORT_FILES` (comma-separated) | `[]` | the state files of what copies the collectors' files here, as paths or glob patterns |
+| `status.stale_s` | `RC_DASH_STATUS_STALE_S` | `900` | how old a host's newest record, or its copy's last good pass, may be; `--stale` (`300`, `90s`, `15m`, `2h`, `1d`) and `/api/status?stale=` override it |
+
+A transport file is read in the format its writer has:
+
+- **rsync**, [`deploy/fleet/pull.py`](../deploy/fleet/pull.py)'s `<mirror>/.state/<node>.json`
+  (`RC_DASH_TRANSPORT_FILES='<mirror>/.state/*.json'`): `ok` and `error` of its last pass,
+  `ok_epoch` of its last good one (`last_ok_age_s`), and `file_hosts`, the host names the node's
+  day-files carry. A pass marked ok but older than `stale_s` is not ok: pull.py may have stopped.
+- **stream**, [`hpc/fleet`](../hpc/fleet/README.md)'s receiver's `<base>/state/status.json`, one
+  entry per source host: `connected`, `lag_s` since its last frame and `down_since` give
+  `last_ok_age_s`, `last_error` the error; a status file older than `stale_s` (the receiver writes
+  it every 10 s) or a receiver paused for disk space is not ok.
+
+A transport answers for a host by name (its node name or a `file_hosts` name), else by where the
+host's files are (`<mirror>/{ebpf,node}/<node>/`, `<base>/mirror/<host>/`). Errors are masked
+(`redact.py`).
+
+`GET /metrics` serves the same numbers in Prometheus' text format, behind the same sign-in (a
+scraper sends the password as HTTP Basic auth, `curl --netrc-file`): `rc_dashboard_status_level`
+(0, 1, 2), `rc_dashboard_build_info{version,commit}`, `rc_dashboard_collector_verdict{host,verdict}`
+(1 for the host's verdict, 0 for the others), `rc_dashboard_heartbeat_age_seconds{host}`,
+`rc_dashboard_newest_record_age_seconds{host,tier}`, `rc_dashboard_transport_ok{host,kind}` and
+`rc_dashboard_transport_last_ok_age_seconds{host,kind}`. A null is a sample left out, never 0.
 
 ## The time window
 
@@ -426,9 +620,11 @@ window on a busy node can take ~1 GB.
 
 | endpoint | purpose |
 |---|---|
-| `GET /api/config` | resolved config, `_origin` per key |
-| `GET /api/feeds` | per feed: configured vs resolved paths, status, lag, rows, notice, backfill; the eBPF tier's `history` ([History in Parquet](#history-in-parquet)) |
-| `GET /api/collectors` | per host, whether its collector is OK: verdict and reasons, heartbeat age, every run and how it ended, probes that could not load ([Is each collector OK?](#is-each-collector-ok)) |
+| `GET /api/config` | resolved config, `_origin` per key; `_meta` adds `version` (`{"_value": {"version": "0.1.0", "commit": "abc1234" or null}, "_origin": "build", "git" or "package"}`), `tz` (`{"name", "abbrev", "utc_offset_s"}`, [The time zone](#the-time-zone)) and `host` (the dashboard host's short name), each with `_origin` `runtime` but the version |
+| `GET /api/feeds` | per feed: configured vs resolved paths, every candidate and what was found there (`candidates`, [The two feeds](#the-two-feeds)), status, lag, rows, notice, backfill; the eBPF tier's `history` ([History in Parquet](#history-in-parquet)) |
+| `GET /api/collectors` | per host, whether its collector is OK: verdict and reasons, heartbeat age, every run and how it ended (each with its `collector_version`), probes that could not load, and the copy bringing its files (`transport`) ([Is each collector OK?](#is-each-collector-ok)) |
+| `GET /api/status?stale=` | is the collection working: per host and rolled up into ok, warn or crit, what `rc-dashboard status --json` prints ([status](#is-the-collection-working-status)) |
+| `GET /metrics?stale=` | the same, in Prometheus' text format |
 | `GET /api/windows` | offered windows, the retention ceiling, and every held window's build state |
 | `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |
 | `GET /api/live?window_min=` | rolling window: per-minute bins, hosts, the user roster, event tail, submits |
@@ -611,7 +807,7 @@ shows real names. The header says *anonymized* while it is on.
   `anonymize.salt` (16 bytes or more, or the service stops), or else `<cache.dir>/anonymize.salt`,
   generated once with mode 0600. An account has the same alias in every tab, window and restart, and
   without the salt neither a list of candidate names nor sending them to the service reverses one.
-  Changing the salt reshuffles every alias. `/api/config` and `--print-config` never show it. A salt
+  Changing the salt reshuffles every alias. `/api/config` and `print-config` never show it. A salt
   file that is empty, not hex or too short stops the service: delete it, and the next start makes a
   new salt, with new aliases.
 - **What counts as a name.** Every account the live roster holds or a `user` field names, and the
@@ -648,27 +844,43 @@ parameter of every route and finds neither that name's alias nor any of that acc
 
 ## Password
 
-`server.auth.password_hash` (`RC_DASH_PASSWORD_HASH`) puts the whole service behind one password:
-the page, its assets, every `/api` route (Ask LLM included) and the websocket. It is empty by
-default, and then `serve` refuses to start, because on a shared host "bound to 127.0.0.1" means
-"readable by every local user". `server.auth.open` (`--open`, `RC_DASH_OPEN=1`) serves without a
-password anyway, to anyone who reaches the port. A [demo](#demo-mode) is open unless a password is
-set.
+One password puts the whole service behind it: the page, its assets, every `/api` route (Ask LLM
+included), `/metrics` and the websocket. The service keeps only its salted scrypt hash, **in a hash
+file**, `server.auth.password_hash_file` (`RC_DASH_PASSWORD_HASH_FILE`), or given outright as
+`server.auth.password_hash` (`RC_DASH_PASSWORD_HASH`); both set stops the service, saying why. With
+neither, `serve` refuses to start, because on a shared host "bound to 127.0.0.1" means "readable by
+every local user". `server.auth.open` (`--open`, `RC_DASH_OPEN=1`) serves without a password
+anyway, to anyone who reaches the port. A [demo](#demo-mode) is open unless a password is set.
 
 ```bash
-cd dashboard && .venv/bin/python -m rc_dashboard new-password --netrc-host dash.example.org
+uv run --frozen rc-dashboard new-password --install ~/.config/rc-dashboard/password.hash
+sudo rc-dashboard new-password --install /etc/rc-dashboard/password.hash --dir /root/.config/rc-dashboard
 ```
 
 generates a 16-character password with `secrets` (both cases, digits and 18 symbols, at least one of
-each: about 101 bits), writes it to `~/.config/rc-dashboard/password` with a netrc for curl beside
-it, both mode 0600, and prints only the salted scrypt hash. Put the hash in `dashboard.config.json`,
-then restart:
+each: about 101 bits), writes it to `--dir` (`~/.config/rc-dashboard`) as `password`, with a netrc
+for curl beside it, both mode 0600, and writes the hash to the hash file `--install` names: mode
+0640, so the service's group may read it, replaced in one step, its owner and group kept, folders
+on the way made. Without `--install` it prints the hash. Name the hash file in the config, once:
 
-```json
-"server": { "auth": { "password_hash": "scrypt$32768$8$1$..." } }
+```toml
+[server.auth]
+password_hash_file = "/etc/rc-dashboard/password.hash"
 ```
 
+- **A new password needs no restart.** The service reads the hash file again when it changes (its
+  inode, mtime or size): checked on every sign-in attempt (the form, and each request a script
+  signs with Basic auth), at most once a second on any other request, and on `SIGHUP`, which also
+  says on stderr what came of it. A new hash makes a new cookie key, so everyone signs in again. A file
+  that cannot be read or holds no hash leaves the password as it was, and says why on stderr, until
+  it is fixed; at start, it stops the service. The file holds the hash on one line; quotes around
+  it, blank lines and `#` lines are passed over. `new-password` refuses to replace a password or a
+  hash file without `--force`.
+- **The hash itself** in the config (`"server": {"auth": {"password_hash": "scrypt$32768$8$1$..."}}`)
+  or in `RC_DASH_PASSWORD_HASH` works as it always did, and a change to it needs a restart.
+
 - **Browsers** get a sign-in form, with a 401, at whatever URL they asked for, and land back on it.
+  The form names the deployment: `site.name`, or the dashboard's host when that is empty.
   The session is a cookie that lasts `server.auth.session_days` (30): HttpOnly, SameSite=Lax, Secure
   when the request came over https (a proxy such as cloudflared reports this in
   `X-Forwarded-Proto`), and named `rc_dash_<port>`, so two instances on one host keep separate
@@ -679,11 +891,11 @@ then restart:
 - **What the service keeps.** Only the hash. A password is checked with scrypt, one check at a time,
   in constant time; a wrong one waits an extra second. The cookie holds an expiry and its HMAC, keyed
   from `<cache.dir>/session.key` (created once, mode 0600) and the hash, so a new password or a
-  deleted key file signs everyone out. `/api/config` and `--print-config` show the hash as
-  `(hidden)`.
-- **A restart, not a rebuild.** `server` is in neither saved-state fingerprint, so setting, changing
-  or clearing the password needs only a restart. A malformed hash stops the service at startup
-  instead of letting it serve without a password.
+  deleted key file signs everyone out. `/api/config` and `print-config` show the hash as
+  `(hidden)`, and the hash file's path as it is.
+- **Never a rebuild.** `server` is in neither saved-state fingerprint, so setting, changing or
+  clearing the password rebuilds nothing. A malformed hash, or a hash file that cannot be read,
+  stops the service at startup instead of letting it serve without a password.
 
 **Who may connect** (`guard.py`), with or without a password:
 
@@ -705,6 +917,38 @@ then restart:
 `tests/test_auth.py` reads every route, an asset and the websocket with and without the password;
 `tests/test_guard.py` sends the handshakes a browser, a script and Vite's proxy send.
 
+## Backup and restore
+
+```bash
+uv run --frozen rc-dashboard backup --to /backups/rc-dashboard-$(date +%F).tar
+uv run --frozen rc-dashboard restore --from /backups/rc-dashboard-2026-11-23.tar   # --force to replace
+```
+
+`backup` copies into one tar (0600, written beside its name and renamed into place) the state that
+cannot be rebuilt (`backup.py`):
+
+| in the tar | from | |
+|---|---|---|
+| `rollup.sqlite` | `rollup.dir`, else `<cache.dir>/rollup/` | the Trend tab's table, the only copy of a day whose day-files are gone; copied with SQLite's online backup, so a running service is fine |
+| `anonymize.salt` | `<cache.dir>/anonymize.salt` | a new salt gives every name a new alias (with `anonymize.salt` set, the config holds it) |
+| `session.key` | `<cache.dir>/session.key` | a new key signs everyone out |
+| `config/<name>` | the config file the service reads | |
+| `password.hash` | `server.auth.password_hash_file` | |
+| `ask-done.json` | `<cache.dir>/ask/done.json` | Ask's suggestions marked done |
+
+and `MANIFEST.json`: where each was, its mode, size and SHA-256. **Deliberately left out**, as rebuilt
+from the collector's day-files or by asking again: the saved window builds, hours and panels
+(`<cache.dir>/windows`, `hours`, `payloads`), the history store's Parquet (`history.dir`) and the
+reverse-DNS names (`rdns.json`).
+
+`restore` checks every file against the manifest, puts the config file back first (to `--config`
+or `RC_DASH_CONFIG`, else where it was), then reads that config, with this environment's variables
+and flags, for where the rest go: a backup restores onto another host's layout. A file already there
+and different, and any roll-up table already there, is replaced only with `--force`, and nothing is
+written until every target is known to be free. The table goes back through SQLite's own backup, so
+its write-ahead log is taken care of. Stop the service first: it holds the table open, and keeps the
+salt and the key it read at start.
+
 ## Ask LLM
 
 The Ask LLM tab, and the *ask* button on a panel or a session, run an agent CLI on this host
@@ -718,7 +962,8 @@ them) and that account's home are within its reach, and its question is text a r
 the service as a dedicated account that holds no other credentials, not as a person's. So:
 
 - **Off by default.** `ask.enabled` (`RC_DASH_ASK=1`) turns it on.
-- **Never without a password.** While `server.auth.password_hash` is empty, Ask is refused even when
+- **Never without a password.** While the service has none (neither `server.auth.password_hash_file`
+  nor `server.auth.password_hash`), Ask is refused even when
   turned on: `GET /api/ask` says why, and a question gets a 400 and reads nothing.
 - **A short environment.** The agent gets only what a program needs to run, find its login and reach
   its provider (`ask.AGENT_ENV`, `ask.AGENT_ENV_PREFIXES`): `PATH`, `HOME`, `USER`, `LOGNAME`,
@@ -743,7 +988,7 @@ the service as a dedicated account that holds no other credentials, not as a per
 
 `ask.agent` picks a preset (`codex`); `ask.command` gives the argv outright, with `{workdir}`,
 `{answer_file}` and `{model}` filled in and the prompt on stdin. A command, or the instructions in
-`ask.system_prompt`, may hold a provider's key, so `/api/config` and `--print-config` show both as
+`ask.system_prompt`, may hold a provider's key, so `/api/config` and `print-config` show both as
 `(hidden)` when set, and `GET /api/ask` names only the program a command runs (`claude` for
 `env ANTHROPIC_API_KEY=... claude -p`). `tests/test_ask.py` checks the refusals, the environment and
 the directory.
@@ -855,7 +1100,7 @@ everyone: neither the window nor the user and agent-type filter narrows it.
 backfill reads (a week). Days still on disk before that are filled with
 
 ```bash
-uv run python -m rc_dashboard rollup --rollup-days 365     # --force reads again days it holds whole
+uv run --frozen rc-dashboard rollup --rollup-days 365     # --force reads again days it holds whole
 ```
 
 which reads every date dir near a day the table lacks, oldest first, through the service's own
@@ -1198,9 +1443,13 @@ GPU-hours count only jobs with GPUs and a time limit on the command line, as the
 
 | path | role |
 |---|---|
-| `rc_dashboard/__main__.py` | the CLI: `serve` (the default), `demo`, `check-feeds`, `print-config` (also as `--check-feeds`, `--print-config`) and `new-password` (`--force` to replace a password, `--dir`, `--netrc-host`; [Password](#password)) |
-| `rc_dashboard/config.py` | per-key precedence, candidate probing, `--print-config` |
-| `rc_dashboard/feeds.py` | resolve and report every feed |
+| `rc_dashboard/__main__.py` | the CLI: a parser per command, each with its help and examples ([Run it](#run-it)); a flag before or after the command, `--check-feeds` and `--print-config` as flags, and no command for `serve` |
+| `rc_dashboard/config.py` | per-key precedence, TOML or JSON, relative paths under the repository, candidate probing, glob roots, `print-config` and its `--reference` |
+| `rc_dashboard/feeds.py` | resolve and report every feed: each candidate probed (found, empty, missing, denied), patterns matched |
+| `rc_dashboard/status.py` | is the collection working: `rc-dashboard status`, `/api/status`, `/metrics`, and the transport files ([status](#is-the-collection-working-status)) |
+| `rc_dashboard/init_cmd.py` | `rc-dashboard init` ([First run](#first-run-rc-dashboard-init)) |
+| `rc_dashboard/backup.py` | `rc-dashboard backup` and `restore` ([Backup and restore](#backup-and-restore)) |
+| `rc_dashboard/about.py` | the version and commit, the service's time zone, the host's name |
 | `rc_dashboard/feedfile.py` | the collector's day-files: listing them (a plain file before its `.gz`), the time searches (`seek_to_epoch`, `end_at`), where the last complete line ends, the head digest |
 | `rc_dashboard/fastjson.py` | the one JSON parser for every line read off the collector's files |
 | `rc_dashboard/history.py` | the history store: every sealed day-file kept as Parquet, converted in the background ([History in Parquet](#history-in-parquet)) |
@@ -1234,7 +1483,7 @@ GPU-hours count only jobs with GPUs and a time limit on the command line, as the
 | `rc_dashboard/endpoints.py` | the far ends of the network bytes, named and ranked when the panel is read ([Network endpoints](#network-endpoints)) |
 | `rc_dashboard/export.py` | the shared filter grammar, the windowed re-scan |
 | `rc_dashboard/app.py` | FastAPI: REST, WebSocket, static mount |
-| `rc_dashboard/auth.py` | sign-in: one password, kept as a salted scrypt hash ([Password](#password)) |
+| `rc_dashboard/auth.py` | sign-in: one password, kept as a salted scrypt hash, in a hash file read again when it changes ([Password](#password)) |
 | `rc_dashboard/guard.py` | who may talk to the service at all: a websocket's Origin, and every request's Host while it has no password |
 | `rc_dashboard/redact.py` | credentials masked in command lines before anything is served |
 | `rc_dashboard/anonymize.py` | stable aliases for the names in everything the service sends out ([Anonymized names](#anonymized-names)) |

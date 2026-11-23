@@ -170,9 +170,8 @@ class HistoryStore:
         self.dir = s["dir"]
         self.workers = s["workers"]
         self.days = s["days"]
-        roots = [r for r in (cfg.get("feeds.%s.roots" % TIER) or []) if r]
-        self.roots = {os.path.abspath(r): os.path.join(self.dir, TIER, root_name(r))
-                      for r in roots}
+        self.cfg = cfg
+        self.roots = self._roots()
         self.state = "off" if not self.enabled else "idle"
         self.note = None
         self.progress = {"todo": 0, "done": 0, "failed": 0, "records": 0, "bytes_in": 0,
@@ -194,6 +193,22 @@ class HistoryStore:
         self._ready = {}                       # source root -> its store root is made
 
     # ------------------------------------------------------------- the roots
+    def _roots(self):
+        """{source root: store root}: every root the feed names outright, and
+        each folder a glob pattern matches now (feeds.resolved_roots), so a
+        node's folder made later is converted without a restart (`discover`
+        asks again each round)."""
+        from .config import is_pattern
+        from .feeds import resolved_roots
+        named = [r for r in (self.cfg.get("feeds.%s.roots" % TIER) or [])
+                 if r and isinstance(r, str) and not is_pattern(r)]
+        out = {}
+        for r in named + resolved_roots(self.cfg, TIER):
+            src = os.path.abspath(r)
+            if src not in out:
+                out[src] = os.path.join(self.dir, TIER, root_name(r))
+        return out
+
     def _ensure_root(self, src):
         """The store root of source root `src` made, with its marker. Refuses one
         that mirrors another source (the marker says so)."""
@@ -327,11 +342,16 @@ class HistoryStore:
         as `(day, path, store root)`; and replicas to drop, as `(store root, day,
         stem)`, whose source is gone or older than the newest `days`."""
         todo, prune = [], []
+        self.roots = self._roots()
         for src in self.roots:
             if not os.path.isdir(src):
                 continue
+            try:
+                dirs = feedfile.dated_dirs(src, 0)
+            except OSError as e:            # a root this account may not read
+                self._root_error(src, e)
+                continue
             out = self._ensure_root(src)
-            dirs = feedfile.dated_dirs(src, 0)
             keep_days = {d for d, _f in dirs[-self.days:]} if self.days else None
             have = set()
             for day, files in dirs:
@@ -357,6 +377,13 @@ class HistoryStore:
                         prune.append((out, dd[4:], name[:-5]))
         todo.sort(reverse=True)
         return [(d, p, o) for _s, d, p, o in todo], prune
+
+    def _root_error(self, src, e):
+        """A source root that could not be listed, kept with the errors once."""
+        msg = "source root unreadable: %s" % (getattr(e, "strerror", None) or e)
+        with self._lock:
+            if not any(x.get("file") == src and x.get("error") == msg for x in self.errors):
+                self.errors.append({"file": src, "error": msg, "at": time.time()})
 
     def run_once(self):
         """Discover, prune, convert. Returns how many files were converted."""
@@ -485,10 +512,15 @@ def describe(cfg):
     st = HistoryStore(cfg)
     sealed = current = 0
     todo_bytes = 0
+    unread = []
     for src, out in st.roots.items():
         if not os.path.isdir(src):
             continue
-        dirs = feedfile.dated_dirs(src, 0)
+        try:
+            dirs = feedfile.dated_dirs(src, 0)
+        except OSError as e:                # a root this account may not read
+            unread.append("%s (%s)" % (src, getattr(e, "strerror", None) or e))
+            continue
         if st.days:
             dirs = dirs[-st.days:]
         for day, files in dirs:
@@ -503,10 +535,12 @@ def describe(cfg):
                         todo_bytes += os.path.getsize(p)
                     except OSError:
                         pass
-    return ["  history %-9s on: %d sealed day-file(s), %d with a current replica, %d to "
-            "convert (%.1f MB compressed); store %s" % (
-                TIER, sealed, current, sealed - current, todo_bytes / 1e6,
-                os.path.join(s["dir"], TIER))]
+    lines = ["  history %-9s on: %d sealed day-file(s), %d with a current replica, %d to "
+             "convert (%.1f MB compressed); store %s" % (
+                 TIER, sealed, current, sealed - current, todo_bytes / 1e6,
+                 os.path.join(s["dir"], TIER))]
+    lines += ["  history %-9s cannot list %s" % (TIER, u) for u in unread]
+    return lines
 
 
 def _try(fn, *args):

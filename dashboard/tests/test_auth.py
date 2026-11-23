@@ -7,6 +7,7 @@ every API route, and the websocket, with and without the password.
 
     cd dashboard && .venv/bin/python -m unittest tests.test_auth -q
 """
+import asyncio
 import base64
 import http.client
 import io
@@ -217,7 +218,8 @@ class ConfigKeys(unittest.TestCase):
         # An app built with no hash has no gate; `serve` refuses to start so
         # unless `open` is set (test_serve.py).
         self.assertEqual(configmod.defaults()["server"]["auth"],
-                         {"password_hash": "", "session_days": 30, "open": False})
+                         {"password_hash": "", "password_hash_file": "", "session_days": 30,
+                          "open": False})
         self.assertIsNone(auth.from_config(self.cfg()))
 
     def test_env_sets_the_hash(self):
@@ -537,3 +539,156 @@ class Open(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HashFile(unittest.TestCase):
+    """The hash in a file of its own, read again when it changes."""
+
+    def setUp(self):
+        self.tmp = tmpdir(self)
+        self.path = os.path.join(self.tmp, "etc", "password.hash")
+        self.stored = auth.hash_password("pw", **FAST)
+        auth.write_hash_file(self.path, self.stored)
+
+    def cfg(self, **auth_keys):
+        tree = configmod.defaults()
+        tree["cache"]["dir"] = os.path.join(self.tmp, "cache")
+        tree["server"]["auth"].update(auth_keys)
+        return configmod.Config(tree, {}, None)
+
+    def test_the_file_written_and_read(self):
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o640)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.dirname(self.path)).st_mode) & 0o027, 0)
+        self.assertEqual(auth.read_hash_file(self.path), self.stored)
+        for text in ('"%s"\n', "'%s'", "# made by new-password\n\n  %s  \n\n"):
+            with open(self.path, "w") as fh:
+                fh.write(text % self.stored)
+            self.assertEqual(auth.read_hash_file(self.path), self.stored)
+        for text, why in (("", "holds no hash"), ("%s\n%s\n", "on one line"),
+                          ("hunter2", "not a scrypt")):
+            with open(self.path, "w") as fh:
+                fh.write(text % ((self.stored,) * text.count("%s")))
+            with self.assertRaises(ValueError) as cm:
+                auth.read_hash_file(self.path)
+            self.assertIn(why, str(cm.exception))
+
+    def test_the_gate_takes_it(self):
+        g = auth.from_config(self.cfg(password_hash_file=self.path))
+        self.assertEqual((g.stored, g.hash_file), (self.stored, self.path))
+        self.assertTrue(auth.has_password(self.cfg(password_hash_file=self.path)))
+
+    def test_missing_or_malformed_stops_the_service(self):
+        with self.assertRaises(SystemExit) as cm:
+            auth.from_config(self.cfg(password_hash_file=os.path.join(self.tmp, "none")))
+        self.assertIn("new-password --install", str(cm.exception))
+        with open(self.path, "w") as fh:
+            fh.write("hunter2\n")
+        with self.assertRaises(SystemExit) as cm:
+            auth.from_config(self.cfg(password_hash_file=self.path))
+        self.assertIn("password_hash_file", str(cm.exception))
+
+    def test_both_set_is_refused_saying_why(self):
+        with self.assertRaises(SystemExit) as cm:
+            auth.from_config(self.cfg(password_hash_file=self.path, password_hash=self.stored))
+        msg = str(cm.exception)
+        self.assertIn("are both set", msg)
+        self.assertIn("RC_DASH_PASSWORD_HASH_FILE", msg)
+
+    def test_a_changed_file_is_a_new_key_and_a_broken_one_keeps_the_old(self):
+        g = auth.from_config(self.cfg(password_hash_file=self.path))
+        tok = g.token()
+        key = g.key
+        self.assertFalse(g.refresh(throttle=False))          # unchanged
+        new = auth.hash_password("pw2", **FAST)
+        auth.write_hash_file(self.path, new)
+        self.assertFalse(g.refresh())                        # throttled: a second has not passed
+        self.assertTrue(g.refresh(throttle=False))
+        self.assertEqual((g.stored, g.reloads), (new, 1))
+        self.assertNotEqual(g.key, key)
+        self.assertFalse(g.valid(tok))                       # everyone signs in again
+        err = io.StringIO()
+        with open(self.path, "w") as fh:
+            fh.write("garbage\n")
+        with redirect_stderr(err):
+            self.assertFalse(g.refresh(throttle=False))
+            self.assertFalse(g.reload())                     # SIGHUP: the same
+        self.assertEqual(g.stored, new)
+        self.assertEqual(err.getvalue().count("stays as it was"), 1)    # said once
+        os.unlink(self.path)
+        with redirect_stderr(io.StringIO()):
+            self.assertFalse(g.reload())
+        self.assertIn("No such file", g.reload_error)
+        auth.write_hash_file(self.path, self.stored)
+        self.assertTrue(g.reload())
+        self.assertIsNone(g.reload_error)
+
+    def test_a_password_check_looks_at_the_file_first(self):
+        g = auth.from_config(self.cfg(password_hash_file=self.path))
+        g.fail_delay_s = 0
+        auth.write_hash_file(self.path, auth.hash_password("pw2", **FAST))
+        run = asyncio.new_event_loop().run_until_complete
+        self.assertFalse(run(g.check_password("pw")))
+        self.assertTrue(run(g.check_password("pw2")))
+
+
+class NewPasswordInstall(unittest.TestCase):
+    def run_cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(["new-password", *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_install_writes_the_hash_file_and_names_it(self):
+        d = tmpdir(self)
+        hf = os.path.join(d, "etc", "rc", "password.hash")
+        code, out, err = self.run_cli("--dir", os.path.join(d, "pw"), "--install", hf)
+        self.assertEqual(code, 0, err)
+        with open(os.path.join(d, "pw", "password")) as fh:
+            pw = fh.read().strip()
+        self.assertTrue(auth.verify_password(pw, auth.read_hash_file(hf)))
+        self.assertEqual(stat.S_IMODE(os.stat(hf).st_mode), 0o640)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(d, "pw")).st_mode), 0o700)
+        for what in ("server.auth.password_hash_file", "RC_DASH_PASSWORD_HASH_FILE", hf):
+            self.assertIn(what, out)
+        self.assertNotIn(pw, out + err)
+        # a second run replaces neither without --force
+        code, _, err = self.run_cli("--dir", os.path.join(d, "pw"), "--install", hf)
+        self.assertEqual(code, 1)
+        self.assertIn("--force", err)
+        self.assertTrue(auth.verify_password(pw, auth.read_hash_file(hf)))
+        self.assertEqual(self.run_cli("--dir", os.path.join(d, "pw"), "--install", hf,
+                                      "--force")[0], 0)
+        self.assertFalse(auth.verify_password(pw, auth.read_hash_file(hf)))
+
+    def test_a_hash_file_that_cannot_be_written_replaces_no_password(self):
+        d = tmpdir(self)
+        pwdir = os.path.join(d, "pw")
+        self.assertEqual(self.run_cli("--dir", pwdir)[0], 0)
+        with open(os.path.join(pwdir, "password")) as fh:
+            before = fh.read()
+        blocker = os.path.join(d, "file")
+        open(blocker, "w").close()
+        code, _, err = self.run_cli("--dir", pwdir, "--force", "--install",
+                                    os.path.join(blocker, "password.hash"))
+        self.assertEqual(code, 1)
+        with open(os.path.join(pwdir, "password")) as fh:
+            self.assertEqual(fh.read(), before)
+
+    def test_without_install_the_hash_file_is_named_first(self):
+        code, out, _ = self.run_cli("--dir", os.path.join(tmpdir(self), "pw"))
+        self.assertEqual(code, 0)
+        self.assertLess(out.index("password_hash_file"), out.index("server.auth.password_hash "))
+        self.assertIn("RC_DASH_PASSWORD_HASH_FILE", out)
+
+
+class SiteLabel(unittest.TestCase):
+    def test_the_form_names_the_site_or_the_host_never_rc_measurement(self):
+        from rc_dashboard import about
+        tree = configmod.defaults()
+        self.assertEqual(auth.site_label(configmod.Config(tree, {}, None)), about.host())
+        tree["site"]["name"] = "cluster X"
+        self.assertEqual(auth.site_label(configmod.Config(tree, {}, None)), "cluster X")
+        page = auth.login_page("", "/")
+        self.assertNotIn("rc_measurement", page)
+        self.assertIn("<title>Sign in</title>", page)
+        self.assertIn("<title>Sign in · h1</title>", auth.login_page("h1", "/"))

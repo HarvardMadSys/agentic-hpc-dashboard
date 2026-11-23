@@ -5,8 +5,8 @@ keeps it that way: no process is probed, no socket opened, no pid looked up --
 a collector on another cluster, read from a copied capture, is judged exactly
 as one on this host. What the collector writes about itself is enough:
 
-* `meta`, once per start: its pid, kernel, bcc, the probes that loaded, the ones
-  that did not and why, the sysctls they depend on;
+* `meta`, once per start: its pid, kernel, bcc, its version (`collector_version`),
+  the probes that loaded, the ones that did not and why, the sysctls they depend on;
 * `residency_totals`, every `interval_s` (60 s): the heartbeat;
 * `stop`, once per clean exit: why it stopped, how long it ran, and how many
   events the kernel handed it against how many it lost (`perf_lost`).
@@ -152,6 +152,10 @@ class CollectorHealth:
             "lost_by_buffer": lost if isinstance(lost, dict) else None,
             "kernel": m.get("kernel"), "bcc": m.get("bcc"),
             "schema_version": m.get("schema_version") or s.get("schema_version"),
+            # which collector wrote the run, as its `meta` says (null from a
+            # collector that does not say: older than the field, or its start
+            # not in what was read)
+            "collector_version": m.get("collector_version"),
         }
 
     def report(self, files_by_host=None, now=None):

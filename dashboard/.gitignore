@@ -1,6 +1,10 @@
 .cache/
 .state/
 dashboard.config.json
+# what `rc-dashboard init` writes, beside it: a site's own settings
+dashboard.toml
+# the commit a build stamps into the package (about.py); CI writes it, never a checkout
+rc_dashboard/BUILD.json
 /data.json
 .venv/
 __pycache__/

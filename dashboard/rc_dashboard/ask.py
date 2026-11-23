@@ -73,8 +73,17 @@ MAX_QUESTION = 4000
 
 # What `describe` says, and `check` refuses with, while the service has no password.
 NO_PASSWORD = ("this dashboard has no password, and Ask runs only behind one, since the agent "
-               "can read whatever the service's account can read: set server.auth.password_hash "
-               "(`python -m rc_dashboard new-password` makes one)")
+               "can read whatever the service's account can read: set "
+               "server.auth.password_hash_file (`rc-dashboard new-password --install FILE` "
+               "makes one) or server.auth.password_hash")
+
+
+def _has_password(cfg):
+    """A hash in the config or a hash file named (auth.has_password); both set
+    stops the service at start, and is no password here."""
+    stored = str(cfg.get("server.auth.password_hash") or "").strip()
+    path = str(cfg.get("server.auth.password_hash_file") or "").strip()
+    return bool(stored or path) and not (stored and path)
 
 # What of the service's environment the agent is given: what a program needs to
 # run, to find its login, and to reach its provider through the site's proxy --
@@ -970,7 +979,7 @@ def describe(cfg):
     except ValueError as e:
         argv, exe, err = [], None, str(e)
     err = unmasked_refusal(cfg) or err
-    if not str(cfg.get("server.auth.password_hash") or "").strip():
+    if not _has_password(cfg):
         err = NO_PASSWORD
     return {"enabled": bool(cfg.get("ask.enabled", False)),
             "agent": cfg.get("ask.agent", "codex") if not cfg.get("ask.command")

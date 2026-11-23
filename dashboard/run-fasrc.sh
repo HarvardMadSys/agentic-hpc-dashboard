@@ -33,9 +33,16 @@ export RC_DASH_RISK_PROFILE="${RC_DASH_RISK_PROFILE:-risk-profiles/fasrc.json}"
 # Named on every page, so it is never mistaken for the live dev-cluster one (run-dev.sh).
 export RC_DASH_SITE_NAME="${RC_DASH_SITE_NAME:-FAS RC · boslogin06 capture · frozen}"
 # Names go out as they are (user, 2026-10-13). The tunnel serves them only to
-# readers who sign in, once dashboard.config.json sets server.auth.password_hash
+# readers who sign in, once the config names a password hash file
+# (server.auth.password_hash_file) or sets server.auth.password_hash
 # (rc_dashboard/auth.py). RC_DASH_ANONYMIZE=1 aliases every name (anonymize.py).
 export RC_DASH_ANONYMIZE="${RC_DASH_ANONYMIZE:-0}"
+# This site's accounts whose records are dropped (filters.drop_global and
+# filters.drop_agent, none by default): the monitoring operator's, and one
+# account's agent records (period3 agent build skew). Either set empty leaves it
+# to the config file.
+export RC_DASH_DROP_USERS="${RC_DASH_DROP_USERS-juncheng}"
+export RC_DASH_DROP_AGENT_USERS="${RC_DASH_DROP_AGENT_USERS-flamraoui}"
 export RC_DASH_PORT="${RC_DASH_PORT:-8085}"
 # Its own saved window builds: they are keyed on the feed anyway, but both
 # instances sharing one store would evict each other's (panels.cache_keep).

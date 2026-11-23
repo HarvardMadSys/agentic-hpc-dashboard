@@ -1,9 +1,20 @@
 """Sign-in for the whole service: the page, its assets, every /api route, and /ws.
 
 One password, shared by everyone who reads this deployment. There are no
-accounts. The service keeps only a salted scrypt hash of it, at
-`server.auth.password_hash` (or RC_DASH_PASSWORD_HASH). An empty value leaves
-the service open, as it was before this module.
+accounts. The service keeps only a salted scrypt hash of it: in a file of its
+own, `server.auth.password_hash_file` (RC_DASH_PASSWORD_HASH_FILE), or given
+outright as `server.auth.password_hash` (RC_DASH_PASSWORD_HASH); never both.
+With neither, `serve` refuses to start unless told to serve open.
+
+* **The hash file** holds the hash on one line (quotes around it, blank lines
+  and `#` lines are passed over). It is read again when it changes -- checked
+  on every sign-in attempt (the form, and each request with a Basic header), and
+  at most once a second on any other request --
+  and on SIGHUP, so a new password (`rc-dashboard new-password --install FILE`)
+  needs no restart. A changed hash makes a new cookie key, so everyone signs in
+  again. A file that cannot be read, or holds no hash, leaves the hash in use
+  as it is (and says so on stderr) until it is fixed; at start it stops the
+  service, as a malformed hash does.
 
 * **The form.** A reader who has not signed in gets a small form, with a 401,
   at whatever URL they asked for, so a link to a tab still lands on that tab.
@@ -27,9 +38,9 @@ the service open, as it was before this module.
   Basic header that passed once is remembered, so a script's later requests
   cost an HMAC, not a scrypt.
 
-`python -m rc_dashboard new-password` makes a password, writes it and a netrc
-to files only their owner can read, and prints the hash to put in the config.
-Nothing here prints, logs, or sends the password itself.
+`rc-dashboard new-password` makes a password, writes it and a netrc to files only
+their owner can read, and writes the hash to a hash file (`--install`) or prints
+it. Nothing here prints, logs, or sends the password itself.
 """
 import asyncio
 import base64
@@ -40,6 +51,7 @@ import html
 import os
 import secrets
 import string
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -65,6 +77,11 @@ MAX_SESSION_DAYS = 365
 LOGIN, LOGOUT = "/login", "/logout"
 KEY_FILE = "session.key"
 DEFAULT_DIR = "~/.config/rc-dashboard"
+# `rc-dashboard init`'s hash file, beside the password it makes.
+DEFAULT_HASH_FILE = "~/.config/rc-dashboard/password.hash"
+MAX_HASH_FILE = 4096            # more is not a file holding one hash
+HASH_FILE_MODE = 0o640          # the service's group may read it (deploy/)
+CHECK_EVERY_S = 1.0             # how often a request but a sign-in looks at the file
 NO_STORE = {"cache-control": "no-store"}
 PAGE_HEADERS = {"cache-control": "no-store", "x-frame-options": "DENY"}
 
@@ -141,6 +158,49 @@ def wall():
     return time.clock_gettime(time.CLOCK_REALTIME)
 
 
+def read_hash_file(path):
+    """The hash a hash file holds: its one line, without the whitespace or the
+    quotes around it (blank lines and `#` lines passed over). ValueError, saying
+    what is wrong, when it holds no hash, more than one line, or a hash that does
+    not parse; OSError when it cannot be read."""
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        text = fh.read(MAX_HASH_FILE + 1)
+    if len(text) > MAX_HASH_FILE:
+        raise ValueError("%s is over %d bytes; a hash file holds one hash" % (path, MAX_HASH_FILE))
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln and not ln.startswith("#")]
+    if not lines:
+        raise ValueError("%s holds no hash" % path)
+    if len(lines) > 1:
+        raise ValueError("%s holds %d lines; a hash file holds the hash on one line"
+                         % (path, len(lines)))
+    stored = lines[0]
+    if len(stored) >= 2 and stored[0] == stored[-1] and stored[0] in "\"'":
+        stored = stored[1:-1].strip()
+    try:
+        parse_hash(stored)
+    except ValueError as e:
+        raise ValueError("%s: %s" % (path, e))
+    return stored
+
+
+def _file_id(path):
+    """What says a file was replaced or changed: its inode, mtime and size."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def _say(msg):
+    try:
+        sys.stderr.write("sign-in: %s\n" % msg)
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
 def load_session_key(cache_dir):
     """32 random bytes, kept as hex in <cache_dir>/session.key and made once
     with mode 0600. Deleting the file signs everyone out."""
@@ -197,21 +257,79 @@ def safe_next(raw):
 # --------------------------------------------------------------- the gate
 class Gate:
     """Who may come in: the password check, the session cookie, and the Basic
-    header for scripts."""
+    header for scripts. With `hash_file`, the hash is that file's, read again
+    when it changes (`refresh`, `reload`)."""
 
-    def __init__(self, stored, key, cookie_name, lifetime_s, now=None, fail_delay_s=1.0):
+    def __init__(self, stored, key, cookie_name, lifetime_s, now=None, fail_delay_s=1.0,
+                 hash_file=None, check_every_s=CHECK_EVERY_S):
         parse_hash(stored)
-        self.stored = stored
-        # Per deployment and per password: a cookie made under another key
-        # file or another hash is not valid here.
-        self.key = hmac.new(key, b"rc-dashboard session\0" + stored.encode(),
-                            hashlib.sha256).digest()
+        self._session_key = key
         self.cookie_name = cookie_name
         self.lifetime_s = int(lifetime_s)
         self.now = now or wall
         self.fail_delay_s = fail_delay_s
-        self._passed = set()            # Basic headers that passed once, as HMACs
+        self.hash_file = hash_file
+        self.check_every_s = check_every_s
+        self._file = _file_id(hash_file) if hash_file else None
+        self._checked = time.monotonic()
+        self.reloads = 0                # times a changed hash was taken up
+        self.reload_error = None        # why the file could not be read, last time
         self._lock = self._loop = None
+        self._use(stored)
+
+    def _use(self, stored):
+        self.stored = stored
+        # Per deployment and per password: a cookie made under another key
+        # file or another hash is not valid here.
+        self.key = hmac.new(self._session_key, b"rc-dashboard session\0" + stored.encode(),
+                            hashlib.sha256).digest()
+        self._passed = set()            # Basic headers that passed once, as HMACs
+
+    # -- the hash file
+    def refresh(self, throttle=True):
+        """Read the hash file again if it changed since it was read (by its
+        inode, mtime and size): at most once every `check_every_s` with
+        `throttle`, else now. Returns whether the hash changed."""
+        if not self.hash_file:
+            return False
+        now = time.monotonic()
+        if throttle and now - self._checked < self.check_every_s:
+            return False
+        self._checked = now
+        if _file_id(self.hash_file) == self._file:
+            return False
+        return self.reload()
+
+    def reload(self):
+        """Read the hash file now (SIGHUP, or a change `refresh` saw). A new
+        hash makes a new cookie key, so everyone signs in again. A file that
+        cannot be read, or holds no hash, leaves the hash as it is, says why on
+        stderr (once per reason), and is tried again at the next look. Returns
+        whether the hash changed."""
+        if not self.hash_file:
+            return False
+        ident = _file_id(self.hash_file)
+        try:
+            stored = read_hash_file(self.hash_file)
+        except OSError as e:
+            why = "%s: %s" % (self.hash_file, e.strerror or e)
+        except ValueError as e:
+            why = str(e)
+        else:
+            why = None
+        if why is not None:
+            if why != self.reload_error:
+                _say("the hash file could not be read, so the password stays as it was: %s"
+                     % why)
+            self.reload_error = why
+            return False
+        self._file, self.reload_error = ident, None
+        if stored == self.stored:
+            return False
+        self._use(stored)
+        self.reloads += 1
+        _say("a new password hash from %s: everyone signs in again" % self.hash_file)
+        return True
 
     # -- the cookie
     def _mac(self, exp):
@@ -255,7 +373,9 @@ class Gate:
 
     async def check_password(self, password):
         """scrypt, one check at a time and off the event loop. A wrong password
-        waits `fail_delay_s` more, so guessing is slow as well as hopeless."""
+        waits `fail_delay_s` more, so guessing is slow as well as hopeless. The
+        hash file is looked at first, every time."""
+        self.refresh(throttle=False)
         ok = False
         if password and len(password) <= MAX_PASSWORD:
             async with self._lock_here():
@@ -265,7 +385,9 @@ class Gate:
         return ok
 
     async def check_basic(self, value):
-        """`Authorization: Basic <value>`, with the password after any user name."""
+        """`Authorization: Basic <value>`, with the password after any user name.
+        Each is a sign-in, so the hash file is looked at first, every time."""
+        self.refresh(throttle=False)
         seen = hmac.new(self.key, value.encode("latin-1", "replace"), hashlib.sha256).digest()
         if seen in self._passed:
             return True
@@ -283,6 +405,7 @@ class Gate:
 
     async def allowed(self, scope):
         """The request carries a valid cookie or the password."""
+        self.refresh()
         cookies, basic = [], None
         for k, v in scope.get("headers") or ():
             if k == b"cookie":
@@ -296,18 +419,52 @@ class Gate:
         return bool(basic) and await self.check_basic(basic)
 
 
+def password_settings(cfg):
+    """`(hash, hash file)` as the config sets them, each "" when unset. Both set
+    stops the service: which password opens the page must not be a guess."""
+    stored = str(cfg.get("server.auth.password_hash") or "").strip()
+    path = str(cfg.get("server.auth.password_hash_file") or "").strip()
+    if stored and path:
+        origin = getattr(cfg, "origin", lambda k: "?")
+        raise SystemExit(
+            "server.auth.password_hash (set by %s) and server.auth.password_hash_file (set by "
+            "%s) are both set, and only one may say which password opens the page. Keep the "
+            "file (RC_DASH_PASSWORD_HASH_FILE), which a new password replaces without a "
+            "restart, and drop the hash (RC_DASH_PASSWORD_HASH); or keep the hash alone."
+            % (origin("server.auth.password_hash"), origin("server.auth.password_hash_file")))
+    return stored, os.path.expanduser(path) if path else ""
+
+
+def has_password(cfg):
+    """Whether the config gives the service a password, inline or in a file."""
+    stored, path = password_settings(cfg)
+    return bool(stored or path)
+
+
 def from_config(cfg):
     """The service's gate, or None when no password is set. A hash that does
-    not parse, or a lifetime that is not a sane number of days, stops the
+    not parse, a hash file that cannot be read or holds none, both a hash and a
+    hash file, or a lifetime that is not a sane number of days, stops the
     service: starting open, or locked for good, would be worse."""
-    stored = str(cfg.get("server.auth.password_hash") or "").strip()
-    if not stored:
+    stored, path = password_settings(cfg)
+    if not stored and not path:
         return None
-    try:
-        parse_hash(stored)
-    except ValueError as e:
-        raise SystemExit("server.auth.password_hash: %s. Make one with "
-                         "`python -m rc_dashboard new-password`." % e)
+    if path:
+        try:
+            stored = read_hash_file(path)
+        except OSError as e:
+            raise SystemExit("server.auth.password_hash_file %s: %s. Make it with "
+                             "`rc-dashboard new-password --install %s`." % (
+                                 path, e.strerror or e, path))
+        except ValueError as e:
+            raise SystemExit("server.auth.password_hash_file: %s. Make it again with "
+                             "`rc-dashboard new-password --install %s --force`." % (e, path))
+    else:
+        try:
+            parse_hash(stored)
+        except ValueError as e:
+            raise SystemExit("server.auth.password_hash: %s. Make one with "
+                             "`rc-dashboard new-password`." % e)
     days = cfg.get("server.auth.session_days", 30)
     try:
         lifetime = int(float(days) * 86400)
@@ -317,7 +474,8 @@ def from_config(cfg):
         raise SystemExit("server.auth.session_days: %r is not a number of days above 0 "
                          "and at most %d" % (days, MAX_SESSION_DAYS))
     return Gate(stored, load_session_key(cfg.get("cache.dir") or "."),
-                cookie_name="rc_dash_%s" % cfg.get("server.port"), lifetime_s=lifetime)
+                cookie_name="rc_dash_%s" % cfg.get("server.port"), lifetime_s=lifetime,
+                hash_file=path or None)
 
 
 # --------------------------------------------------------------- the page
@@ -329,7 +487,7 @@ _PAGE = string.Template("""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Sign in · $site</title>
+<title>$title</title>
 <style>
 :root { color-scheme: light; --crimson: #a51c30; --crimson-ink: #8a1728; --page: #f7f4f4;
   --surface: #fdfbfb; --ink: #1e1e1e; --ink-2: #4e4548; --muted: #8a7d80; --rule: #e4dcdc;
@@ -373,9 +531,17 @@ $error</form>
 """)
 
 
+def site_label(cfg):
+    """What the sign-in form calls this deployment: `site.name`, or this host's
+    name when that is empty."""
+    from . import about
+    return str(cfg.get("site.name") or "").strip() or about.host() or ""
+
+
 def login_page(site, nxt, error=None):
     return _PAGE.substitute(
-        site=html.escape(site or "rc_measurement"),
+        title=html.escape("Sign in · %s" % site if site else "Sign in"),
+        site=html.escape(site or ""),
         next=html.escape(nxt, quote=True),
         error='<p class="err" role="alert">%s</p>\n' % html.escape(error) if error else "")
 
@@ -506,24 +672,86 @@ def _write_private(path, text):
         raise
 
 
-def new_password(directory=None, hosts=(), force=False, length=16):
+def _stage_hash_file(path, stored):
+    """`stored` written, mode 0640, beside hash file `path` under a name of its
+    own, with the replaced file's owner and group where this account may keep
+    them; `_place` renames it into place. Folders made on the way are 0750."""
+    parse_hash(stored)
+    d = os.path.dirname(path)
+    os.makedirs(d, mode=0o750, exist_ok=True)
+    try:
+        before = os.stat(path)
+    except FileNotFoundError:
+        before = None
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(stored + "\n")
+        os.chmod(tmp, HASH_FILE_MODE)
+        if before is not None:
+            try:
+                os.chown(tmp, before.st_uid if os.geteuid() == 0 else -1, before.st_gid)
+            except OSError:
+                pass
+    except BaseException:
+        _unlink(tmp)
+        raise
+    return tmp
+
+
+def _unlink(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def write_hash_file(path, stored):
+    """`stored` to hash file `path`, mode 0640 (the service's group may read it),
+    replaced in one step so the service never reads it half written."""
+    path = os.path.abspath(os.path.expanduser(path))
+    tmp = _stage_hash_file(path, stored)
+    try:
+        os.replace(tmp, path)
+    except BaseException:
+        _unlink(tmp)
+        raise
+    return path
+
+
+def new_password(directory=None, hosts=(), force=False, length=16, hash_file=None):
     """Make a password and write it to `<directory>/password`, with a netrc for
     curl beside it that names 127.0.0.1, localhost, and `hosts`. Both are mode
-    0600; a directory made here is 0700. Returns `(password file, hash)`.
-    Refuses to replace either file unless `force`."""
+    0600; a directory made here is 0700. With `hash_file`, its hash goes there
+    too (`write_hash_file`). Returns `(password file, hash)`. Refuses to replace
+    any of them unless `force`."""
     d = os.path.abspath(os.path.expanduser(directory or DEFAULT_DIR))
     names = ["127.0.0.1", "localhost"] + [h for h in hosts if h not in ("127.0.0.1", "localhost")]
     for h in names:
         if not h or any(c.isspace() for c in h):
             raise ValueError("not a host name: %r" % h)
     files = {"password": os.path.join(d, "password"), "netrc": os.path.join(d, "netrc")}
+    if hash_file:
+        files["hash"] = os.path.abspath(os.path.expanduser(hash_file))
     there = [p for p in files.values() if os.path.exists(p)]
     if there and not force:
         raise FileExistsError("%s already exists; pass --force to replace it, which signs "
-                              "everyone out once the new hash is in the config" % there[0])
-    os.makedirs(d, mode=0o700, exist_ok=True)
+                              "everyone out once the service has the new hash" % there[0])
     pw = generate_password(length)
-    _write_private(files["password"], pw + "\n")
-    _write_private(files["netrc"], "".join("machine %s login rc password %s\n" % (h, pw)
-                                           for h in names))
-    return files["password"], hash_password(pw)
+    stored = hash_password(pw)
+    # The hash is written first, beside its file, so a hash file that cannot be
+    # written stops this before the password is replaced; it goes into place
+    # last, once the password it is the hash of is safely written.
+    os.makedirs(d, mode=0o700, exist_ok=True)      # before the hash file's, which may be in it
+    staged = _stage_hash_file(files["hash"], stored) if hash_file else None
+    try:
+        _write_private(files["password"], pw + "\n")
+        _write_private(files["netrc"], "".join("machine %s login rc password %s\n" % (h, pw)
+                                               for h in names))
+        if staged:
+            os.replace(staged, files["hash"])
+            staged = None
+    finally:
+        if staged:
+            _unlink(staged)
+    return files["password"], stored

@@ -30,6 +30,7 @@ from . import keysearch
 from . import proctree
 from . import redact
 from . import roles, tool_buckets
+from . import status as statusmod
 from . import windows as winmod
 from .aggregator import Aggregator
 from .anonymize import Verbatim
@@ -280,6 +281,10 @@ class CachedStatic(StaticFiles):
 def create_app(cfg):
     # First, so a malformed password hash stops the service before it reads anything.
     gate = authmod.from_config(cfg)
+    # The commit this process runs, taken now: a checkout pulled later is not it
+    # (/api/config's _meta.version).
+    from . import about
+    about.version()
     gcwatch.install()
     # The event loop gives up the GIL at every read and write and waits to get
     # it back; beside a build or the backfill it waited the whole interval.
@@ -657,8 +662,35 @@ def create_app(cfg):
 
     @app.get("/api/collectors")
     def api_collectors(request: Request):
-        """Per host: is its collector OK, read from what it wrote (health.py)."""
+        """Per host: is its collector OK, read from what it wrote (health.py), and
+        whether the copy bringing its files here works (`transport`, status.py)."""
         return respond(agg.collectors(), request=request)
+
+    def status_doc(stale):
+        """status.py's document from what the service has read; `stale` a duration
+        (`15m`) in place of status.stale_s, or a 400."""
+        try:
+            stale_s = statusmod.parse_duration(stale) if stale else None
+        except ValueError:
+            # not echoed: a reader's text goes back only where it is marked so
+            raise HTTPException(400, "stale is a duration such as 300, 90s, 15m, 2h or 1d")
+        return statusmod.from_service(agg, stale_s, wall=authmod.wall())
+
+    @app.get("/api/status")
+    def api_status(request: Request, stale: str = Query(None)):
+        """Is the collection working, per host, rolled up into ok / warn / crit:
+        what `rc-dashboard status --json` prints (status.py), from what this
+        service has read. `stale` (300, 15m, 2h) in place of status.stale_s."""
+        return respond(status_doc(stale), request=request)
+
+    @app.get("/metrics")
+    def metrics(stale: str = Query(None)):
+        """The same numbers in Prometheus' text format, behind the same sign-in
+        (a scraper sends the password as HTTP Basic auth)."""
+        from . import about
+        body = statusmod.metrics(status_doc(stale), version=about.version())
+        return Response(body, media_type="text/plain; version=0.0.4; charset=utf-8",
+                        headers={"cache-control": "no-store"})
 
     # `window_min` is optional everywhere: omitting it is the configured default
     # (`live.window_min`), never an error, so an existing bookmark or script that
@@ -957,8 +989,8 @@ def create_app(cfg):
                 "error": "frontend not built",
                 "expected": static,
                 "fix": "cd dashboard/web && npm ci && npm run build",
-                "api": ["/api/health", "/api/feeds", "/api/live", "/api/panels",
-                        "/api/trajectories"],
+                "api": ["/api/health", "/api/status", "/api/feeds", "/api/live",
+                        "/api/panels", "/api/trajectories"],
             }, status_code=503)
 
     # -------------------------------------------------------------- sign-in
@@ -967,8 +999,7 @@ def create_app(cfg):
     # change something takes a JSON body only (guard.JsonOnly).
     app.add_middleware(guardmod.JsonOnly)
     if gate is not None:
-        app.add_middleware(authmod.AuthMiddleware, gate=gate,
-                           site=str(cfg.get("site.name") or ""))
+        app.add_middleware(authmod.AuthMiddleware, gate=gate, site=authmod.site_label(cfg))
     # ------------------------------------------------------ who may connect
     # Outside the sign-in, so what it refuses costs no password check: a
     # websocket from another site's page, and with no password, a request
