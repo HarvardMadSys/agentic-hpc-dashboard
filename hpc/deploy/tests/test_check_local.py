@@ -163,6 +163,25 @@ class TestStartChecks(unittest.TestCase):
             fh.write("RC_DASH_PASSWORD_HASH_FILE=%s\n" % other)
         self.assertEqual(self.run_check("--auth-set"), 0)
 
+    def test_auth_set_reads_the_hash_file_as_the_dashboard_does(self):
+        """Blank lines and `#` lines passed over, the blanks and one pair of quotes
+        around the hash taken off (auth.read_hash_file). Read as its first line alone, a
+        file the dashboard accepts failed the check (15), and keep-running.sh, which
+        runs it before every start, never started the dashboard."""
+        h = os.path.join(self.etc, "password.hash")
+        for text in ("# made by new-password\nscrypt$16384$8$1$c2FsdA$aGFzaA\n",
+                     "\n\n  'scrypt$16384$8$1$c2FsdA$aGFzaA'  \n\n",
+                     "#a\n\n# b\n\"scrypt$16384$8$1$c2FsdA$aGFzaA\""):
+            with open(h, "w") as fh:
+                fh.write(text)
+            self.assertEqual(self.run_check("--auth-set"), 0, text)
+        # and as it refuses: no hash, or two lines
+        for text in ("# only a comment\n\n",
+                     "scrypt$16384$8$1$c2FsdA$aGFzaA\nscrypt$16384$8$1$c2FsdA$aGFzaA\n"):
+            with open(h, "w") as fh:
+                fh.write(text)
+            self.assertEqual(self.run_check("--auth-set"), 15, text)
+
     def test_auth_set_asks_the_dashboards_parser_where_the_venv_is(self):
         """With a release and its venv, rc_dashboard.auth.parse_hash judges the hash,
         and its reason is the one given."""

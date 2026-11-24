@@ -119,9 +119,17 @@ auth_read() {
   fi
   [ -n "$file" ] || { [ -s "$ETC/password.hash" ] && file=$ETC/password.hash; }
   if [ -n "$file" ]; then
+    # As the dashboard reads it (auth.read_hash_file): blank lines and `#` lines passed
+    # over, the blanks and one pair of quotes around the hash taken off. Two lines are
+    # no hash: joined, they fail to parse, as the dashboard refuses them.
     AUTH_FROM=$file AUTH_HASH=
-    [ -f "$file" ] && IFS= read -r AUTH_HASH < "$file"
-    AUTH_HASH=$(unquote "$AUTH_HASH")
+    if [ -f "$file" ]; then
+      while IFS= read -r line || [ -n "$line" ]; do
+        line=${line#"${line%%[![:space:]]*}"}
+        case $line in ''|\#*) continue ;; esac
+        AUTH_HASH=${AUTH_HASH:+$AUTH_HASH }$(unquote "$line")
+      done < "$file"
+    fi
   fi
 }
 # Whether a hash parses, and why not: the dashboard's own parser where the venv is
