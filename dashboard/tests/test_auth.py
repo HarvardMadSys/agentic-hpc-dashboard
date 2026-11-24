@@ -28,6 +28,7 @@ import unittest
 import urllib.parse
 import warnings
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -621,6 +622,28 @@ class HashFile(unittest.TestCase):
         auth.write_hash_file(self.path, self.stored)
         self.assertTrue(g.reload())
         self.assertIsNone(g.reload_error)
+
+    def test_a_file_replaced_while_the_service_starts_is_taken_up(self):
+        """The hash was read (`from_config`), the session key loaded, and only then the
+        file's identity taken (`Gate`): a file replaced in between paired the old hash
+        with the new file, so no later look saw a change, and the revoked password let
+        everyone in, and the new one no one, until a SIGHUP or a restart."""
+        new = auth.hash_password("pw2", **FAST)
+        real = auth.load_session_key
+
+        def rotating(d):                 # a rotation while the service starts
+            auth.write_hash_file(self.path, new)
+            return real(d)
+
+        with mock.patch.object(auth, "load_session_key", rotating), \
+                redirect_stderr(io.StringIO()):
+            g = auth.from_config(self.cfg(password_hash_file=self.path))
+            g.refresh(throttle=False)
+        g.fail_delay_s = 0
+        self.assertEqual(g.stored, new)
+        run = asyncio.new_event_loop().run_until_complete
+        self.assertTrue(run(g.check_password("pw2")))
+        self.assertFalse(run(g.check_password("pw")))
 
     def test_a_check_across_a_new_hash_opens_nothing(self):
         """A sign-in whose scrypt ran while the hash was replaced (SIGHUP, or a change

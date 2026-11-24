@@ -270,12 +270,18 @@ class Gate:
         self.fail_delay_s = fail_delay_s
         self.hash_file = hash_file
         self.check_every_s = check_every_s
-        self._file = _file_id(hash_file) if hash_file else None
+        self._file = None
         self._checked = time.monotonic()
         self.reloads = 0                # times a changed hash was taken up
         self.reload_error = None        # why the file could not be read, last time
         self._lock = self._loop = None
         self._use(stored)
+        if hash_file:
+            # Read again, its identity first (`reload`): `stored` was read before the
+            # session key was loaded, and the file's identity taken after it paired a
+            # file replaced in between with the old hash, so no later look saw a
+            # change, and the revoked password stayed good until a SIGHUP or a restart.
+            self.reload()
 
     def _key_for(self, stored):
         # Per deployment and per password: a cookie made under another key
