@@ -1226,8 +1226,31 @@ def load(args=None, config_path=None):
 _BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 
 
+_TOML_ESC = {'"': '\\"', "\\": "\\\\", "\n": "\\n", "\t": "\\t", "\r": "\\r"}
+
+
+def _toml_str(s):
+    """`s` as a TOML basic string: `"`, `\\` and the control characters TOML forbids as
+    they are (U+0000-U+001F, U+007F) escaped, every other character as itself. json.dumps
+    did this once, but escapes a character past U+FFFF as a UTF-16 pair (`\\ud83d\\ude80`
+    for 🚀), which TOML refuses: a site named with an emoji wrote a config that would not
+    load."""
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if ch in _TOML_ESC:
+            out.append(_TOML_ESC[ch])
+        elif o < 0x20 or o == 0x7F:
+            out.append("\\u%04x" % o)
+        elif 0xD800 <= o <= 0xDFFF:
+            raise ValueError("%r holds bytes that are not UTF-8, which a TOML file cannot" % s)
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
 def _toml_key(k):
-    return k if _BARE_KEY.fullmatch(k) else json.dumps(k)
+    return k if _BARE_KEY.fullmatch(k) else _toml_str(k)
 
 
 def _toml_value(v):
@@ -1236,7 +1259,7 @@ def _toml_value(v):
     if isinstance(v, (int, float)):
         return repr(v)
     if isinstance(v, str):
-        return json.dumps(v)               # a JSON string is a TOML basic string
+        return _toml_str(v)
     if isinstance(v, (list, tuple)):
         return "[" + ", ".join(_toml_value(x) for x in v) + "]"
     if isinstance(v, dict):

@@ -381,6 +381,21 @@ class Toml(Case):
         msg = self.refused(path=self.write('[site\nname = 1\n', "c.toml"))
         self.assertIn("c.toml", msg)
 
+    def test_the_toml_writer_keeps_any_text(self):
+        """json.dumps wrote a character past U+FFFF as a UTF-16 pair, which TOML refuses:
+        `rc-dashboard init` for a site named `Cluster 🚀` wrote a config that would not
+        load. Every string goes in as itself, escaped only where TOML says."""
+        import tomllib
+        for v in ("Cluster 🚀", "ünïcödé · 日本", 'a "quote" and a \\ backslash',
+                  "tab\tnewline\nreturn\r", "bell\x07 and del\x7f", ""):
+            self.assertEqual(tomllib.loads("k = " + configmod._toml_value(v))["k"], v, repr(v))
+        self.assertEqual(tomllib.loads(configmod._toml_key("rack 🚀") + " = 1"), {"rack 🚀": 1})
+        self.assertIn("🚀", configmod._toml_value("Cluster 🚀"), "as itself, not escaped")
+        from rc_dashboard import init_cmd
+        text = init_cmd.toml_config("Cluster 🚀", "/scratch/ebpfm/日本", "/var/log/ebpfm-login",
+                                    False, 8080, "", "2026-11-24", "login01")
+        self.assertEqual(tomllib.loads(text)["site"]["name"], "Cluster 🚀")
+
     def test_a_toml_date_reads_as_text(self):
         cfg, _ = self.load(path=self.write("[clock]\nas_of = 2026-11-02T09:00:00\n", "c.toml"))
         self.assertEqual(cfg.get("clock.as_of"), "2026-11-02 09:00:00")
