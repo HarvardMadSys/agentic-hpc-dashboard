@@ -642,10 +642,16 @@ class Puller(object):
         else:
             state["ok_epoch"] = prev.get("ok_epoch")
             state["file_hosts"] = prev.get("file_hosts") or []
-            if state["error"] != "stopped":
+            if not self.stop.is_set():
                 say("%s: FAILED: %s" % (self.name, state["error"]))
-        if state.get("error") != "stopped":
-            write_state(self.s, self.name, state)
+        # A pass its puller was stopped in (a reload retiring the node, rc-pull stopping)
+        # writes nothing: it was cut short, so its rsync failed as "stopped", and the
+        # state file of a node taken out was deleted (remove-node, Loop.reload), which
+        # this brought back as a copy failure reported for good. The flag is read under
+        # the lock retire() sets it under, so no write follows a retirement.
+        with self.lock:
+            if not self.stop.is_set():
+                write_state(self.s, self.name, state)
         return state
 
 
@@ -744,6 +750,14 @@ def write_state(s, name, state):
     os.rename(tmp, p)
 
 
+def drop_state(s, name):
+    """The state file of a node no longer pulled: left, it aged into a copy failure."""
+    try:
+        os.unlink(_state_path(s, name))
+    except FileNotFoundError:
+        pass
+
+
 def prepare(s):
     """The copy's folder and its state folder, private; and the lock that keeps a second
     pull.py off this copy. Returns the lock's file, held until the process ends."""
@@ -785,11 +799,11 @@ def cmd_once(s):
 
 class Loop(object):
     """`loop`: each node on its own thread, a pass every FLEET_INTERVAL_S. SIGHUP reads
-    the settings file again: a node added starts, a node taken out stops (its copy
-    stays), a node whose target or folders changed starts again, and the others take
-    the new settings at their next pass. A file that does not load keeps every node as
-    it was, and says why; a new FLEET_MIRROR needs a restart, since the copy and its
-    lock are where they are."""
+    the settings file again: a node added starts, a node taken out stops and its pull
+    state goes once its last pass has ended (its copy stays), a node whose target or
+    folders changed starts again, and the others take the new settings at their next
+    pass. A file that does not load keeps every node as it was, and says why; a new
+    FLEET_MIRROR needs a restart, since the copy and its lock are where they are."""
 
     def __init__(self, s, path):
         self.s, self.path = s, path
@@ -806,7 +820,8 @@ class Loop(object):
 
     def retire(self, name):
         p, t = self.nodes.pop(name)
-        p.stop.set()
+        with p.lock:                     # no state write after this (Puller.pull)
+            p.stop.set()
         p.cancel()
         return t
 
@@ -830,9 +845,12 @@ class Loop(object):
             # retires. Kept as "a broken file", it went on copying a node the
             # settings no longer named, and undid a purge of its copy. rc-pull
             # stays up, idle, so the reload that names a node again reaches it.
-            retired = [self.retire(n) for n in list(self.nodes)]
+            names = list(self.nodes)
+            retired = [self.retire(n) for n in names]
             for t in retired:
                 t.join(30)
+            for n in names:
+                drop_state(self.s, n)
             say("reload: %s; every node retired, and rc-pull waits for one to be named" % e)
             return
         except ConfigError as e:
@@ -850,6 +868,10 @@ class Loop(object):
         retired = [self.retire(n) for n in gone + changed]
         for t in retired:
             t.join(30)
+        # A node taken out: its state once its last pass has ended, which remove-node's
+        # own delete, sent with the reload, can come before.
+        for n in gone:
+            drop_state(self.s, n)
         for p, _t in self.nodes.values():
             p.s = new                    # taken at its next pass
         for i, n in enumerate(changed + added):

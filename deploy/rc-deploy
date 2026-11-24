@@ -551,7 +551,10 @@ def cmd_remove_node(args):
     # Its copy and its pull state where pull.py keeps them: under FLEET_MIRROR,
     # which may be moved off $STATE/mirror. The pull state goes whatever happens
     # to its copy: nothing pulls it now, and a state file left behind aged past
-    # status.stale_s into a copy failure the hourly check reported for good.
+    # status.stale_s into a copy failure the hourly check reported for good. A
+    # running rc-pull drops it too, once the node's last pass has ended (a pass
+    # still running may outlast this delete); this one is for an rc-pull that is
+    # not running.
     copy = [os.path.join(mirror, t, name) for t in ("ebpf", "node")]
     pulled = os.path.join(mirror, ".state", name + ".json")
     if os.path.exists(pulled) or os.environ.get("RC_DEPLOY_ECHO"):

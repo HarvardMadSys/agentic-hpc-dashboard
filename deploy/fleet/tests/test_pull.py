@@ -605,6 +605,56 @@ class TestRetire(StubRig):
         self.assertFalse(os.path.exists(mark), "ended when it started, not run to its end")
 
 
+class TestRetiredState(StubRig):
+    """A node taken out leaves no pull state. `remove-node` deletes the node's state file
+    as it reloads rc-pull (SIGHUP), but the loop takes the reload up to half a second
+    later, and the node's pass, cut short by its retirement, then wrote its account
+    again: a copy failure ("rsync exit -1: stopped") for a node no longer pulled, which
+    the dashboard and the hourly check reported for good. A retired pass writes nothing,
+    and the loop deletes the state of a node it retired once its last pass has ended."""
+
+    def loop_with_n1_mid_pass(self, hosts):
+        mark = os.path.join(self.tmp, "n1-listing")
+        slow = os.path.join(self.tmp, "slow-rsync")      # n1's listing hangs; n2's fails
+        with open(slow, "w") as fh:
+            fh.write('#!/bin/sh\ncase "$*" in *n1:*) touch %s; exec sleep 30;; esac\nexit 12\n'
+                     % mark)
+        os.chmod(slow, 0o755)
+        self.settings(hosts, FLEET_RSYNC=slow)
+        loop = pull.Loop(pull.load(self.conf), self.conf)
+        loop.start("n1")
+        deadline = time.time() + 30
+        while not os.path.exists(mark):
+            self.assertLess(time.time(), deadline, "n1's pass never started")
+            time.sleep(0.05)
+        return loop, slow
+
+    def test_a_node_taken_out_mid_pass_leaves_no_state(self):
+        self.state("n1", host="n1", ok=True, ok_epoch=time.time() - 60)   # its last pass
+        n1 = os.path.join(self.mirror, ".state", "n1.json")
+        loop, slow = self.loop_with_n1_mid_pass("n1 n2")
+        try:
+            self.settings("n2", FLEET_RSYNC=slow)            # remove-node: fleet.env first,
+            os.unlink(n1)                                    # its state, then the reload
+            loop.reload()
+            self.assertNotIn("n1", loop.nodes)
+            self.assertFalse(os.path.exists(n1), "the retired pass wrote n1's state again")
+        finally:
+            for p, t in list(loop.nodes.values()):
+                p.stop.set()
+                p.cancel()
+                t.join(30)
+
+    def test_a_reload_that_takes_the_last_node_out_drops_its_state(self):
+        self.state("n1", host="n1", ok=True, ok_epoch=time.time() - 60)
+        n1 = os.path.join(self.mirror, ".state", "n1.json")
+        loop, slow = self.loop_with_n1_mid_pass("n1")
+        self.settings("", FLEET_RSYNC=slow)                  # by hand: no rm of the state
+        loop.reload()
+        self.assertEqual(loop.nodes, {})
+        self.assertFalse(os.path.exists(n1), "a node taken out kept its pull state")
+
+
 class TestStatus(StubRig):
     def test_a_node_with_no_good_pass_for_three_intervals_is_stale(self):
         """rc-pull stopped (a fleet.env typo ends it for good) left every node's last
@@ -686,11 +736,13 @@ class TestReload(StubRig):
             wait_for(os.path.join(state_dir, "n2.json"))
             self.settings("n2")
             p.send_signal(signal.SIGHUP)
-            time.sleep(1.5)
-            t_gone = os.stat(os.path.join(state_dir, "n1.json")).st_mtime
+            gone = os.path.join(state_dir, "n1.json")      # dropped once its pass ends
+            deadline = time.time() + 30
+            while os.path.exists(gone):
+                self.assertLess(time.time(), deadline, "n1 was taken out and kept its state")
+                time.sleep(0.1)
             wait_for(os.path.join(state_dir, "n2.json"), newer_than=time.time())
-            self.assertEqual(os.stat(os.path.join(state_dir, "n1.json")).st_mtime, t_gone,
-                             "n1 was taken out and still passes")
+            self.assertFalse(os.path.exists(gone), "n1 was taken out and still passes")
             # a file that does not load keeps every node as it was
             with open(self.conf, "a") as fh:
                 fh.write("FLEET_HOST=typo\n")
@@ -731,14 +783,16 @@ class TestReload(StubRig):
             wait_for(n1)
             self.settings("")
             p.send_signal(signal.SIGHUP)
-            time.sleep(1.5)
-            t_gone = os.stat(n1).st_mtime
+            deadline = time.time() + 30
+            while os.path.exists(n1):                     # dropped once its pass ends
+                self.assertLess(time.time(), deadline, "n1 was taken out and kept its state")
+                time.sleep(0.1)
             time.sleep(5 + 2)   # one interval (the rig's FLEET_INTERVAL_S) and then some
-            self.assertEqual(os.stat(n1).st_mtime, t_gone, "n1 was taken out and still passes")
+            self.assertFalse(os.path.exists(n1), "n1 was taken out and still passes")
             self.assertIsNone(p.poll(), "the loop ended with no node left")
             self.settings("n1")
             p.send_signal(signal.SIGHUP)
-            wait_for(n1, newer_than=t_gone)
+            wait_for(n1)
             p.send_signal(signal.SIGTERM)
             out, _ = p.communicate(timeout=30)
         finally:

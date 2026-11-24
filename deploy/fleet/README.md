@@ -75,10 +75,11 @@ expanded again at every rescan), shows it with no restart, so nothing refills it
 By hand: edit `FLEET_HOSTS`, then `sudo systemctl reload rc-pull`. A node taken out keeps
 its copy, and the dashboard its days, until you remove `mirror/{ebpf,node}/<node>`; on the
 node itself, `sudo deploy/common/uninstall.sh --purge` takes the collector and the key away.
-`remove-node` also removes the node's last pull state (`mirror/.state/<node>.json`), which
-would otherwise age into a copy failure the hourly check reports for good (by hand, remove
-it too). Taking out the last node stops every pull; `rc-pull` stays up, idle, and copies
-again from the reload that names a node.
+The reload also removes the node's last pull state (`mirror/.state/<node>.json`), once its
+last pass has ended, which would otherwise age into a copy failure the hourly check reports
+for good; `remove-node` removes it as well, for an `rc-pull` that is not running. Taking out
+the last node stops every pull; `rc-pull` stays up, idle, and copies again from the reload
+that names a node.
 
 ## The nodes
 
