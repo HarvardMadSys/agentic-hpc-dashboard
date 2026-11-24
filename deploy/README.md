@@ -149,7 +149,7 @@ change:
 | `ANONYMIZE` | an alias for every user name (`RC_DASH_ANONYMIZE`) | off |
 | `MEMORY_MAX` (or `DASH_MEMORY_MAX`) | the dashboard's hard memory cap (the drop-in) | 8G |
 | `FREE_MIN_GB` | (fleet) nothing copied below this much free space (`FLEET_FREE_MIN_GB`) | 10 |
-| `NODES` | (fleet) the first nodes, while `fleet.env` names none | |
+| `NODES` | (fleet) the nodes of the `fleet.env` the first install makes; after it, `add-node` and `remove-node` (a fleet emptied by `remove-node` stays empty) | |
 
 Yes/no takes `1`/`0`, `true`/`false`, `yes`/`no` or `on`/`off`. `dashboard.env` takes any
 other `RC_DASH_*` variable the dashboard's [README](../dashboard/README.md#configuration)

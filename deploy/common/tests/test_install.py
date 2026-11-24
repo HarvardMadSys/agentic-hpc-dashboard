@@ -428,9 +428,28 @@ class TestFleet(Rig):
         self.assertEqual(fleet["FLEET_FREE_MIN_GB"], "50")
         self.assertIn("systemctl start rc-pull.service", self.calls())
         out = self.install("--no-build", NODES="gpu3")
-        self.assertIn("names its nodes already", out)
+        self.assertIn("NODES is left out", out)
         self.assertEqual(self.keys(os.path.join(self.etc, "fleet.env"))["FLEET_HOSTS"],
                          '"gpu1 gpu2=10.0.0.2:/scratch/ebpfm:"')
+
+    def test_a_fleet_emptied_on_purpose_stays_empty(self):
+        """NODES names the nodes of the fleet.env the install makes. A fleet whose last node
+        was taken out (`rc-deploy remove-node` leaves FLEET_HOSTS="") is empty on purpose:
+        the next apply or upgrade, handed install.env's NODES again, took it for one never
+        set up, named the retired nodes again and pulled them."""
+        self.install(NODES="n1")
+        p = os.path.join(self.etc, "fleet.env")
+        self.assertEqual(self.keys(p)["FLEET_HOSTS"], "n1")
+        text = re.sub(r"(?m)^FLEET_HOSTS=.*$", 'FLEET_HOSTS=""', self.read(p))
+        with open(p, "w") as fh:
+            fh.write(text)
+        self.assertEqual(self.keys(p)["FLEET_HOSTS"], '""')
+        with open(self.log, "w"):
+            pass
+        out = self.install("--no-build", NODES="n1")
+        self.assertEqual(self.keys(p)["FLEET_HOSTS"], '""')
+        self.assertIn("NODES is left out", out)
+        self.assertNotIn("systemctl start rc-pull", self.calls())
 
     def test_a_wrong_fleet_env_stops_the_install(self):
         self.install()

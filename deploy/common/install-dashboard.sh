@@ -39,8 +39,9 @@
 #
 # Settings that go into dashboard.env (and fleet.env), under the names every kit uses:
 # SITE_NAME, SITE_DESCRIPTION, SLURM (yes/no: the HPC tab), NODE_NOUN ("servers" without
-# Slurm, "login nodes" with it), ANONYMIZE (yes/no); for fleet NODES (FLEET_HOSTS, while
-# it names none) and FREE_MIN_GB. Yes/no takes 1/0, true/false, yes/no or on/off.
+# Slurm, "login nodes" with it), ANONYMIZE (yes/no); for fleet NODES (FLEET_HOSTS of the
+# fleet.env the first install makes) and FREE_MIN_GB. Yes/no takes 1/0, true/false, yes/no
+# or on/off.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -254,12 +255,16 @@ roots=
 if [ "$mode" = fleet ]; then
   fleet=()
   [ -n "${FREE_MIN_GB:-}" ] && fleet+=("FLEET_FREE_MIN_GB=$FREE_MIN_GB")
+  # NODES names the nodes of the fleet.env made now, and of no later one: rc-deploy
+  # hands deploy/site.env's NODES to every apply and upgrade, and a fleet emptied on
+  # purpose (remove-node of its last node) would get the retired nodes back.
   if [ -n "${NODES:-}" ]; then
-    if [ -z "$(env_value "$ETC/fleet.env" FLEET_HOSTS 2>/dev/null)" ]; then
+    if [ ! -e "$ETC/fleet.env" ]; then
       fleet+=("FLEET_HOSTS=$NODES")
     else
-      say "NODES given, but $ETC/fleet.env names its nodes already: add or remove one with"
-      say "deploy/rc-deploy add-node / remove-node, or in the file; NODES is left out"
+      say "NODES given, but $ETC/fleet.env is made already, and its FLEET_HOSTS names the"
+      say "nodes: NODES is left out. Add or remove one with deploy/rc-deploy add-node /"
+      say "remove-node, or in the file"
     fi
   fi
   settings_file "$ETC/fleet.env" "$repo/deploy/fleet/fleet.env.example" ${fleet[@]+"${fleet[@]}"}
