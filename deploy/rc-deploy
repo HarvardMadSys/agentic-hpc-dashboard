@@ -165,7 +165,25 @@ def site_file(args):
     kit = vals.get("KIT") or ("hpc" if os.path.abspath(path) == HPC_SITE else "")
     if kit not in KITS:
         raise Refused("%s says KIT=%r: one of %s" % (path, kit, ", ".join(KITS)))
+    if kit == "hpc":
+        vals = _hpc_values(path)
     return kit, path, vals
+
+
+def _hpc_values(path):
+    """The HPC kit's settings file as deploy.sh reads it, through the kit's own parser
+    (hpc/deploy/render.py): bash sources the file, so $VAR and ${VAR} are expanded from
+    the lines above and the environment -- SSH_KEY=$HOME/.ssh/... is the key in that
+    home, not a file named $HOME -- and a line bash would read otherwise is refused."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "rc_deploy_render", os.path.join(REPO, "hpc", "deploy", "render.py"))
+    render = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(render)
+    try:
+        return render.parse_env(path, {})
+    except ValueError as e:
+        raise Refused(str(e))
 
 
 def installed(key, default):
@@ -371,6 +389,16 @@ def _fleet_env():
     return os.path.join(etc, "fleet.env"), installed("OPT", "/opt/rc-dashboard")
 
 
+def _fleet_mirror(fleet_env):
+    """Where pull.py keeps the copy and its .state: FLEET_MIRROR as fleet.env sets it,
+    read as pull.py reads it (no $-expansion), else pull.py's own default."""
+    try:
+        mirror = read_env(fleet_env).get("FLEET_MIRROR", "")
+    except OSError:
+        mirror = ""
+    return os.path.abspath(mirror or "/var/lib/rc-dashboard/mirror")
+
+
 def _pull(fleet_env, opt, *args):
     py = os.path.join(opt, "venv", "bin", "python")
     if not os.path.exists(py):
@@ -379,7 +407,7 @@ def _pull(fleet_env, opt, *args):
 
 
 def _entry_name(entry):
-    name = re.split(r"[=:]", entry, 1)[0]
+    name = re.split(r"[=:]", entry, maxsplit=1)[0]
     if not NAME_RE.match(name):
         raise Refused("%r is not a node name (letters, digits, . _ -)" % name)
     return name
@@ -490,6 +518,7 @@ def cmd_remove_node(args):
         return 0
     need_root("remove-node")
     fleet_env, opt = _fleet_env()
+    mirror = _fleet_mirror(fleet_env)       # read while the node's line is still there
     text = _drop_entry(fleet_env, name)
     if os.environ.get("RC_DEPLOY_ECHO"):
         sys.stdout.write("RUN rewrite %s\n%s" % (fleet_env, text))
@@ -497,12 +526,12 @@ def cmd_remove_node(args):
         write(fleet_env, text)
     say("%s taken out of %s" % (name, fleet_env))
     run(["systemctl", "reload", "rc-pull.service"], check=False)
-    state = installed("STATE", "/var/lib/rc-dashboard")
-    copy = [os.path.join(state, "mirror", t, name) for t in ("ebpf", "node")]
-    # Its pull state goes whatever happens to its copy: nothing pulls it now,
-    # and a state file left behind aged past status.stale_s into a copy
-    # failure the hourly check reported for good.
-    pulled = os.path.join(state, "mirror", ".state", name + ".json")
+    # Its copy and its pull state where pull.py keeps them: under FLEET_MIRROR,
+    # which may be moved off $STATE/mirror. The pull state goes whatever happens
+    # to its copy: nothing pulls it now, and a state file left behind aged past
+    # status.stale_s into a copy failure the hourly check reported for good.
+    copy = [os.path.join(mirror, t, name) for t in ("ebpf", "node")]
+    pulled = os.path.join(mirror, ".state", name + ".json")
     if os.path.exists(pulled) or os.environ.get("RC_DEPLOY_ECHO"):
         run(["rm", "-f", pulled])
     if args.purge_copy:

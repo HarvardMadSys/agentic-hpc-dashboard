@@ -244,6 +244,39 @@ class TestNodes(Rig):
         with open(self.site) as fh:
             self.assertEqual(fh.read(), before)
 
+    def test_a_moved_mirror_is_where_the_node_is_cleared(self):
+        """pull.py keeps the copy and its .state under fleet.env's FLEET_MIRROR: a mirror
+        moved off $STATE/mirror was missed, its copy and pull state left behind."""
+        moved = os.path.join(self.tmp, "big", "mirror")
+        with open(self.fleet, "w") as fh:
+            fh.write('FLEET_HOSTS="n1 n2"\nFLEET_MIRROR=%s\n' % moved)
+        for d in (os.path.join(moved, "ebpf", "n2"), os.path.join(moved, ".state"),
+                  os.path.join(self.state, "mirror", "ebpf", "n2")):
+            os.makedirs(d)
+        with open(os.path.join(moved, ".state", "n2.json"), "w") as fh:
+            fh.write('{"ok": true}\n')
+        out = self.tool("remove-node", "n2", "--purge-copy", echo=False)
+        self.assertFalse(os.path.exists(os.path.join(moved, "ebpf", "n2")), out)
+        self.assertFalse(os.path.exists(os.path.join(moved, ".state", "n2.json")), out)
+        self.assertTrue(os.path.exists(os.path.join(self.state, "mirror", "ebpf", "n2")),
+                        "nothing outside the mirror pull.py uses")
+
+    def test_hpc_settings_read_as_deploy_sh_reads_them(self):
+        """site.env is sourced by bash (deploy.sh): SSH_KEY=$HOME/.ssh/... is the key in
+        that home, not a file named $HOME. rc-deploy reads it through the kit's own
+        parser (render.py), as deploy.sh's render does."""
+        os.unlink(self.site)
+        self.tool("init", "--yes", "--set", "NODES=login01", "--set", "ROOT_ON_NODES=no",
+                  "--set", "ROOT_ON_DASHBOARD=no", "--set", "DASH_SSH=alice@dash",
+                  "--set", "DASH_ROOT=/data/rc")
+        with open(self.site, "a") as fh:
+            fh.write("SSH_KEY=$HOME/.ssh/id_test\n")
+        out = self.tool("status", HOME="/home/tester")
+        self.assertIn("RUN ssh -i /home/tester/.ssh/id_test ", out)
+        with open(self.site, "a") as fh:
+            fh.write("SOURCE_USER=$(whoami)\n")
+        self.assertIn("no $( ) or backquotes", self.tool("status", code=1))
+
     def test_hpc_nodes_go_into_site_env(self):
         os.unlink(self.site)
         self.tool("init", "--yes", "--set", "NODES=login01", "--set", "ROOT_ON_NODES=no",
