@@ -59,8 +59,20 @@ export interface FeedReport {
   synthetic_hosts?: string[];
   /** the eBPF tier: its sealed day-files kept as Parquet (rc_dashboard/history.py) */
   history?: HistoryStatus;
+  /** every folder the service looked in for this feed, and what it found there
+   *  (rc_dashboard/feeds.py; the same lines as `check-feeds`) */
+  candidates?: FeedCandidate[];
 }
 export type FeedsResponse = Record<string, FeedReport>;
+
+export interface FeedCandidate {
+  path: string;
+  /** found: holds day-files; empty: there, but none; missing: no such folder;
+   *  denied: the service's account may not read it */
+  state: 'found' | 'empty' | 'missing' | 'denied';
+  /** e.g. "12 files", or who may read a denied folder */
+  note: string | null;
+}
 
 /** The history store: a Parquet copy of every sealed (`.jsonl.gz`) day-file of
  *  the eBPF tier, made in the background. A selective read of a sealed file --
@@ -118,6 +130,18 @@ export interface CollectorRun {
   kernel: string | null;
   bcc: string | null;
   schema_version: number | null;
+  /** the collector's own version, from its `meta` record (`ebpfm version`); null from a collector too old to say */
+  collector_version?: string | null;
+}
+
+/** How a host's files reach the dashboard where they are copied (rc_dashboard
+ *  status: deploy/fleet/pull.py's state, or the ssh stream's status.json):
+ *  a copy that failed is not a collector that stopped. */
+export interface CollectorTransport {
+  kind: 'rsync' | 'stream';
+  ok: boolean;
+  last_ok_age_s: number | null;
+  error: string | null;
 }
 
 export type CollectorVerdict = 'ok' | 'degraded' | 'stopped' | 'silent' | 'unknown';
@@ -146,6 +170,8 @@ export interface CollectorHost {
   files: Partial<Record<'ebpf' | 'ebpf_node', CollectorTierFiles>>;
   /** its records were written by the demo (rc_dashboard/demo), not by a collector */
   synthetic?: boolean;
+  /** where its files are copied to the dashboard, the copy's own state; null or absent where they are read in place */
+  transport?: CollectorTransport | null;
 }
 
 export interface CollectorsResponse {

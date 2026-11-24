@@ -267,7 +267,9 @@ export const ChatTab = memo(function ChatTab({ windowMin, windowLabel, openUserT
           <div className="none">could not reach the chat service: {infoErr}</div>
         ) : off ? (
           <div className="none">
-            {!info!.enabled ? 'chat is turned off on this dashboard' : `Ask LLM cannot run here: ${info!.error}`}
+            {!info!.enabled
+              ? 'Ask LLM is off on this dashboard. A site turns it on with ask.enabled (RC_DASH_ASK=1) and an agent CLI on the service’s host: dashboard/README.md, “Ask LLM”.'
+              : `Ask LLM cannot run here: ${info!.error}`}
           </div>
         ) : (
           <div className="chat">

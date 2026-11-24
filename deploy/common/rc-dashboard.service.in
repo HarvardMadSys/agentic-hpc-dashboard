@@ -3,7 +3,8 @@
 #
 # The dashboard (rc_dashboard serve), as its own account, from the checkout at @REPO@. Its
 # settings are dashboard.env (yours) and paths.env (the installer's, which wins: where it
-# reads and keeps things). Each start refills its history from the feeds it reads.
+# reads and keeps things, and the password's hash file). Each start refills its history
+# from the feeds it reads.
 
 [Unit]
 Description=rc dashboard: what coding agents do on the watched servers
@@ -33,10 +34,8 @@ StateDirectory=rc-dashboard
 StateDirectoryMode=0700
 UMask=0077
 LimitCORE=0
-# A hard cap: past it the kernel stops the process, and systemd starts it again. There is
-# no soft cap: with no swap, MemoryHigh stalls a process instead, and a stalled dashboard
-# answers nothing. Raise it for many busy nodes (hpc/deploy/README.md, "Memory and disk").
-MemoryMax=@MEMORY_MAX@
+# Its memory cap is in rc-dashboard.service.d/50-memory.conf, which a rerun of the
+# installer leaves as it is: `systemctl edit rc-dashboard` changes it for good.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full

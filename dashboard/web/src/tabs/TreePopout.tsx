@@ -44,6 +44,8 @@ import { sessionName } from '../lib/sessions';
 import { AGENT_TYPE_LBL } from '../lib/classes';
 import './trajectories.css';
 import './treepop.css';
+import { monthDay } from '../lib/zone';
+import { useServiceZone } from '../lib/useZone';
 
 /* the inline diagram's sizes, so a box reads the same in both */
 const NW = BOX_W;
@@ -64,8 +66,7 @@ const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
 /** Date and time, for the details panel: a read can span days. */
 function stamp(t: number | null | undefined): string {
   if (t == null) return DASH;
-  const d = new Date(t * 1000);
-  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${clock(t)}`;
+  return `${monthDay(t * 1000)} ${clock(t)}`;
 }
 
 /* ---------------------------------------------------------------- export */
@@ -502,6 +503,8 @@ export default function TreePopout() {
   const [to, setTo] = useState<number | null>(null);
   const q = useTrajectory(u.sid, u.win, u.from, to, u.order);
   const config = useConfig();
+  // The service's zone, as the dashboard has it: this page is its own, App never wraps it.
+  const tzKey = useServiceZone(config.data as Record<string, unknown> | null | undefined);
   const routine = (config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.routine_commands?._value as
     | string[]
     | undefined;
@@ -825,7 +828,7 @@ export default function TreePopout() {
   const fileBase = () => `tree-${(name?.key ?? u.sid ?? 'session').replace(/[^\w.-]+/g, '-').replace(/-+/g, '-')}`;
 
   return (
-    <div className="tp">
+    <div className="tp" key={tzKey}>
       <header className="tp-head">
         <div className="tp-title">
           <span className="eyebrow">process tree</span>

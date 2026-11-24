@@ -1,0 +1,748 @@
+#!/usr/bin/env python3
+"""rc-deploy: one front door to the three ways of running the collector and the dashboard.
+
+    rc-deploy init [--kit single|fleet|hpc] [--set KEY=VALUE ...] [--yes]
+    rc-deploy which                         the kit this checkout runs, and its settings file
+    rc-deploy apply [--plan]                install, or bring the install in line with the settings
+    rc-deploy plan                          apply --plan: what apply would do, nothing done
+    rc-deploy add-node ENTRY                a node, with no restart of the dashboard
+    rc-deploy remove-node NAME [--purge-copy]
+    rc-deploy password [--rotate]           make the password and put its hash in place
+    rc-deploy status                        every collector's verdict and every node's copy
+    rc-deploy upgrade [--to REF]            the checkout to REF (default: git pull), then apply
+    rc-deploy rollback [SHA]                back to what ran before
+    rc-deploy backup [--to FILE]            what cannot be rebuilt (the Trend table, the salt)
+    rc-deploy uninstall [--purge] [--plan]  take it all off; --purge takes the data too
+
+`init` asks what decides the kit: whether the nodes run Slurm (the HPC tab: asked, never
+guessed from root), which nodes, whether you have root on the nodes and on the dashboard's
+host. It writes one settings file and records the kit in it (KIT=):
+
+    single  one server with root runs both (deploy/single)   settings: deploy/site.env
+    fleet   root on the nodes and the dashboard's host; the dashboard copies each node
+            with rsync (deploy/fleet)                         settings: deploy/site.env
+    hpc     no root needed: each node's files stream over ssh to a host of your own
+            (hpc/deploy)                                      settings: hpc/deploy/site.env
+
+Every other command runs that kit's own scripts, which say what they do; `--help` of
+each says more. The same names mean the same setting in every kit: SITE_NAME,
+SITE_DESCRIPTION, SLURM, NODE_NOUN, ANONYMIZE (yes/no as 1/0, true/false, yes/no, on/off),
+MEMORY_MAX, FREE_MIN_GB. single and fleet run as root (sudo); hpc runs as you, on the
+machine that logs in to the nodes and the dashboard's host.
+
+Python 3.6 or later, standard library only.
+"""
+import argparse
+import os
+import re
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+DEPLOY_SITE = os.path.join(HERE, "site.env")
+HPC_SITE = os.path.join(REPO, "hpc", "deploy", "site.env")
+HPC_EXAMPLE = os.path.join(REPO, "hpc", "deploy", "site.env.example")
+INSTALL_ENV = os.environ.get("INSTALL_ENV", "/etc/rc-dashboard/install.env")
+HISTORY = os.environ.get("RC_DEPLOY_HISTORY", os.path.join(HERE, ".rc-deploy-history"))
+KITS = ("single", "fleet", "hpc")
+YES, NO = ("1", "true", "yes", "on", "y"), ("0", "false", "no", "off", "n")
+# The settings the deploy/ installers take from their environment, under the names every
+# kit uses (deploy/common/install-dashboard.sh --help).
+INSTALLER_KEYS = ("SITE_NAME", "SITE_DESCRIPTION", "SLURM", "NODE_NOUN", "ANONYMIZE",
+                  "MEMORY_MAX", "EBPF_DIR", "NODE_DIR", "NODES", "FREE_MIN_GB")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+class Refused(Exception):
+    pass
+
+
+def say(msg):
+    sys.stdout.write("==> %s\n" % msg)
+    sys.stdout.flush()
+
+
+# ------------------------------------------------------------------ settings files
+
+def read_env(path):
+    """KEY=VALUE lines as bash and systemd read them here: one pair of quotes off, and
+    KEY+=VALUE adding to a list."""
+    vals = {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip()
+            add = k.endswith("+")
+            k = k.rstrip("+").strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                v = v[1:-1]
+            vals[k] = (vals.get(k, "") + " " + v).strip() if add else v
+    return vals
+
+
+# What a value may be written bare as: bash (`. site.env`), render.py's parse_env and
+# read_env all read these characters as themselves.
+BARE = re.compile(r"[A-Za-z0-9_./:@%+,=-]*\Z")
+
+
+def quote(v, key="a value"):
+    """`v` as a settings file holds it, read back as it is by bash, render.py's
+    parse_env and read_env alike: bare when plain, in double quotes when it holds none
+    of " $ ` \\, else in single quotes. One holding both a ' and one of those has no
+    quoting all three read alike, and is refused. Written bare, O'Reilly was an
+    unmatched quote that stopped the next apply, and a ` or $( ran when bash read it."""
+    if BARE.match(v):
+        return v
+    if not re.search(r'["$`\\]', v):
+        return '"%s"' % v
+    if "'" not in v:
+        return "'%s'" % v
+    raise Refused("%s=%s holds both a ' and one of \" $ ` \\, which no quoting keeps as it is "
+                  "for every reader of the settings file: leave one of them out" % (key, v))
+
+
+def set_line(path, key, value, head=None):
+    """KEY's one active line in the file says VALUE, where its first line was, else at
+    the end; every other line stays. A new file starts with `head`."""
+    lines = []
+    if os.path.exists(path):
+        with open(path) as fh:
+            lines = fh.read().splitlines()
+    elif head:
+        lines = head.splitlines()
+    out, done = [], False
+    for line in lines:
+        if line.startswith(key + "=") or line.startswith(key + "+="):
+            if not done:
+                out.append("%s=%s" % (key, quote(value, key)))
+                done = True
+            continue
+        out.append(line)
+    if not done:
+        out.append("%s=%s" % (key, quote(value, key)))
+    write(path, "\n".join(out) + "\n")
+
+
+def write(path, text, mode=0o644):
+    """Replace `path` with `text`, keeping its mode and its owner and group: the
+    installer makes fleet.env 0640 root:rc-dashboard, and a root-owned copy put
+    in its place (0640 root:root) was one rc-pull, which runs as the dashboard's
+    account, could no longer read -- on reload or at its next start."""
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix="." + os.path.basename(path))
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        if os.path.exists(path):
+            st = os.stat(path)
+            os.chmod(tmp, st.st_mode & 0o7777)
+            if hasattr(os, "chown") and (st.st_uid, st.st_gid) != (os.getuid(), os.getgid()):
+                os.chown(tmp, st.st_uid, st.st_gid)
+        else:
+            os.chmod(tmp, mode)
+        os.rename(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def yesno(key, value):
+    v = str(value).strip().lower()
+    if v in YES:
+        return "yes"
+    if v in NO:
+        return "no"
+    raise Refused("%s=%r is not one of 1/0, true/false, yes/no, on/off" % (key, value))
+
+
+def site_file(args):
+    """(kit, path, settings) of this checkout, from --site, else the one settings file."""
+    if args.site:
+        path = args.site
+        if not os.path.exists(path):
+            raise Refused("no %s yet: run `rc-deploy init` first (with --site %s)" % (path, path))
+    else:
+        there = [p for p in (DEPLOY_SITE, HPC_SITE) if os.path.exists(p)]
+        if len(there) > 1:
+            kits = [read_env(p).get("KIT", "?") for p in there]
+            raise Refused("two settings files, %s (%s): rc-deploy runs one kit; remove the other"
+                          % (" and ".join(there), ", ".join(kits)))
+        if not there:
+            raise Refused("no settings yet: run `rc-deploy init` first (it asks four questions)")
+        path = there[0]
+    path = os.path.abspath(path)            # the kits' scripts change directory
+    vals = read_env(path)
+    kit = vals.get("KIT") or ("hpc" if path == HPC_SITE else "")
+    if kit not in KITS:
+        raise Refused("%s says KIT=%r: one of %s" % (path, kit, ", ".join(KITS)))
+    if kit == "hpc":
+        vals = _hpc_values(path)
+    return kit, path, vals
+
+
+def _hpc_values(path):
+    """The HPC kit's settings file as deploy.sh reads it, through the kit's own parser
+    (hpc/deploy/render.py): bash sources the file, so $VAR and ${VAR} are expanded from
+    the lines above and the environment -- SSH_KEY=$HOME/.ssh/... is the key in that
+    home, not a file named $HOME -- and a line bash would read otherwise is refused."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "rc_deploy_render", os.path.join(REPO, "hpc", "deploy", "render.py"))
+    render = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(render)
+    try:
+        return render.parse_env(path, {})
+    except ValueError as e:
+        raise Refused(str(e))
+
+
+def installed(key, default):
+    """An answer the deploy/ installers saved in install.env."""
+    try:
+        return read_env(INSTALL_ENV).get(key) or default
+    except OSError:
+        return default
+
+
+# ------------------------------------------------------------------ running the kits
+
+def run(cmd, env=None, check=True):
+    """Run one of the kits' scripts, showing it; RC_DEPLOY_ECHO=1 shows it alone (tests)."""
+    shown = " ".join(shlex.quote(c) for c in cmd)
+    extra = sorted((env or {}).items())
+    if extra:
+        shown = " ".join("%s=%s" % (k, shlex.quote(v)) for k, v in extra) + " " + shown
+    if os.environ.get("RC_DEPLOY_ECHO"):
+        sys.stdout.write("RUN %s\n" % shown)
+        return 0
+    say("running: %s" % shown)
+    e = dict(os.environ)
+    e.update(env or {})
+    rc = subprocess.call(cmd, env=e)
+    if check and rc != 0:
+        raise Refused("%s ended with exit %d" % (os.path.basename(cmd[0]), rc))
+    return rc
+
+
+def need_root(what):
+    if os.geteuid() != 0 and not os.environ.get("RC_DEPLOY_AS_ROOT"):
+        raise Refused("%s runs as root on this host: sudo %s" % (what, " ".join(sys.argv)))
+
+
+def kit_script(kit, name):
+    return os.path.join(REPO, "hpc", "deploy", name) if kit == "hpc" else \
+        os.path.join(REPO, "deploy", name)
+
+
+def installer_env(vals):
+    return dict((k, vals[k]) for k in INSTALLER_KEYS if vals.get(k))
+
+
+# ------------------------------------------------------------------ init
+
+def ask(question, default=None, yes_no=False, answers=None, key=None):
+    """One question, on stdin; --set KEY=VALUE or --yes answer it ahead."""
+    if answers is not None and key in answers:
+        return yesno(key, answers[key]) if yes_no else answers[key]
+    if answers is not None and answers.get("__yes__") and default is not None:
+        return default
+    hint = " [%s]" % default if default not in (None, "") else ""
+    while True:
+        sys.stdout.write("%s%s: " % (question, hint))
+        sys.stdout.flush()
+        line = sys.stdin.readline()
+        if not line:
+            if default is not None:
+                return default
+            raise Refused("no answer to: %s" % question)
+        got = line.strip() or (default if default is not None else "")
+        if not yes_no:
+            return got
+        try:
+            return yesno(key or question, got)
+        except Refused as e:
+            sys.stdout.write("  %s\n" % e)
+
+
+def choose_kit(slurm, nodes, root_nodes, root_dash):
+    """The kit the answers call for, and why."""
+    if not nodes:
+        if root_dash == "yes":
+            return "single", "one server, with root: it runs both"
+        return "hpc", ("no root here: the site's administrators install the collector (the RPM), "
+                       "and its files stream to a host of your own")
+    if root_nodes == "yes" and root_dash == "yes":
+        return "fleet", "root on the nodes and the dashboard's host: rsync copies each node"
+    return "hpc", "no root on %s: each node's files stream over ssh, started by a key that can "\
+        "run nothing else" % ("the nodes" if root_nodes != "yes" else "the dashboard's host")
+
+
+def cmd_init(args):
+    answers = dict(kv.split("=", 1) for kv in (args.set or []))
+    if args.yes:
+        answers["__yes__"] = "1"
+    for k in ("SLURM", "ANONYMIZE"):
+        if k in answers:
+            answers[k] = yesno(k, answers[k])
+    say("four questions decide the kit; Enter takes the answer in brackets")
+    slurm = ask("Do the nodes run Slurm (the dashboard's HPC tab)? yes/no", "yes", True, answers, "SLURM")
+    nodes = ask("Which nodes does the collector run on (names, separated by blanks; "
+                "empty: this one server)", "", False, answers, "NODES")
+    nodes = " ".join(nodes.replace(",", " ").split())
+    root_nodes = "no"
+    if nodes:
+        root_nodes = ask("Do you have root on those nodes? yes/no", "no", True, answers, "ROOT_ON_NODES")
+    root_dash = ask("Do you have root on the host that will run the dashboard? yes/no",
+                    "yes" if not nodes else "no", True, answers, "ROOT_ON_DASHBOARD")
+    kit, why = choose_kit(slurm, nodes, root_nodes, root_dash)
+    if args.kit:
+        kit, why = args.kit, "--kit says so"
+    say("the kit: %s (%s)" % (kit, why))
+    noun = answers.get("NODE_NOUN") or ("login nodes" if slurm == "yes" else "servers")
+    common = [("KIT", kit), ("SLURM", slurm), ("NODE_NOUN", noun),
+              ("SITE_NAME", answers.get("SITE_NAME") or "%s · live" % noun)]
+    for k in ("SITE_DESCRIPTION", "ANONYMIZE", "MEMORY_MAX", "FREE_MIN_GB"):
+        if answers.get(k):
+            common.append((k, answers[k]))
+    if kit in ("single", "fleet"):
+        path = args.site or DEPLOY_SITE
+        if os.path.exists(HPC_SITE) and not args.site:
+            raise Refused("%s exists (the hpc kit): remove it first, or give --site" % HPC_SITE)
+        settings = list(common)
+        if kit == "fleet":
+            settings.append(("NODES", nodes))
+            addr = ask("The dashboard host's address, as the nodes see it (install-node.sh "
+                       "--from; empty: any)", "", False, answers, "DASH_ADDRESS")
+            if addr:
+                settings.append(("DASH_ADDRESS", addr))
+        head = ("# Written by deploy/rc-deploy init: the settings of this %s deployment. Edit,\n"
+                "# then `sudo deploy/rc-deploy apply`. Names: deploy/README.md, \"Settings\".\n" % kit)
+    else:
+        path = args.site or HPC_SITE
+        if os.path.exists(DEPLOY_SITE) and not args.site:
+            raise Refused("%s exists (a deploy/ kit): remove it first, or give --site" % DEPLOY_SITE)
+        user = os.environ.get("USER") or "you"
+        settings = list(common) + [
+            ("SOURCE_USER", ask("Your account on the nodes", user, False, answers, "SOURCE_USER")),
+            ("SOURCE_NODES", nodes or ask("The nodes", None, False, answers, "SOURCE_NODES")),
+            ("SOURCE_DOMAIN", ask("The domain that completes each node's name (empty: none)", "",
+                                  False, answers, "SOURCE_DOMAIN")),
+            ("SOURCE_ROOT", ask("The collector's folder on the nodes", "/scratch/ebpfm", False,
+                                answers, "SOURCE_ROOT")),
+            ("DASH_SSH", ask("The dashboard's host, as you log in to it (account@host)", None,
+                             False, answers, "DASH_SSH")),
+        ]
+        dash_host = dict(settings)["DASH_SSH"].split("@")[-1]
+        settings += [
+            ("DASH_NODE", ask("Its short name (the unit runs only on a host whose name starts so)",
+                              dash_host.split(".")[0], False, answers, "DASH_NODE")),
+            ("DASH_ROOT", ask("The one private folder there that holds everything", None, False,
+                              answers, "DASH_ROOT")),
+        ]
+        sender = ask("Where the sender lives on the nodes (a full path)",
+                     "/home/%s/rc-fleet-sender" % dict(settings)["SOURCE_USER"], False, answers,
+                     "SENDER_DIR")
+        settings.append(("SENDER_DIR", sender))
+        for k, default in (("SHARED_HOME", "yes"), ("DASH_PORT", "8080")):
+            settings.append((k, answers.get(k, default)))
+        head = None
+        if not os.path.exists(path):
+            with open(HPC_EXAMPLE) as fh:
+                head = fh.read()
+    for k, v in settings:
+        quote(v, k)                      # a value no quoting keeps: refused before any write
+    if os.path.exists(path) and not args.force:
+        say("%s exists: the answers are set in it, and its other lines stay" % path)
+    for k, v in settings:
+        set_line(path, k, v, head=head)
+        head = None
+    say("settings in %s" % path)
+    if kit == "hpc":
+        say("next: check %s (every key is explained there), then `deploy/rc-deploy apply`" % path)
+    else:
+        say("next: `sudo deploy/rc-deploy apply`, then `sudo deploy/rc-deploy password`")
+    return 0
+
+
+# ------------------------------------------------------------------ the commands
+
+def cmd_which(args):
+    kit, path, vals = site_file(args)
+    print("kit %s, settings %s" % (kit, path))
+    return 0
+
+
+def cmd_apply(args, plan=None):
+    kit, path, vals = site_file(args)
+    plan = args.plan if plan is None else plan
+    extra = ["--plan"] if plan else []
+    if kit == "hpc":
+        # install-remote.sh makes the venv where there is none: no --first needed
+        return run([kit_script(kit, "deploy.sh")] + extra, env={"SITE_ENV": path})
+    if not plan:
+        need_root("apply")
+    env = installer_env(vals)
+    if kit == "single":
+        rc = run([os.path.join(HERE, "single", "install.sh")] + extra, env=env)
+    else:
+        rc = run([os.path.join(HERE, "fleet", "install-dashboard.sh")] + extra, env=env)
+        if not plan:
+            pub = os.path.join(installed("ETC", "/etc/rc-dashboard"), "pull_key.pub")
+            key = open(pub).read().strip() if os.path.exists(pub) else "<%s>" % pub
+            frm = vals.get("DASH_ADDRESS")
+            say("on each node, from a checkout of this repository (it prints the node's line):")
+            print("    sudo deploy/fleet/install-node.sh --key '%s'%s" % (key, " --from %s" % frm if frm else ""))
+            print("  then add each node with: sudo deploy/rc-deploy add-node '<the line it prints>'")
+    return rc
+
+
+def _fleet_env():
+    etc = installed("ETC", "/etc/rc-dashboard")
+    return os.path.join(etc, "fleet.env"), installed("OPT", "/opt/rc-dashboard")
+
+
+def _fleet_mirror(fleet_env):
+    """Where pull.py keeps the copy and its .state: FLEET_MIRROR as fleet.env sets it,
+    read as pull.py reads it (no $-expansion), else pull.py's own default."""
+    try:
+        mirror = read_env(fleet_env).get("FLEET_MIRROR", "")
+    except OSError:
+        mirror = ""
+    return os.path.abspath(mirror or "/var/lib/rc-dashboard/mirror")
+
+
+def _pull(fleet_env, opt, *args):
+    py = os.path.join(opt, "venv", "bin", "python")
+    if not os.path.exists(py):
+        py = sys.executable
+    return subprocess.call([py, os.path.join(HERE, "fleet", "pull.py"), "--config", fleet_env] + list(args))
+
+
+def _entry_name(entry):
+    name = re.split(r"[=:]", entry, maxsplit=1)[0]
+    if not NAME_RE.match(name):
+        raise Refused("%r is not a node name (letters, digits, . _ -)" % name)
+    return name
+
+
+def cmd_add_node(args):
+    kit, path, vals = site_file(args)
+    entry = args.entry.strip()
+    name = _entry_name(entry)
+    if kit == "single":
+        raise Refused("a single server has no nodes to add: `rc-deploy init` again, for the fleet kit")
+    if kit == "hpc":
+        nodes = vals.get("SOURCE_NODES", "").split()
+        if name in nodes:
+            raise Refused("%s is in SOURCE_NODES already" % name)
+        if entry != name:
+            raise Refused("the hpc kit takes a node's name alone (SOURCE_DOMAIN completes it)")
+        set_line(path, "SOURCE_NODES", " ".join(nodes + [name]))
+        say("%s added to SOURCE_NODES in %s" % (name, path))
+        if vals.get("SHARED_HOME", "yes") != "yes":
+            say("the nodes do not share a home: add the stream key's line to %s's "
+                "~/.ssh/authorized_keys on %s (hpc/deploy/README.md, step 3)"
+                % (vals.get("SOURCE_USER"), name))
+        return run([kit_script(kit, "deploy.sh")], env={"SITE_ENV": path})
+    need_root("add-node")
+    fleet_env, opt = _fleet_env()
+    if not os.path.exists(fleet_env):
+        raise Refused("no %s: run `rc-deploy apply` first" % fleet_env)
+    current = read_env(fleet_env).get("FLEET_HOSTS", "").split()
+    mine = [e for e in current if _entry_name(e) == name]
+    # A bare name -- as init's NODES puts it, with the default folders -- is completed
+    # by the line the node's install prints, which apply says to add; an entry with its
+    # own target or folders stays as it is.
+    completing = mine == [name] and entry != name
+    if mine and not completing:
+        raise Refused("%s is in FLEET_HOSTS already%s" % (
+            name, "" if mine == [entry] else
+            ", as %s: remove-node it first to change it" % " ".join(mine)))
+    # The line, checked before it goes in: pull.py reads a copy with it.
+    if completing:
+        text = _drop_entry(fleet_env, name)
+    else:
+        with open(fleet_env) as fh:
+            text = fh.read()
+    line = 'FLEET_HOSTS+=" %s"\n' % entry
+    text = text.rstrip("\n") + "\n" + line
+    fd, tmp = tempfile.mkstemp(prefix="fleet.env.")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    try:
+        if _pull(tmp, opt, "check") != 0:
+            raise Refused("pull.py refuses %r (above): fleet.env is as it was" % entry)
+    finally:
+        os.unlink(tmp)
+    if os.environ.get("RC_DEPLOY_ECHO"):
+        sys.stdout.write("RUN rewrite %s\n%s" % (fleet_env, text) if completing
+                         else "RUN append %s" % line)
+    elif completing:
+        write(fleet_env, text)
+    else:
+        with open(fleet_env, "a") as fh:
+            fh.write(line)
+    say("%s %s %s" % (name, "completed in" if completing else "added to", fleet_env))
+    if run(["systemctl", "is-active", "--quiet", "rc-pull.service"], check=False) == 0:
+        run(["systemctl", "reload", "rc-pull.service"])
+    else:
+        run([os.path.join(HERE, "fleet", "install-dashboard.sh"), "--no-build"], env=installer_env(vals))
+    say("the dashboard reads %s's copy at its next rescan: no restart" % name)
+    return 0
+
+
+def _drop_entry(fleet_env, name):
+    """fleet.env with `name` out of FLEET_HOSTS (its = line and every += line, made one
+    line where the first was), every other line as it was."""
+    with open(fleet_env) as fh:
+        lines = fh.read().splitlines()
+    out, hosts, found, first = [], [], False, None
+    for line in lines:
+        m = re.match(r"^FLEET_HOSTS(\+?)=(.*)$", line)
+        if not m:
+            out.append(line)
+            continue
+        if first is None:
+            first = len(out)
+        v = m.group(2).strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        entries = v.split()
+        kept = [e for e in entries if _entry_name(e) != name]
+        found = found or len(kept) != len(entries)
+        hosts = hosts + kept if m.group(1) else kept
+    if not found:
+        raise Refused("%s is not in FLEET_HOSTS" % name)
+    out.insert(first, 'FLEET_HOSTS="%s"' % " ".join(hosts))
+    return "\n".join(out) + "\n"
+
+
+def cmd_remove_node(args):
+    kit, path, vals = site_file(args)
+    name = _entry_name(args.name)
+    if kit == "single":
+        raise Refused("a single server has no nodes to remove")
+    if kit == "hpc":
+        nodes = vals.get("SOURCE_NODES", "").split()
+        if name not in nodes:
+            raise Refused("%s is not in SOURCE_NODES" % name)
+        rest = [n for n in nodes if n != name]
+        if not rest:
+            # Refused before the file changes: render.py renders no deployment of no
+            # node, so an emptied SOURCE_NODES stopped deploy.sh with the receiver still
+            # copying the node, --purge-copy not reached, and every later deploy stopped.
+            raise Refused("%s is the only node in SOURCE_NODES, and a deployment streams from "
+                          "at least one: add its replacement first (add-node), or stop "
+                          "collecting altogether (uninstall)" % name)
+        set_line(path, "SOURCE_NODES", " ".join(rest))
+        say("%s taken out of SOURCE_NODES in %s" % (name, path))
+        run([kit_script(kit, "deploy.sh")], env={"SITE_ENV": path})
+        if args.purge_copy:
+            # Its copy, the fetches it had half done, and its verified ledger, which named
+            # files the copy no longer held: added again, the node's frames for them were
+            # refused. (The receiver also forgets a ledger's keys whose files are gone,
+            # for a ledger its retiring link wrote back after this.)
+            data = "%s/data" % vals["DASH_ROOT"]
+            gone = ["%s/mirror/%s" % (data, name), "%s/staging/%s" % (data, name),
+                    "%s/state/%s.verified.json" % (data, name)]
+            rc = run(_hpc_ssh(vals) + [vals["DASH_SSH"],
+                                       "rm -rf " + " ".join(shlex.quote(p) for p in gone)],
+                     check=False)
+            if rc != 0:
+                # A retry would be refused, the node being no longer listed: say the rest.
+                raise Refused("%s is out of SOURCE_NODES and deployed without it, but its copy "
+                              "could not be removed (ssh ended with exit %d): remove %s on %s "
+                              "by hand" % (name, rc, " ".join(gone), vals["DASH_SSH"]))
+        say("on %s, take the stream key's line out of %s's ~/.ssh/authorized_keys if its home is "
+            "its own" % (name, vals.get("SOURCE_USER")))
+        return 0
+    need_root("remove-node")
+    fleet_env, opt = _fleet_env()
+    mirror = _fleet_mirror(fleet_env)       # read while the node's line is still there
+    text = _drop_entry(fleet_env, name)
+    if os.environ.get("RC_DEPLOY_ECHO"):
+        sys.stdout.write("RUN rewrite %s\n%s" % (fleet_env, text))
+    else:
+        write(fleet_env, text)
+    say("%s taken out of %s" % (name, fleet_env))
+    run(["systemctl", "reload", "rc-pull.service"], check=False)
+    # Its copy and its pull state where pull.py keeps them: under FLEET_MIRROR,
+    # which may be moved off $STATE/mirror. The pull state goes whatever happens
+    # to its copy: nothing pulls it now, and a state file left behind aged past
+    # status.stale_s into a copy failure the hourly check reported for good. A
+    # running rc-pull drops it too, once the node's last pass has ended (a pass
+    # still running may outlast this delete); this one is for an rc-pull that is
+    # not running.
+    copy = [os.path.join(mirror, t, name) for t in ("ebpf", "node")]
+    pulled = os.path.join(mirror, ".state", name + ".json")
+    if os.path.exists(pulled) or os.environ.get("RC_DEPLOY_ECHO"):
+        run(["rm", "-f", pulled])
+    if args.purge_copy:
+        run(["rm", "-rf"] + copy)
+    else:
+        say("its copy stays, and the dashboard still shows its days: --purge-copy removes %s"
+            % " and ".join(copy))
+    say("on %s: sudo deploy/common/uninstall.sh --purge (or userdel -r rc-pull) takes the key away" % name)
+    return 0
+
+
+def cmd_password(args):
+    kit, path, vals = site_file(args)
+    extra = (["--rotate"] if args.rotate else []) + (["--plan"] if args.plan else [])
+    if kit == "hpc":
+        return run([kit_script(kit, "password.sh")] + extra, env={"SITE_ENV": path})
+    need_root("password")
+    return run([os.path.join(HERE, "common", "password.sh")] + extra)
+
+
+def _hpc_ssh(vals):
+    """ssh to the dashboard's host as hpc/deploy/deploy.sh does: with the kit's key
+    (SSH_KEY), offering nothing else, never asking."""
+    key = os.path.expanduser(vals.get("SSH_KEY") or "~/.ssh/id_ed25519")
+    return ["ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=20", "-o", "LogLevel=ERROR"]
+
+
+def cmd_status(args):
+    kit, path, vals = site_file(args)
+    if kit == "hpc":
+        r = vals["DASH_ROOT"]
+        remote = ("cd %s/current/dashboard && RC_DASH_CONFIG=%s/etc/dashboard.config.json "
+                  "RC_DASH_TRANSPORT_FILES=%s/data/state/status.json %s/venv/bin/python -m rc_dashboard "
+                  "status; rc=$?; echo; /usr/bin/python3 %s/current/hpc/fleet/fleet_stream.py status "
+                  "--base %s/data; exit $rc" % (r, r, r, r, r, r))
+        return run(_hpc_ssh(vals) + [vals["DASH_SSH"], remote], check=False)
+    need_root("status")
+    return run([os.path.join(HERE, "common", "check.sh"), "--print"], check=False)
+
+
+def _head():
+    return subprocess.check_output(["git", "-C", REPO, "rev-parse", "HEAD"],
+                                   universal_newlines=True).strip()
+
+
+def cmd_upgrade(args):
+    kit, path, vals = site_file(args)
+    if kit != "hpc":
+        need_root("upgrade")
+    before = _head()
+    if args.to:
+        run(["git", "-C", REPO, "fetch", "--tags", "--quiet"])
+        run(["git", "-C", REPO, "checkout", "--detach", args.to])
+    else:
+        run(["git", "-C", REPO, "pull", "--ff-only"])
+    after = _head() if not os.environ.get("RC_DEPLOY_ECHO") else "(new)"
+    if after == before:
+        say("already at %s" % before[:12])
+    with open(HISTORY, "a") as fh:
+        fh.write("%s %s %s\n" % (before, after, time.strftime("%Y-%m-%d %H:%M:%S")))
+    if kit == "hpc":
+        return run([kit_script(kit, "deploy.sh"), "--restart"], env={"SITE_ENV": path})
+    rc = cmd_apply(args, plan=False)
+    if kit == "fleet":
+        say("then on each node: cd %s && git checkout %s && sudo deploy/fleet/install-node.sh "
+            "--no-bootstrap" % (REPO, after))
+    return rc
+
+
+def cmd_rollback(args):
+    kit, path, vals = site_file(args)
+    if kit == "hpc":
+        return run([kit_script(kit, "rollback.sh")] + ([args.sha] if args.sha else []),
+                   env={"SITE_ENV": path})
+    need_root("rollback")
+    if args.sha:
+        target = args.sha
+    else:
+        try:
+            with open(HISTORY) as fh:
+                rows = [l.split() for l in fh if l.strip()]
+        except OSError:
+            rows = []
+        if not rows:
+            raise Refused("no upgrade recorded in %s: give the commit to go back to" % HISTORY)
+        target = rows[-1][0]
+    run(["git", "-C", REPO, "checkout", "--detach", target])
+    return cmd_apply(args, plan=False)
+
+
+def cmd_backup(args):
+    kit, path, vals = site_file(args)
+    extra = ["--to", args.to] if args.to else []
+    if kit == "hpc":
+        return run([kit_script(kit, "backup.sh")] + extra, env={"SITE_ENV": path})
+    need_root("backup")
+    return run([os.path.join(HERE, "common", "backup.sh")] + extra + ["--settings"])
+
+
+def cmd_uninstall(args):
+    kit, path, vals = site_file(args)
+    extra = (["--purge"] if args.purge else []) + (["--plan"] if args.plan else [])
+    if kit == "hpc":
+        return run([kit_script(kit, "uninstall.sh")] + extra, env={"SITE_ENV": path})
+    if not args.plan:
+        need_root("uninstall")
+    return run([os.path.join(HERE, "common", "uninstall.sh")] + extra)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="rc-deploy", description=__doc__.split("\n\n")[0],
+                                 epilog=__doc__.split("\n\n", 1)[1],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--site", help="the settings file (default: the one this checkout has)")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("init", help="ask four questions, write the settings file")
+    p.add_argument("--kit", choices=KITS)
+    p.add_argument("--set", action="append", metavar="KEY=VALUE", help="an answer ahead")
+    p.add_argument("--yes", action="store_true", help="take the default for every question")
+    p.add_argument("--force", action="store_true")
+    sub.add_parser("which", help="the kit, and its settings file")
+    p = sub.add_parser("apply", help="install, or bring the install in line")
+    p.add_argument("--plan", action="store_true")
+    sub.add_parser("plan", help="apply --plan")
+    p = sub.add_parser("add-node", help="a node, with no restart of the dashboard")
+    p.add_argument("entry", help="NAME, or the line install-node.sh prints: NAME=TARGET:SOURCES")
+    p = sub.add_parser("remove-node", help="a node out; its copy stays unless --purge-copy")
+    p.add_argument("name")
+    p.add_argument("--purge-copy", action="store_true")
+    p = sub.add_parser("password", help="make the password, and put its hash in place")
+    p.add_argument("--rotate", action="store_true")
+    p.add_argument("--plan", action="store_true")
+    sub.add_parser("status", help="every collector's verdict and every node's copy")
+    p = sub.add_parser("upgrade", help="the checkout to REF (default git pull), then apply")
+    p.add_argument("--to", metavar="REF")
+    p.add_argument("--plan", action="store_true", help=argparse.SUPPRESS)
+    p = sub.add_parser("rollback", help="back to what ran before")
+    p.add_argument("sha", nargs="?")
+    p.add_argument("--plan", action="store_true", help=argparse.SUPPRESS)
+    p = sub.add_parser("backup", help="what cannot be rebuilt, into one file")
+    p.add_argument("--to", metavar="FILE")
+    p = sub.add_parser("uninstall", help="take it off; --purge takes the data too")
+    p.add_argument("--purge", action="store_true")
+    p.add_argument("--plan", action="store_true")
+    args = ap.parse_args(argv)
+    if not args.cmd:
+        ap.print_help()
+        return 2
+    commands = {"init": cmd_init, "which": cmd_which, "apply": cmd_apply,
+                "plan": lambda a: cmd_apply(a, plan=True), "add-node": cmd_add_node,
+                "remove-node": cmd_remove_node, "password": cmd_password, "status": cmd_status,
+                "upgrade": cmd_upgrade, "rollback": cmd_rollback, "backup": cmd_backup,
+                "uninstall": cmd_uninstall}
+    try:
+        return commands[args.cmd](args)
+    except Refused as e:
+        sys.stderr.write("rc-deploy: %s\n" % e)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -44,7 +44,7 @@ import { SurfaceChip } from '../components/SurfaceChip';
 import { surfaceTip } from '../lib/surfaces';
 import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
-import { DASH, dur, fint, mb, pc } from '../lib/format';
+import { DASH, clock, dur, fint, mb, pc } from '../lib/format';
 import { AGENT_TYPE_COL, AGENT_TYPE_LBL } from '../lib/classes';
 import { AP_LABEL, CALL_LABEL, SESSION_LABEL, label } from '../lib/sandbox';
 import { hasBody, pick, winLabel } from '../lib/panels';
@@ -56,6 +56,7 @@ import { stickyTop } from '../lib/sticky';
 import { PLACE_SEVERITY } from '../lib/places';
 import './agents.css';
 import { table } from '../lib/lookup';
+import { monthDay } from '../lib/zone';
 
 const HOME_TIP: Record<HomeSrc, string> = table({
   agent: "the agent process's own cwd: the directory it was started in",
@@ -157,9 +158,7 @@ function Ops({ d }: { d: { read: number; write: number; delete: number; named: n
 
 function when(e: number | null): string {
   if (e == null) return DASH;
-  const d = new Date(e * 1000);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${monthDay(e * 1000)} ${clock(e).slice(0, 5)}`;
 }
 
 /** First to last seen; the second date is dropped when it is the same day. */
@@ -1180,9 +1179,19 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
     }
   } else groups.push(['', entries]);
 
-  const picked = sel ? entries.find((e) => e.key === sel.entry) ?? null : null;
-  const pickedLone = sel && !picked
-    ? [...lone].find((p) => keyOf(p.t.host, p.n.pid) === sel.entry) ?? null
+  // Nothing picked: the list's first row is shown, so the detail beside the
+  // list opens on an agent rather than on an empty "pick one" frame. A pick is
+  // still the reader's own (`sel`); this is only what shows until there is one.
+  // Held while it stays listed, so a new agent at the top does not swap the detail under the reader.
+  const auto = useRef<string | null>(null);
+  if (sel) auto.current = null;
+  else if (!auto.current || !entries.some((e) => e.key === auto.current && e.k !== 'fold')) {
+    auto.current = (by === 'user' ? groups[0]?.[1] : entries)?.find((e) => e.k !== 'fold')?.key ?? null;
+  }
+  const cur = sel ?? (auto.current ? { entry: auto.current, agent: null } : null);
+  const picked = cur ? entries.find((e) => e.key === cur.entry) ?? null : null;
+  const pickedLone = cur && !picked
+    ? [...lone].find((p) => keyOf(p.t.host, p.n.pid) === cur.entry) ?? null
     : null;
   const pickRow = (key: string, agent: string | null) =>
     setSel(sel?.entry === key && sel.agent === agent ? null : { entry: key, agent });
@@ -1200,7 +1209,7 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
   };
   const loneRow = (p: AgentPt, inFold?: boolean) => {
     const k = keyOf(p.t.host, p.n.pid);
-    return <LoneRow key={k} keys={k} n={p.n} on={sel?.entry === k} onPick={() => pickRow(k, k)} inFold={inFold} />;
+    return <LoneRow key={k} keys={k} n={p.n} on={cur?.entry === k} onPick={() => pickRow(k, k)} inFold={inFold} />;
   };
 
   // The two histograms, kept for whoever wants the shape of nesting.
@@ -1234,7 +1243,7 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
   const detail = (() => {
     if (picked?.k === 'tree') {
       const { t, agents } = picked;
-      const a = sel?.agent ?? null;
+      const a = cur?.agent ?? null;
       return (
         <div className="al-pane">
           <TreeTitle t={t} agents={agents} />
@@ -1308,7 +1317,7 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
                     {u && <div className="al-user mono">{u}</div>}
                     {es.map((e) =>
                       e.k === 'tree' ? (
-                        <TreeRow key={e.key} e={e} on={sel?.entry === e.key} onPick={() => pickRow(e.key, null)} />
+                        <TreeRow key={e.key} e={e} on={cur?.entry === e.key} onPick={() => pickRow(e.key, null)} />
                       ) : e.k === 'lone' ? (
                         loneRow(e.p)
                       ) : (

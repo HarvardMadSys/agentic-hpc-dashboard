@@ -9,6 +9,12 @@
  * everywhere else on the page, so a stripe in one of them on an unrelated
  * number reads as a class it is not. The one accent a plate takes is `alarm`:
  * a red edge for a count that is a problem when it is above zero.
+ *
+ * A class is never told by its colour alone: crimson and green, agent and
+ * human, are one olive brown to a red-green colour-blind reader. Each swatch
+ * in the row carries its class's word, and a plate with a row says whose its
+ * headline is (`head`, the agent's: the row is for scale), so the label above
+ * names only the measure.
  */
 import { CLS, CLS_COL, CLS_LBL } from '../lib/classes';
 import { DASH, fint } from '../lib/format';
@@ -26,9 +32,13 @@ export function Plate({
   classes = CLS,
   onClick,
   linkTip,
+  head = by ? 'agent' : undefined,
 }: {
   k: string;
   total: number | null | undefined;
+  /** whose the headline is, said beside it; by default the agent's on a plate
+   *  with a class row, and nothing on a plate about agents alone */
+  head?: Cls;
   /** a red edge: this count is a problem, and it is above zero */
   alarm?: boolean;
   /** per-class values; a class absent from the map renders as a dash, not 0.
@@ -62,12 +72,14 @@ export function Plate({
         <div className="v">
           {total == null ? DASH : fmtFn(total)}
           {unit && total != null && <small> {unit}</small>}
+          {head && total != null && <small className="whose"> {CLS_LBL[head]}</small>}
         </div>
         {by && (
           <div className="cls3">
             {classes.map((c) => (
-              <span key={c} data-tip={CLS_LBL[c]}>
-                <i style={{ background: CLS_COL[c] }} />
+              <span key={c}>
+                <i style={{ background: CLS_COL[c] }} aria-hidden="true" />
+                <span className="cl">{CLS_LBL[c]}</span>
                 <b>{c in by ? fmtFn(by[c]) : DASH}</b>
               </span>
             ))}

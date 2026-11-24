@@ -98,6 +98,14 @@ try:  # netlink socket-diag for standing connections
     import sockdiag
 except Exception:  # pragma: no cover
     sockdiag = None
+try:  # the settings table, for what a value this tier reads its own way comes to
+    from ebpfm_settings import tracer_complaints as _tracer_complaints
+except Exception:  # pragma: no cover
+    _tracer_complaints = None
+try:  # the version `meta` records as collector_version (null when it cannot tell)
+    from ebpfm_version import collector_version as _collector_version
+except Exception:  # pragma: no cover
+    _collector_version = None
 
 # This process's pid, stamped on every record (see _envelope). Read once: the
 # tracer never forks itself -- ebpfm.sh daemonizes before Python starts -- and a
@@ -131,8 +139,12 @@ SCHEMA_VERSION = 8      # 8 = only an agent runtime (agent_role) starts a sessio
                         #     residency top_procs/state_counts/tcp_open_ext, io on truncated
                         # 4 = cwd, dstate_*, net_*, conn/accept/truncated events, attribution
 
+# The short host name, as ebpfm.sh and the node tier use, so one node's files
+# share one name: the unit passes no argument (it passed %H, the full name, before
+# collector versions were recorded). EBPFM_HOST overrides it everywhere at once.
 HOSTNAME = (sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('-')
-            else os.uname().nodename.split('.')[0])
+            else (os.environ.get('EBPFM_HOST') or '').strip()
+            or os.uname().nodename.split('.')[0])
 
 # ---------------------------------------------------------------------------
 # configuration (EBPFM_* env)
@@ -158,6 +170,8 @@ def _env_mode(name, default):
     try:
         return int(v, 8)
     except ValueError:
+        sys.stderr.write('ebpfm: %s=%r: expected an octal mode such as %04o; using that\n'
+                         % (name, os.environ[name], default))
         return default
 DIR_MODE      = _env_mode('EBPFM_DIR_MODE', 0o750)           # output dirs; None = leave umask default
 FILE_MODE     = _env_mode('EBPFM_FILE_MODE', 0o640)          # day-files; None = leave umask default
@@ -297,20 +311,35 @@ REDACT        = _redact_kinds(os.environ.get('EBPFM_REDACT'))
 REDACT_KEYS   = 'keys' in REDACT
 REDACT_PROMPTS = 'prompts' in REDACT
 
-DURATION      = env_num('EBPFM_DURATION', 0, float)          # 0 = forever
-ARGS_MAXLEN   = env_num('EBPFM_ARGS_MAXLEN', 0, int)         # emitted argv cap; 0 = none (classification is always uncapped)
-ARGV_KMAX     = env_num('EBPFM_ARGV_KMAX', 4096, int)        # in-kernel argv read (bytes): the real limit when uncapped
-WRITE_KMAX    = env_num('EBPFM_WRITE_KMAX', 1024, int)       # per write() capture (bytes)
-SUBMIT_BUDGET = env_num('EBPFM_SUBMIT_BUDGET', 8192, int)   # per submit tool, then capture stops
-MIN_DURATION  = env_num('EBPFM_MIN_DURATION', 0.0, float)
-MIN_CPU       = env_num('EBPFM_MIN_CPU', 0.0, float)
+def _env_num(name, default, cast):
+    """procparse.env_num (vendored, unchanged), saying so when it cannot read a
+    value: the default it falls back to is named on stderr -- the journal, under
+    the unit -- rather than applied without a word. `ebpfm.sh` refuses such a
+    value before it starts anything; the unit runs this file directly."""
+    raw = os.environ.get(name)
+    if raw is not None:
+        try:
+            cast(raw)
+        except (TypeError, ValueError):
+            sys.stderr.write('ebpfm: %s=%r: expected a number; using the default %s\n'
+                             % (name, raw, default))
+    return env_num(name, default, cast)
+
+
+DURATION      = _env_num('EBPFM_DURATION', 0, float)          # 0 = forever
+ARGS_MAXLEN   = _env_num('EBPFM_ARGS_MAXLEN', 0, int)         # emitted argv cap; 0 = none (classification is always uncapped)
+ARGV_KMAX     = _env_num('EBPFM_ARGV_KMAX', 4096, int)        # in-kernel argv read (bytes): the real limit when uncapped
+WRITE_KMAX    = _env_num('EBPFM_WRITE_KMAX', 1024, int)       # per write() capture (bytes)
+SUBMIT_BUDGET = _env_num('EBPFM_SUBMIT_BUDGET', 8192, int)   # per submit tool, then capture stops
+MIN_DURATION  = _env_num('EBPFM_MIN_DURATION', 0.0, float)
+MIN_CPU       = _env_num('EBPFM_MIN_CPU', 0.0, float)
 INCLUDE_ROOTS = os.environ.get('EBPFM_INCLUDE_ROOTS', '1') != '0'
 KEEP_TIMERS   = os.environ.get('EBPFM_KEEP_TIMERS', '0') != '0'
 TIMER_COMMS   = {c for c in (os.environ.get('EBPFM_TIMER_COMMS') or 'sleep,usleep').split(',') if c}
-GRACE_S       = env_num('EBPFM_GC_GRACE', 300.0, float)
-POLL_MS       = env_num('EBPFM_POLL_MS', 100, int)
-PAGE_CNT      = env_num('EBPFM_PERF_PAGES', 256, int)        # perf ring pages per CPU
-RESIDENCY_S   = env_num('EBPFM_RESIDENCY_S', 60.0, float)    # 0 disables the tick entirely
+GRACE_S       = _env_num('EBPFM_GC_GRACE', 300.0, float)
+POLL_MS       = _env_num('EBPFM_POLL_MS', 100, int)
+PAGE_CNT      = _env_num('EBPFM_PERF_PAGES', 256, int)        # perf ring pages per CPU
+RESIDENCY_S   = _env_num('EBPFM_RESIDENCY_S', 60.0, float)    # 0 disables the tick entirely
 SUBMIT_COMMS  = {c for c in (os.environ.get('EBPFM_SUBMIT_COMMS') or 'sbatch,salloc,srun').split(',') if c}
 FEATURES_ENV  = os.environ.get('EBPFM_FEATURES', 'auto')     # 'auto' | pinned comma list
 FEATURE_CACHE = os.environ.get('EBPFM_FEATURE_CACHE', '1') != '0'
@@ -329,30 +358,30 @@ SANDBOX_ALWAYS = os.environ.get('EBPFM_SANDBOX_ALWAYS', '0') != '0'  # read on e
 # would propagate "unsandboxed" down the whole sandboxed tree. Matched on the full
 # command (_command_of), not comm: codex-linux-sandbox is 19 characters, and the
 # kernel's comm for it is only ever 'codex-linux-san'.
-RESIDENCY_TOPN = env_num('EBPFM_RESIDENCY_TOPN', 5, int)   # heaviest procs per tree
+RESIDENCY_TOPN = _env_num('EBPFM_RESIDENCY_TOPN', 5, int)   # heaviest procs per tree
 SANDBOX_COMMS = {'bwrap', 'unshare', 'nsenter', 'podman', 'docker', 'runc', 'crun',
                  'conmon', 'containerd-shim', 'apptainer', 'singularity', 'proot',
                  'firejail', 'systemd-nspawn', 'codex-linux-sandbox'}
 # --- item 3/8: network -----------------------------------------------------
 TCP_ALL       = os.environ.get('EBPFM_TCP_ALL', '0') != '0'   # fold conns for untracked pids too
-CONNS_TOPN    = env_num('EBPFM_CONNS_TOPN', 5, int)           # peers/providers kept per record
+CONNS_TOPN    = _env_num('EBPFM_CONNS_TOPN', 5, int)           # peers/providers kept per record
 # How long an exit record is held before it is written, so that the socket
 # closes belonging to the exiting process can still be folded into it. The
 # kernel runs trace_sched_process_exit() BEFORE exit_files(), so a process's own
 # TCP_CLOSE events are submitted AFTER its exit event -- emitting inline would
 # drop every connection the process still held open, which for an agent is most
 # of them. Two poll rounds is generous; 0 restores the old inline emit.
-EXIT_HOLD_MS  = env_num('EBPFM_EXIT_HOLD_MS', 250, int)
+EXIT_HOLD_MS  = _env_num('EBPFM_EXIT_HOLD_MS', 250, int)
 # How far behind "now" (kernel time) the event queue is applied. Each CPU has
 # its own perf ring and BCC drains them one after another, so a poll round
 # hands events over by ring, not by time. Anything stamped this long before the
 # round's poll began was already in its ring when the poll ran, so nothing
 # older can still arrive. See dispatch_events().
-REORDER_MS    = env_num('EBPFM_REORDER_MS', 20, int)
+REORDER_MS    = _env_num('EBPFM_REORDER_MS', 20, int)
 CONN_ALL      = os.environ.get('EBPFM_CONN_ALL', '0') != '0'  # 1 = emit loopback/private too
 CONN_UNTRACKED = os.environ.get('EBPFM_CONN_UNTRACKED', '1') != '0'  # netlink rows with no pid
-NETPEER_MAX   = env_num('EBPFM_NETPEER_MAX', 65536, int)      # (pid, endpoint) entries in the kernel table (~3 MB)
-NET_ENDPOINTS_MAX = env_num('EBPFM_NET_ENDPOINTS_MAX', 256, int)  # endpoints listed per record
+NETPEER_MAX   = _env_num('EBPFM_NETPEER_MAX', 65536, int)      # (pid, endpoint) entries in the kernel table (~3 MB)
+NET_ENDPOINTS_MAX = _env_num('EBPFM_NET_ENDPOINTS_MAX', 256, int)  # endpoints listed per record
 WANT_NETIO    = os.environ.get('EBPFM_NETIO', '1') != '0'      # the per-tick `netio` series
 WANT_ARGV_HOSTS = os.environ.get('EBPFM_ARGV_HOSTS', '1') != '0'  # endpoint `host` from argv names
 
@@ -373,8 +402,8 @@ def _eph_range():
 
 EPH_RANGE     = _eph_range()
 # --- item 4: wait channel --------------------------------------------------
-DSTACK_MAX    = env_num('EBPFM_DSTACK_MAX', 300, int)         # /proc/<pid>/stack reads per tick
-DSTACK_DEPTH  = env_num('EBPFM_DSTACK_DEPTH', 5, int)
+DSTACK_MAX    = _env_num('EBPFM_DSTACK_MAX', 300, int)         # /proc/<pid>/stack reads per tick
+DSTACK_DEPTH  = _env_num('EBPFM_DSTACK_DEPTH', 5, int)
 # --- item 5: flush ---------------------------------------------------------
 FLUSH_ON_EXIT = os.environ.get('EBPFM_FLUSH', '1') != '0'
 # NB: distinct from EBPFM_FLUSH above, which is about flushing live PROCESSES at
@@ -388,7 +417,7 @@ FLUSH_MODE    = os.environ.get('EBPFM_FLUSH_MODE', 'poll')
 # --- item 6: uid attribution ----------------------------------------------
 # 0 disables. Enabling this widens what `actor3="human"` means, so a capture with
 # it on is NOT comparable to one with it off; filter on `attribution` downstream.
-MIN_UID       = env_num('EBPFM_MIN_UID', 0, int)
+MIN_UID       = _env_num('EBPFM_MIN_UID', 0, int)
 
 PAGE_SIZE = os.sysconf('SC_PAGE_SIZE') or 4096
 CLK_TCK   = os.sysconf('SC_CLK_TCK') or 100
@@ -5710,16 +5739,26 @@ def _self_cgroup():
     return None
 
 
+def _lock_name(host, boot=None):
+    """The lock file's name: the machine's, by its kernel boot id, not the host
+    name's. Before collector versions were recorded the unit wrote under the full
+    host name and `start` under the short one, and a lock keyed on the name let
+    both run into one folder. Hosts sharing a folder over NFS each have their own
+    boot id, and containers on one kernel share it."""
+    boot = BOOT_ID if boot is None else boot
+    return '.ebpfm-%s.lock' % boot if boot else '.%s.lock' % host
+
+
 def _take_lock(root, host):
-    """Hold <root>/.<host>.lock, exclusively, for the life of the run -- or exit.
-    Two collectors writing one host's files (the unit, and a manual start)
-    interleave their records and report every process twice. A filesystem that
-    cannot lock lets the run through."""
+    """Hold the output folder's lock for this machine (_lock_name), exclusively,
+    for the life of the run -- or exit. Two collectors writing one folder from one
+    machine (the unit, and a manual start) interleave their records and report
+    every process twice. A filesystem that cannot lock lets the run through."""
     import errno
     import fcntl
     try:
         os.makedirs(root, exist_ok=True)
-        fd = os.open(os.path.join(root, '.%s.lock' % host),
+        fd = os.open(os.path.join(root, _lock_name(host)),
                      os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     except OSError:
         return None
@@ -5732,8 +5771,9 @@ def _take_lock(root, host):
             holder = os.pread(fd, 32, 0).decode('ascii', 'replace').strip()
         except Exception:
             holder = ''
-        sys.stderr.write('error: another collector%s is writing %s for %s; not starting '
-                         'a second one\n' % (' (pid %s)' % holder if holder else '', root, host))
+        sys.stderr.write('error: another collector%s on this machine is writing %s; not '
+                         'starting a second one (ebpfm.sh status shows it)\n'
+                         % (' (pid %s)' % holder if holder else '', root))
         sys.exit(1)
     try:
         os.ftruncate(fd, 0)
@@ -5784,6 +5824,9 @@ def main():
     if os.geteuid() != 0:
         sys.stderr.write('warning: not root — BPF attach and other-user /proc reads will fail '
                          'without CAP_BPF/CAP_PERFMON/CAP_SYS_PTRACE (CAP_SYS_ADMIN < 5.8).\n')
+    if _tracer_complaints is not None:
+        for msg in _tracer_complaints(os.environ):
+            sys.stderr.write('ebpfm: %s\n' % msg)
 
     if '--dump-c' in argv or '--features' in argv:
         b, feats, rejected = probe_features(BPF, verbose=True)
@@ -5799,6 +5842,11 @@ def main():
         return
 
     lock_fd = _take_lock(OUTPUT_DIR, HOSTNAME)     # held until exit  # noqa: F841
+    # Before the probes attach, so the git it may run is not traced.
+    try:
+        version = _collector_version()[0] if _collector_version is not None else None
+    except Exception:
+        version = None
     unsafe = _unsafe_dirs([OUTPUT_DIR, _HERE]) if os.geteuid() == 0 else []
     if unsafe:
         sys.stderr.write('warning: running as root with output or code under directories '
@@ -5930,6 +5978,9 @@ def main():
                'kernel.task_delayacct': _sysctl('kernel.task_delayacct')}
     meta = _envelope('meta')
     meta.update({'kernel': os.uname().release, 'bcc': _bcc_version(), 'euid': os.geteuid(),
+            # which code wrote this run (ebpfm_version.py: the build's stamp, git
+            # describe in a checkout, else a hash of the code); null if unknown
+            'collector_version': version,
             # Cross-host time: ts_epoch on every record is the authoritative
             # ordering/binning key; these two say how to interpret it and which
             # boot the pids in this file belong to.
@@ -5979,10 +6030,15 @@ def main():
         if v == '0':
             sys.stderr.write('warning: %s=0 — the dstate_*/blkio_* fields will read 0 '
                              '(run `ebpfm.sh bootstrap` to set it)\n' % k)
-    # `ebpfm.sh overhead` waits for "running on" in this line
-    sys.stderr.write('ebpfm running on %s -> %s/<date>/%s.{snapshot,exits}.jsonl '
+    # `ebpfm.sh overhead` waits for "running on" in this line, and `start` reads the
+    # features from it. Flushed: Python before 3.9 (EL8's 3.6) block-buffers a stderr
+    # that is a file or the journal's pipe, so the line, and the warnings above it,
+    # would wait for 8 KiB more or for the exit.
+    sys.stderr.write('ebpfm %s running on %s -> %s/<date>/%s.{snapshot,exits}.jsonl '
                      '(features: %s)\n'
-                     % (HOSTNAME, OUTPUT_DIR, HOSTNAME, ','.join(sorted(feats)) or 'base'))
+                     % (version or '(version unknown)', HOSTNAME, OUTPUT_DIR, HOSTNAME,
+                        ','.join(sorted(feats)) or 'base'))
+    sys.stderr.flush()
 
     start = time.time()
     last_gc = last_res = last_resync = start

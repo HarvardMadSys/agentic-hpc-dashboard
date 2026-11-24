@@ -4382,7 +4382,8 @@ class Python36Test(unittest.TestCase):
         3.6 syntax, no f-strings (the project's rule) and no subprocess
         `text=`/`capture_output=`, which 3.6 rejects at the call."""
         sources = [(p.name, p.read_text(encoding='utf-8')) for p in
-                   [_ROOT / 'ebpf_trace.py', _ROOT / 'node_snapshot.py', Path(__file__).resolve()]
+                   [_ROOT / 'ebpf_trace.py', _ROOT / 'node_snapshot.py']
+                   + sorted((_ROOT / 'tests').glob('*.py'))
                    + sorted((_ROOT / 'lib').glob('*.py'))]
         sh = (_ROOT / 'ebpfm.sh').read_text(encoding='utf-8')
         snippets = re.findall(r"python3 -c '([^']*)'", sh)
@@ -5247,16 +5248,56 @@ class LockTest(unittest.TestCase):
         try:
             fd = T._take_lock(d, 'h')
             self.assertIsNotNone(fd)
-            with open(os.path.join(d, '.h.lock')) as f:
+            with open(os.path.join(d, T._lock_name('h'))) as f:
                 self.assertEqual(f.read().strip(), str(os.getpid()))
             import contextlib
             import io
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as err:
                 T._take_lock(d, 'h')
             self.assertIn('pid %d' % os.getpid(), err.getvalue())
-            self.assertIsNotNone(T._take_lock(d, 'other-host'))
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+    def test_the_lock_is_the_machines_not_the_host_names(self):
+        """The unit wrote under the full host name and `start` under the short one,
+        and a lock keyed on the name let both write one folder: it is keyed on the
+        kernel's boot id, so any second name for this machine is refused too."""
+        self.assertEqual(T._lock_name('node7', boot='b-1'), '.ebpfm-b-1.lock')
+        self.assertEqual(T._lock_name('node7', boot=''), '.node7.lock')    # no boot id: as before
+        if not T.BOOT_ID:
+            self.skipTest('no boot id on this kernel')
+        d = tempfile.mkdtemp(prefix='ebpfm_lock_')
+        try:
+            self.assertIsNotNone(T._take_lock(d, 'node7'))
+            import contextlib
+            import io
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                T._take_lock(d, 'node7.rc.example.edu')
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class EnvNumTest(unittest.TestCase):
+    def test_a_number_it_cannot_read_is_named_with_the_default_used(self):
+        """procparse.env_num (vendored) falls back without a word; the tracer's
+        wrapper says which value it could not read and what it uses instead."""
+        import contextlib
+        import io
+        with mock.patch.dict(os.environ, {'EBPFM_TEST_N': '1m'}), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(T._env_num('EBPFM_TEST_N', 60.0, float), 60.0)
+        self.assertIn("EBPFM_TEST_N='1m': expected a number; using the default 60.0", err.getvalue())
+        with mock.patch.dict(os.environ, {'EBPFM_TEST_N': '30'}), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(T._env_num('EBPFM_TEST_N', 60.0, float), 30.0)
+        self.assertEqual(err.getvalue(), '')
+
+    def test_meta_records_the_collector_version(self):
+        """The dashboard reads collector_version from meta records."""
+        src = (_ROOT / 'ebpf_trace.py').read_text(encoding='utf-8')
+        self.assertIn("'collector_version': version,", src)
+        self.assertIsNotNone(T._collector_version)
+        self.assertIsNotNone(T._tracer_complaints)
 
 
 class UnsafeDirTest(unittest.TestCase):
@@ -5369,16 +5410,20 @@ class WrapperTest(unittest.TestCase):
                            encoding='utf-8')
         return r.returncode, r.stdout, r.stderr
 
-    def test_help_prints_the_header_and_no_more(self):
-        """`help` prints the header comment, every verb in it, and stops at its
-        end: the line range it prints follows the header's length."""
-        rc, out, err = self._run('help')
+    def test_help_lists_every_command_and_the_exit_codes(self):
+        """`help` names the command as it was invoked, lists every command the
+        dispatcher takes, where the data and settings are, and the exit codes;
+        a word that is no command is a usage error (2)."""
+        rc, out, err = self._run('help', EBPFM_DEFAULT_FILE='')
         self.assertEqual((rc, err), (0, ''))
         lines = out.splitlines()
-        self.assertTrue(lines[0].startswith('ebpfm.sh'), lines[0])
-        self.assertIn('install-unit  install the persistent systemd unit', lines[-2])
-        self.assertEqual(lines[-1], '')
-        self.assertEqual(self._run('no-such-verb')[0], 1)
+        self.assertEqual(lines[0].split()[:2], ['Usage:', str(_ROOT / 'ebpfm.sh')])
+        commands = re.search(r'^COMMANDS="([^"]*)"', self.src, re.M).group(1).split()
+        for c in commands:
+            self.assertRegex(out, r'(?m)^  %s\b|\| %s\b' % (re.escape(c), re.escape(c)), c)
+        for word in ('Data ', 'Settings ', 'Docs ', 'Exit ', '3 not running', '4 unknown'):
+            self.assertIn(word, out)
+        self.assertEqual(self._run('no-such-verb')[0], 2)
 
     def test_the_day_file_helpers(self):
         """_jsonl_file takes the plain file over its .gz -- while gzip runs both

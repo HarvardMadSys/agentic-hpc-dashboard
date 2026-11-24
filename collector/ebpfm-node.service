@@ -1,20 +1,23 @@
 # ebpfm-node — the node tier of the collector (node health snapshots), under systemd.
 #
-# Installed by `ebpfm.sh install-unit` beside ebpfm.service, which substitutes
-# @EBPFM_DIR@ and @EBPFM_NODE_OUTPUT_DIR@ and reloads systemd. Do not edit the
-# installed copy; edit this template and re-install, so the two never diverge.
+# Installed by `ebpfm.sh install-unit` (and `ebpfm.sh install`) beside
+# ebpfm.service, which substitutes @EBPFM_DIR@ and @EBPFM_NODE_OUTPUT_DIR@ and
+# reloads systemd. Do not edit the installed copy; edit this template and
+# re-install, so the two never diverge.
 #
 # `ebpfm.sh start` runs the node tier as a nohup loop that does not survive a
 # reboot. This unit runs the same loop (`ebpfm.sh _node_daemon`: one snapshot
 # every EBPFM_NODE_INTERVAL seconds, default 300) and restarts it if it dies.
 # While it is active, `ebpfm.sh start`, `stop` and `status` defer to it, so the
-# loop never runs twice and no snapshot is written twice.
+# loop never runs twice and no snapshot is written twice. The loop notes its
+# settings in /run/ebpfm-node_<host>.env, where `ebpfm status` reads them.
 #
 # It runs as root beside ebpfm.service, so its snapshots leave out the four
 # per-process sections the eBPF tier collects properly (SNAPSHOT_MODE=node; see
 # README.md, "Run"). On a host without the eBPF tier, set SNAPSHOT_MODE=full in
-# /etc/default/ebpfm, or they are lost. The node tier needs no privilege: User=
-# in a drop-in runs it as any account that can write EBPFM_NODE_OUTPUT_DIR.
+# /etc/default/ebpfm, or they are lost (`ebpfm install` does, when the eBPF tier
+# fails its check). The node tier needs no privilege: User= in a drop-in runs it
+# as any account that can write EBPFM_NODE_OUTPUT_DIR.
 
 [Unit]
 Description=ebpfm node-tier collector (node health snapshots)
@@ -25,7 +28,8 @@ After=local-fs.target
 Type=simple
 # The output folder the unit was installed with; /etc/default/ebpfm may name
 # another (systemd lets an EnvironmentFile= override an Environment=), along
-# with the interval, the mode/group policy, and SNAPSHOT_MODE.
+# with the interval, the mode/group policy, and SNAPSHOT_MODE. install-unit names the
+# file EBPFM_DEFAULT_FILE moves it to in its place, and tells the loop the same.
 Environment=EBPFM_NODE_OUTPUT_DIR=@EBPFM_NODE_OUTPUT_DIR@
 EnvironmentFile=-/etc/default/ebpfm
 ExecStart=/bin/bash @EBPFM_DIR@/ebpfm.sh _node_daemon
@@ -35,6 +39,9 @@ ExecStart=/bin/bash @EBPFM_DIR@/ebpfm.sh _node_daemon
 # lose, so a restart costs one interval's snapshot at most.
 Restart=on-failure
 RestartSec=30
+# Exit 2: a setting the loop cannot use (`ebpfm config` names it). Restarting
+# cannot help, so the unit stays failed with the reason in its journal.
+RestartPreventExitStatus=2
 Nice=19
 
 [Install]

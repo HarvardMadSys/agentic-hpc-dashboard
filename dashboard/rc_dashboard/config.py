@@ -1,10 +1,12 @@
 """Resolved configuration: CLI > env > config file > built-in default.
 
-JSON, not TOML.  The service carries its own uv venv so `tomllib` would be
-available to *it*, but the format is shared with the rest of the repo -- every
-collector writes JSONL and the retired builder's contract was `data.json` -- and
-`--print-config` has to round-trip it.  Keys beginning `//` are comments and are
-stripped on load, so the committed example file is itself a legal config.
+A config file is TOML (`.toml`, read with the standard library's `tomllib`) or
+JSON (anything else), checked the same way either way. In JSON, keys beginning
+`//` are comments and are stripped on load, so the committed example file is
+itself a legal config. With no file named, `dashboard/dashboard.config.json` or
+`dashboard/dashboard.toml` is read if it exists; both existing is refused
+(`find_config_file`). A relative path in a file is under the repository's root,
+or, installed without a checkout, beside the file (`_resolve_paths`).
 
 Precedence is resolved PER LEAF, not per section, so `RC_DASH_EBPF_ROOTS` can
 override one key without restating the rest of `feeds.ebpf`.  Every CLI flag
@@ -13,7 +15,7 @@ otherwise silently outrank the config file.
 
 Path defaults are CANDIDATE LISTS, probed in order against the filesystem.  A
 feed reports what it looked for as well as what it found, which is what the UI's
-empty states name.
+empty states name. A root may be a glob pattern (`expand_root`).
 
 Nothing here falls back to a default quietly where that would leave names
 unmasked, the page open, or the agent on: a config file named by `--config` or
@@ -21,14 +23,29 @@ RC_DASH_CONFIG must exist, a yes/no setting must read as yes or no (`_flag`),
 and an unknown key under `server`, `anonymize` or `ask` stops the service
 (`check_file`).
 """
+import datetime
 import difflib
 import fnmatch
+import glob
 import json
 import os
 import re
+import tomllib
 
-REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PKG = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(PKG)
+REPO = os.path.dirname(HERE)
+# Run from the repository's own tree -- a clone, a release made from one
+# (hpc/deploy), an image that copies it (docker/demo) -- or installed on its own,
+# from a wheel: then `HERE` is site-packages, and the page, the cache and a
+# config file's relative paths are found elsewhere (`_static_default`,
+# `_cache_default`, `_resolve_paths`). Decided once, from where this file is.
+CHECKOUT = os.path.isfile(os.path.join(HERE, "pyproject.toml"))
+# The collector's own settings file, as its systemd unit reads it
+# (EnvironmentFile=, packaging/rpm/ebpfm.default): where it writes, when set there.
+EBPFM_DEFAULTS = "/etc/default/ebpfm"
+# A root, or a transport file, holding one of these is a glob pattern (`expand_root`).
+GLOB_CHARS = "*?["
 
 _MISSING = object()
 # `history` (history.py) unless set.
@@ -74,6 +91,40 @@ def _flag(v):
 
 
 # ---------------------------------------------------------------- defaults
+def env_file(path):
+    """The settings in a systemd EnvironmentFile, as systemd reads them: KEY=VALUE
+    lines, `#` and `;` lines comments, whitespace around the value dropped, and
+    one pair of quotes around it; the last assignment of a key wins. {} when the
+    file is missing or unreadable."""
+    out = {}
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read(1 << 20).splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        s = line.strip()
+        if not s or s[0] in "#;":
+            continue
+        if s.startswith("export "):
+            s = s[7:].lstrip()
+        key, sep, val = s.partition("=")
+        key = key.strip()
+        if not sep or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        out[key] = val
+    return out
+
+
+def _collector_named(key):
+    """`key` as the collector's settings file names it ([] when it does not)."""
+    v = env_file(EBPFM_DEFAULTS).get(key)
+    return [v] if v else []
+
+
 def _ebpf_candidates():
     """Where the root eBPF tier's day-files might live, most specific first.
 
@@ -81,7 +132,10 @@ def _ebpf_candidates():
     uses the distinct LOG_ROOT name so an operator shell that repoints the
     collector cannot silently repoint the readers too.  The repo symlink
     `log/ebpfm -> ../data/ebpfm/logs` already contains `/logs`, so the repo-side
-    layout is `log/ebpfm/<date>/<host>.jsonl`.
+    layout is `log/ebpfm/<date>/<host>.jsonl`. Then the folder the collector's
+    own settings file names (`EBPFM_DEFAULTS`), and the collector's defaults: a
+    root collector writes to /scratch/ebpfm where /scratch is writable, else to
+    /var/log/ebpfm (collector/ebpfm.sh), and an unprivileged one to ~/.ebpfm/ebpf.
     """
     c = []
     for e in ("EBPFM_LOG_ROOT", "EBPFM_OUTPUT_DIR"):
@@ -90,11 +144,13 @@ def _ebpf_candidates():
     base = _env("RC_MEASUREMENT_ROOT")
     if base:
         c.append(os.path.join(base, "ebpfm", "logs"))
+    c += _collector_named("EBPFM_OUTPUT_DIR")
     c += [os.path.join(REPO, "log", "ebpfm"),
           os.path.join(REPO, "log", "ebpfm", "logs"),
+          "/scratch/ebpfm",
           "/var/log/ebpfm",
           os.path.expanduser("~/.ebpfm/ebpf")]
-    return c
+    return _unique(c)
 
 
 def _node_candidates():
@@ -109,11 +165,55 @@ def _node_candidates():
     base = _env("RC_MEASUREMENT_ROOT")
     if base:
         c.append(os.path.join(base, "ebpfm", "node", "logs"))
+    c += _collector_named("EBPFM_NODE_OUTPUT_DIR")
     c += [os.path.join(REPO, "log", "ebpfm_node"),
+          "/scratch/ebpfm-login",
           "/var/log/ebpfm-login",
           os.path.expanduser("~/.ebpfm/login"),
           os.path.join(REPO, "log", "login")]
-    return c
+    return _unique(c)
+
+
+def _unique(paths):
+    """`paths` in order, each once (a folder named twice is still read once)."""
+    seen, out = set(), []
+    for p in paths:
+        k = os.path.normpath(p)
+        if k not in seen:
+            seen.add(k)
+            out.append(p)
+    return out
+
+
+def is_pattern(path):
+    """Whether a root (or a transport file) is a glob pattern."""
+    return isinstance(path, str) and any(c in path for c in GLOB_CHARS)
+
+
+def expand_root(path):
+    """The folders a root names now: a glob pattern's matches that are folders,
+    sorted (`*`, `?`, `[...]`, as the shell has them; matched again each time it
+    is asked, so a folder made later is found), or the root itself -- as it is
+    when a folder of that very name exists (`logs[1]`)."""
+    if not is_pattern(path) or os.path.isdir(path):
+        return [path]
+    return sorted(p for p in glob.glob(os.path.expanduser(path)) if os.path.isdir(p))
+
+
+def _cache_default():
+    """`<checkout>/dashboard/.cache`; installed without a checkout, the user's
+    state folder: the cache holds the anonymize salt and the session key, which
+    are not rebuilt."""
+    if CHECKOUT:
+        return os.path.join(HERE, ".cache")
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "rc-dashboard")
+
+
+def _static_default():
+    """The built page: `dashboard/web/dist` in a checkout, else the copy a wheel
+    carries inside the package (pyproject.toml puts web/dist there)."""
+    return os.path.join(HERE, "web", "dist") if CHECKOUT else os.path.join(PKG, "web")
 
 
 def defaults():
@@ -427,6 +527,9 @@ def defaults():
             # What the hosts this dashboard watches are called on the page:
             # "Login nodes right now". A workstation fleet says "hosts".
             "node_noun": "login nodes",
+            # The Internal tab -- figures whose reading is not settled yet --
+            # listed in the rail. Off: a reader sees only the settled tabs.
+            "show_internal": False,
             "user_columns": ["agents", "ides", "running", "exited", "cpu", "read", "written", "last"],
             # What a trajectory's tree hides when "hide routine" is on, beside
             # runs of the same command: a command, a command and its first
@@ -453,18 +556,30 @@ def defaults():
         },
         # reducer_version: read by no code, but in both fingerprints (hours.py,
         # snapshots.py), so raising it discards every saved hour and build.
-        "cache": {"dir": os.path.join(HERE, ".cache"),
+        "cache": {"dir": _cache_default(),
                   "reducer_version": 3},
+        # Is the collection working (status.py: `rc-dashboard status`,
+        # /api/status, /metrics)? `transport_files`: the state files of what
+        # copies the collectors' files here -- deploy/fleet's pull.py
+        # (<mirror>/.state/<node>.json) and hpc/fleet's receiver
+        # (<base>/state/status.json) -- as paths or glob patterns.
+        # `stale_s`: a host's newest record, or its copy's last good pass,
+        # older than this is a problem. Neither changes a number, so no saved
+        # build or hour is keyed on them (`UNREDUCED`).
+        "status": {"transport_files": [], "stale_s": 900},
         "server": {"host": "127.0.0.1", "port": 8080,
-                   "static_dir": os.path.join(HERE, "web", "dist"),
+                   "static_dir": _static_default(),
                    # Sign-in (auth.py): a salted scrypt hash of the one password
-                   # readers sign in with, made by `python -m rc_dashboard
-                   # new-password`. A session lasts `session_days`. With no
-                   # hash, `serve` refuses to start unless `open` (--open,
-                   # RC_DASH_OPEN): an open page is read by anyone who reaches
-                   # the port, which on a login node is every user of it. A demo
-                   # serves made-up data and is open unless a hash is set.
-                   "auth": {"password_hash": "", "session_days": 30, "open": False},
+                   # readers sign in with, made by `rc-dashboard new-password`,
+                   # kept in a file of its own (`password_hash_file`, re-read
+                   # when it changes) or given here (`password_hash`), never
+                   # both. A session lasts `session_days`. With no hash, `serve`
+                   # refuses to start unless `open` (--open, RC_DASH_OPEN): an
+                   # open page is read by anyone who reaches the port, which on
+                   # a login node is every user of it. A demo serves made-up data
+                   # and is open unless a hash is set.
+                   "auth": {"password_hash": "", "password_hash_file": "",
+                            "session_days": 30, "open": False},
                    # Who may connect (guard.py). A websocket opened by a page on
                    # any origin but the dashboard's own -- another port of the
                    # same host included -- is refused, unless its origin is
@@ -549,7 +664,11 @@ ENV_MAP = {
     "server.port": ("RC_DASH_PORT", int),
     "server.static_dir": ("RC_DASH_STATIC_DIR", str),
     "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
+    "server.auth.password_hash_file": ("RC_DASH_PASSWORD_HASH_FILE", str),
     "server.auth.open": ("RC_DASH_OPEN", _flag),
+    "ui.show_internal": ("RC_DASH_SHOW_INTERNAL", _flag),
+    "status.transport_files": ("RC_DASH_TRANSPORT_FILES", _csv),
+    "status.stale_s": ("RC_DASH_STATUS_STALE_S", int),
     "server.allowed_origins": ("RC_DASH_ALLOWED_ORIGINS", _csv),
     "server.dev_origins": ("RC_DASH_DEV_ORIGINS", _csv),
     "server.allowed_hosts": ("RC_DASH_ALLOWED_HOSTS", _csv),
@@ -705,6 +824,14 @@ def check_file(filetree, where):
     return warnings
 
 
+# Sections no reduction reads, left out of the tree the saved builds' and hours'
+# fingerprints are taken over (`as_dict()`, snapshots.fingerprint,
+# hours.fingerprint): one added, or set, discards no saved state. Each new
+# section of the kind belongs here rather than in those modules' own lists,
+# which are in their code fingerprints.
+UNREDUCED = ("status",)
+
+
 class Config:
     """Resolved config plus, for every leaf, where its value came from."""
 
@@ -740,8 +867,11 @@ class Config:
                 yield path, v
 
     def as_dict(self, with_origins=False):
+        """The resolved tree. Without origins, the tree the saved states'
+        fingerprints are taken over, less the sections no reduction reads
+        (`UNREDUCED`); with them, every leaf as {_value, _origin}, and `_meta`."""
         if not with_origins:
-            return self._t
+            return {k: v for k, v in self._t.items() if k not in UNREDUCED}
         out = {}
         for path, val in self._leaves():
             entry = {"_value": val, "_origin": self.origin(path)}
@@ -750,29 +880,131 @@ class Config:
                 # back. The password hash is no use to a reader either, and the
                 # agent's command or prompt may hold a key.
                 entry["_value"] = "(hidden)"
-            if path.endswith(".roots") or path.endswith(".dir") or path.endswith(".path"):
+            if path.endswith(".roots") or path.endswith(".dir") or path.endswith(".path") \
+                    or path == "status.transport_files":
+                # what each names now: a pattern's matches (`expand_root`)
                 cand = val if isinstance(val, list) else [val]
-                entry["_existing"] = [p for p in cand if p and os.path.exists(p)]
+                entry["_existing"] = [m for p in cand if isinstance(p, str) and p
+                                      for m in _existing(p, path.endswith(".roots"))]
             _set(out, path, entry)
         # Metadata joins the tree as proper {_value, _origin} leaves rather than
         # as bare scalars: a consumer walking this tree would otherwise have to
         # special-case two shapes, and a bare null reads as "descend into me".
         import sys as _s
+        from . import about
+        ver = about.version()
         out["_meta"] = {
             "config_file": {"_value": self.config_file,
                             "_origin": "cli/env" if self.config_file else "none"},
             "python": {"_value": _s.version.split()[0], "_origin": "runtime"},
+            # what is running: the package's version, and the commit it was
+            # built from -- a build stamp, else the checkout's HEAD -- or null
+            "version": {"_value": {"version": ver["version"], "commit": ver["commit"]},
+                        "_origin": ver["origin"]},
+            # the zone the page formats every time in: the service's own
+            "tz": {"_value": about.zone(), "_origin": "runtime"},
+            # the dashboard's own host, named when site.name is empty
+            "host": {"_value": about.host(), "_origin": "runtime"},
         }
         return out
 
 
+def _existing(path, folders=False):
+    """What `path` names that exists: a glob pattern's matches (with `folders`,
+    only those that are folders, as a root's are), or the path."""
+    if is_pattern(path):
+        found = sorted(glob.glob(os.path.expanduser(path)))
+        return [p for p in found if os.path.isdir(p)] if folders else found
+    return [path] if os.path.exists(path) else []
+
+
+# The config files read when none is named, in `HERE` (dashboard/ in a checkout).
+DEFAULT_FILES = ("dashboard.config.json", "dashboard.toml")
+
+
 def find_config_file(explicit=None):
+    """The config file to read: `--config`, else RC_DASH_CONFIG, else whichever
+    of DEFAULT_FILES exists in dashboard/. Both existing is refused: which one is
+    read must never be an accident of this function."""
     if explicit:
         return explicit
     if os.environ.get("RC_DASH_CONFIG"):
         return os.environ["RC_DASH_CONFIG"]
-    p = os.path.join(HERE, "dashboard.config.json")
-    return p if os.path.exists(p) else None
+    there = [os.path.join(HERE, n) for n in DEFAULT_FILES if os.path.exists(os.path.join(HERE, n))]
+    if len(there) > 1:
+        newer = max(there, key=lambda p: os.stat(p).st_mtime)
+        raise SystemExit(
+            "both %s exist, and the service reads one config file: keep the one you edit "
+            "-- %s was changed last -- and move the other away (`rc-dashboard init` writes "
+            "dashboard.toml), or name one with --config or RC_DASH_CONFIG"
+            % (" and ".join(there), os.path.basename(newer)))
+    return there[0] if there else None
+
+
+def _plain(node):
+    """A TOML tree with its dates and times as the text they were written as, so
+    every value is one JSON has: `clock.as_of = 2026-11-02T09:00:00` reads as
+    "2026-11-02 09:00:00"."""
+    if isinstance(node, dict):
+        return {k: _plain(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_plain(v) for v in node]
+    if isinstance(node, datetime.datetime):
+        return node.isoformat(sep=" ")
+    if isinstance(node, (datetime.date, datetime.time)):
+        return node.isoformat()
+    return node
+
+
+def read_file(path):
+    """A config file's tree, comments stripped: TOML for a `.toml` file, JSON
+    otherwise. Stops the service, naming the file, when it does not parse or is
+    not a table of settings."""
+    toml = path.lower().endswith(".toml")
+    try:
+        if toml:
+            with open(path, "rb") as fh:
+                tree = _plain(tomllib.load(fh))
+        else:
+            with open(path) as fh:
+                tree = json.load(fh)
+    except (OSError, ValueError) as e:          # tomllib.TOMLDecodeError is a ValueError
+        raise SystemExit("config file %s: %s" % (path, e))
+    if not isinstance(tree, dict):
+        raise SystemExit("config file %s: not a JSON object" % path)
+    return strip_comments(tree)
+
+
+# Settings that name a file or a folder. In a config file, a relative one is
+# under the repository's root -- `dashboard/.cache`, `dashboard/web/dist` -- or,
+# installed without a checkout, beside the file; `~` is a home. Not
+# `risk.profile`, which has always been under dashboard/ (`load`).
+PATH_KEYS = ("feeds.ebpf.roots", "feeds.ebpf_node.roots", "cache.dir", "history.dir",
+             "rollup.dir", "server.static_dir", "server.auth.password_hash_file",
+             "ask.system_prompt_file", "status.transport_files")
+
+
+def path_base(config_file):
+    """What a relative path in `config_file` is under (PATH_KEYS)."""
+    return REPO if CHECKOUT else os.path.dirname(os.path.abspath(config_file))
+
+
+def _resolve_paths(filetree, config_file):
+    """PATH_KEYS in a config file's tree made absolute, in place (an empty value
+    stays empty: it means the default)."""
+    base = path_base(config_file)
+
+    def one(p):
+        if not isinstance(p, str) or not p:
+            return p
+        p = os.path.expanduser(p)
+        return p if os.path.isabs(p) else os.path.normpath(os.path.join(base, p))
+
+    for key in PATH_KEYS:
+        val = _get(filetree, key, _MISSING)
+        if val is _MISSING:
+            continue
+        _set(filetree, key, [one(p) for p in val] if isinstance(val, list) else one(val))
 
 
 def load(args=None, config_path=None):
@@ -788,13 +1020,7 @@ def load(args=None, config_path=None):
         raise SystemExit("config file %s, named by %s, does not exist" % (
             path, "--config" if config_path else "RC_DASH_CONFIG"))
     if path:
-        try:
-            with open(path) as fh:
-                filetree = strip_comments(json.load(fh))
-        except (OSError, ValueError) as e:
-            raise SystemExit("config file %s: %s" % (path, e))
-        if not isinstance(filetree, dict):
-            raise SystemExit("config file %s: not a JSON object" % path)
+        filetree = read_file(path)
         # dropped, not merged: a retired feed's block, or a removed feature's
         # section, would show in /api/config and in every saved build's
         # fingerprint, while nothing reads it
@@ -811,6 +1037,7 @@ def load(args=None, config_path=None):
         for w in check_file(filetree, path):
             sys.stderr.write("warning: config file %s: %s; it is ignored\n" % (path, w))
         # relative paths in the file resolve against the repo, absolute stand
+        _resolve_paths(filetree, path)
         flat = {}
 
         def walk(node, prefix=""):
@@ -860,6 +1087,9 @@ def load(args=None, config_path=None):
     prof = _get(tree, "risk.profile", "")
     if prof:
         pth = prof if os.path.isabs(prof) else os.path.join(HERE, prof)
+        if not CHECKOUT and not os.path.exists(pth) and not os.path.isabs(prof):
+            # installed from a wheel, which carries risk-profiles/ in the package
+            pth = os.path.join(PKG, prof)
         try:
             with open(pth) as fh:
                 ptree = strip_comments(json.load(fh))
@@ -948,6 +1178,22 @@ def load(args=None, config_path=None):
                 dotted, val, what, origins.get(dotted, "default")))
         hist[key] = "" if (key == "dir" and val is None) else val
 
+    # What `status` reads (status.py): a list of paths or patterns, and a number
+    # of seconds, or the service refuses to start rather than take a string for
+    # a list of its letters.
+    val = _get(tree, "status.transport_files", [])
+    if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
+        raise SystemExit("status.transport_files: %r is not a list of paths or glob patterns "
+                         "(set by %s)" % (val, origins.get("status.transport_files", "default")))
+    val = _get(tree, "status.stale_s", 900)
+    if isinstance(val, bool) or not isinstance(val, (int, float)) or not val > 0:
+        raise SystemExit("status.stale_s: %r is not a number of seconds above 0 (set by %s)" % (
+            val, origins.get("status.stale_s", "default")))
+    val = _get(tree, "server.auth.password_hash_file", "")
+    if not isinstance(val, str):
+        raise SystemExit("server.auth.password_hash_file: %r is not a path (set by %s)" % (
+            val, origins.get("server.auth.password_hash_file", "default")))
+
     # The roll-up table (rollup.py): a switch and a directory.
     roll = _get(tree, "rollup", None)
     if not isinstance(roll, dict):
@@ -974,3 +1220,101 @@ def load(args=None, config_path=None):
                         if hit is not None else "default(no candidate exists)")
 
     return Config(tree, origins, path)
+
+
+# ------------------------------------------------------------- the reference
+_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+
+
+_TOML_ESC = {'"': '\\"', "\\": "\\\\", "\n": "\\n", "\t": "\\t", "\r": "\\r"}
+
+
+def _toml_str(s):
+    """`s` as a TOML basic string: `"`, `\\` and the control characters TOML forbids as
+    they are (U+0000-U+001F, U+007F) escaped, every other character as itself. json.dumps
+    did this once, but escapes a character past U+FFFF as a UTF-16 pair (`\\ud83d\\ude80`
+    for 🚀), which TOML refuses: a site named with an emoji wrote a config that would not
+    load."""
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if ch in _TOML_ESC:
+            out.append(_TOML_ESC[ch])
+        elif o < 0x20 or o == 0x7F:
+            out.append("\\u%04x" % o)
+        elif 0xD800 <= o <= 0xDFFF:
+            raise ValueError("%r holds bytes that are not UTF-8, which a TOML file cannot" % s)
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
+def _toml_key(k):
+    return k if _BARE_KEY.fullmatch(k) else _toml_str(k)
+
+
+def _toml_value(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, str):
+        return _toml_str(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{" + ", ".join("%s = %s" % (_toml_key(k), _toml_value(x))
+                               for k, x in v.items()) + "}"
+    raise TypeError("no TOML for %r" % (v,))
+
+
+def _is_table(v):
+    """Written as a [table] of its own: a section with something in it."""
+    return isinstance(v, dict) and bool(v)
+
+
+def _is_array_of_tables(v):
+    """Written as [[tables]]: a list of sections (risk.sections)."""
+    return isinstance(v, list) and bool(v) and all(isinstance(x, dict) for x in v)
+
+
+def reference_toml():
+    """Every setting with its built-in default on this host, as a TOML config
+    file would set it, each with the RC_DASH_* variable that sets it too:
+    `rc-dashboard print-config --reference`. Made from `defaults()`, so it cannot
+    drift from the code (tests/test_config.py reads it back). A setting whose
+    default is unset (null, which TOML cannot write) is a comment."""
+    env_of = {k: var for k, (var, _c) in ENV_MAP.items()}
+    out = ["# Every rc-dashboard setting, with its built-in default on this host.",
+           "# Generated by `rc-dashboard print-config --reference`; dashboard/README.md",
+           "# says what each does. Set any of them in dashboard/dashboard.toml (or the",
+           "# file --config or RC_DASH_CONFIG names): a key left out keeps its default,",
+           "# and per key a flag beats its RC_DASH_* variable, which beats the file.",
+           "# A relative path in the file is under the repository's root.",
+           "# feeds.*.roots: every candidate that exists is read; set roots to name your",
+           "# own folders instead (a glob pattern may name many)."]
+
+    def emit(node, prefix):
+        scalars = [(k, v) for k, v in node.items()
+                   if not _is_table(v) and not _is_array_of_tables(v)]
+        if prefix and scalars:
+            out.extend(["", "[%s]" % ".".join(_toml_key(p) for p in prefix)])
+        for k, v in scalars:
+            var = env_of.get(".".join(prefix + [k]))
+            note = "  # %s" % var if var else ""
+            if v is None:
+                out.append("# %s = (unset)%s" % (_toml_key(k), note))
+            else:
+                out.append("%s = %s%s" % (_toml_key(k), _toml_value(v), note))
+        for k, v in node.items():
+            if _is_table(v):
+                emit(v, prefix + [k])
+        for k, v in node.items():
+            if _is_array_of_tables(v):
+                for item in v:
+                    out.extend(["", "[[%s]]" % ".".join(_toml_key(p) for p in prefix + [k])])
+                    out.extend("%s = %s" % (_toml_key(kk), _toml_value(vv))
+                               for kk, vv in item.items())
+
+    emit(defaults(), [])
+    return "\n".join(out) + "\n"

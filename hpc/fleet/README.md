@@ -48,6 +48,14 @@ python3 fleet_stream.py status --base <base>
   | `backoff` | `[5, 300]` | the wait before a link reconnects, from first to longest, in seconds |
   | `dashboard_unit` | `rc-dashboard.scope` | the systemd user unit it stops when it trips |
 
+  It reads its config again on SIGHUP, and on its own when the file changes (a deploy
+  installs a new one): a host added gets its link, a host taken out has its link closed
+  and stops reconnecting (its copy stays, until you remove `mirror/<host>`), a host whose
+  command changed reconnects with the new one, and no other link is touched. Any other
+  key takes effect at the next start, and says so; a file that does not load changes
+  nothing. Its `state/status.json` (`at_epoch`, and per host `connected`, `down_since`,
+  `last_error`, `lag_s`, `live`) is what the hourly check and the dashboard's status read.
+
   It **trips** when the base, or a checked parent, stops being the folder it opened at start
   (renamed, replaced, or with `private`, opened up): it stops every link, writes the marker,
   stops the dashboard, and exits 3, which the kit's `keep-running.sh` does not restart. It

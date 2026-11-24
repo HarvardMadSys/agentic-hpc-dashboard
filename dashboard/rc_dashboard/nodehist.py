@@ -123,10 +123,16 @@ class NodeHistory:
 
     # ------------------------------------------------------------- reading
     def files(self):
+        # the roots read now: a glob pattern matched again, a folder this
+        # account may not read left out, each folder once (feeds.resolved_roots)
+        from .feeds import resolved_roots
         out = set()
-        for root in self.cfg.get("feeds.ebpf_node.roots") or []:
-            for _date, found in dated_dirs(root, self.days):
-                out.update(found)
+        for root in resolved_roots(self.cfg, "ebpf_node"):
+            try:
+                for _date, found in dated_dirs(root, self.days):
+                    out.update(found)
+            except OSError:
+                continue
         return sorted(out)
 
     def scan(self):

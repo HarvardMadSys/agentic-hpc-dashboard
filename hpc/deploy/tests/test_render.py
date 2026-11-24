@@ -123,7 +123,11 @@ class TestRender(unittest.TestCase):
     def test_config_values(self):
         c = config()
         # Every node comes over the stream; the dashboard's host has no node tier.
-        self.assertEqual(c["feeds"]["ebpf"]["roots"], [ROOT + "/data/mirror/" + h for h in SOURCES])
+        # one glob over the stream's copy, expanded again at every rescan: a node added
+        # to SOURCE_NODES needs no restart of the dashboard
+        self.assertEqual(c["feeds"]["ebpf"]["roots"], [ROOT + "/data/mirror/*"])
+        self.assertIs(c["slurm"]["enabled"], True)
+        self.assertEqual(c["ui"]["node_noun"], "login nodes")
         self.assertEqual(c["feeds"]["ebpf_node"]["roots"], [])
         self.assertEqual(c["server"]["host"], "127.0.0.1")
         self.assertEqual(c["server"]["port"], int(example_value("DASH_PORT")))
@@ -238,7 +242,9 @@ class TestRender(unittest.TestCase):
         self.assertEqual(s["free_min_gb"], 300)
 
     def test_values_are_checked(self):
-        for bad in ("DAY_CACHE=maybe", "ANONYMIZE=yes", "SHARED_HOME=maybe", "DASH_MEMORY_MAX=lots",
+        for bad in ("DAY_CACHE=maybe", "ANONYMIZE=maybe", "SLURM=maybe", "SHARED_HOME=maybe",
+                    "DASH_MEMORY_MAX=lots", "MEMORY_MAX=lots", "HISTORY_DAYS=abc", "DASH_PORT=eighty",
+                    "DASH_PORT=99999", "MAX_WINDOWS=five", "PREWARM_MIN=1h", "FREE_MIN_GB=lots",
                     "DASH_ROOT=", "DASH_ROOT=rel/path", "DASH_SSH=", "DASH_SSH=a b@host",
                     "SENDER_DIR=/a b", "SENDER_DIR=rel/dir", "CODEX=codex", "DASH_PYTHON=python 3",
                     "SOURCE_USER=", "SOURCE_NODES=", "SOURCE_NODES=a -oProxyCommand=x",
@@ -344,6 +350,83 @@ class TestRender(unittest.TestCase):
             self.assertIn("NOPE", p.stderr)
         finally:
             os.unlink(fh.name)
+
+
+def render_site(text, name="stream.json.in", strict=False):
+    """render.py over a site.env of its own: (exit, stdout, stderr)."""
+    with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as fh:
+        fh.write(text)
+    try:
+        p = subprocess.run([sys.executable, RENDER] + (["--strict"] if strict else [])
+                           + [os.path.join(KIT, name), fh.name],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    finally:
+        os.unlink(fh.name)
+    return p.returncode, p.stdout, p.stderr
+
+
+MINIMAL = ("SOURCE_USER=alice\nSOURCE_NODES=\"node01 node02\"\nDASH_SSH=alice@dash\nDASH_NODE=dash\n"
+           "DASH_ROOT=/data/rc\nDASH_PORT=8080\n")
+
+
+class TestSiteEnv(unittest.TestCase):
+    """site.env as both its readers take it: bash, and render.py."""
+
+    def test_the_names_every_kit_uses(self):
+        code, out, err = render_site(MINIMAL + "DASH_MEMORY_MAX=16G\n", "rc-tmux.service.in")
+        self.assertEqual(code, 0, err)
+        self.assertIn("RC_DASH_MEMORY_MAX=16G", out)
+        code, out, err = render_site(MINIMAL + "MEMORY_MAX=16G\nDASH_MEMORY_MAX=8G\n")
+        self.assertEqual(code, 2)
+        self.assertIn("settle on one", err)
+        for word, want in (("yes", True), ("1", True), ("On", True), ("no", False), ("0", False)):
+            c = json.loads(render_site(MINIMAL + "ANONYMIZE=%s\nSLURM=%s\n" % (word, word),
+                                       "dashboard.config.json.in")[1])
+            self.assertIs(c["anonymize"]["enabled"], want, word)
+            self.assertIs(c["slurm"]["enabled"], want, word)
+        c = json.loads(render_site(MINIMAL + 'NODE_NOUN="servers"\n', "dashboard.config.json.in")[1])
+        self.assertEqual(c["ui"]["node_noun"], "servers")
+
+    def test_a_line_bash_reads_otherwise_is_refused(self):
+        """Unquoted blanks: bash ran `login02` as a command and stopped the deploy, while
+        render.py had read both nodes."""
+        code, out, err = render_site(MINIMAL + "SOURCE_NODES=login01 login02\n")
+        self.assertEqual(code, 2)
+        self.assertIn('blanks and no quotes', err)
+        self.assertIn('SOURCE_NODES="login01 login02"', err)
+        code, out, err = render_site(MINIMAL + "SITE_NAME=$(hostname)\n")
+        self.assertEqual(code, 2)
+        self.assertIn("no $( )", err)
+        # single quotes keep a `$` as it is, as bash does
+        c = json.loads(render_site(MINIMAL + "SITE_NAME='$HOME live'\n", "dashboard.config.json.in")[1])
+        self.assertEqual(c["site"]["name"], "$HOME live")
+
+    def test_an_unknown_key_is_named(self):
+        code, out, err = render_site(MINIMAL + "HISTORY_DAY=2\n", "dashboard.config.json.in")
+        self.assertEqual(code, 0, err)
+        self.assertIn("HISTORY_DAY is not a setting (did you mean HISTORY_DAYS?)", err)
+        self.assertEqual(json.loads(out)["live"]["retention_min"], 10080)
+
+    def test_a_bad_number_names_its_key(self):
+        for line, key in (("HISTORY_DAYS=abc", "HISTORY_DAYS"), ("DASH_PORT=http", "DASH_PORT"),
+                          ("MAX_SESSIONS=lots", "MAX_SESSIONS"), ("PREWARM_MIN=1h", "PREWARM_MIN"),
+                          ("FREE_MIN_GB=lots", "FREE_MIN_GB")):
+            code, out, err = render_site(MINIMAL + line + "\n", "dashboard.config.json.in")
+            self.assertEqual(code, 2, line)
+            self.assertIn(key, err, line)
+            self.assertNotIn("invalid literal", err, line)
+
+    def test_strict_refuses_the_examples_values(self):
+        """deploy.sh renders with --strict: the example's own values name no host."""
+        with open(EXAMPLE) as fh:
+            example = fh.read()
+        code, out, err = render_site(example, strict=True)
+        self.assertEqual(code, 2)
+        self.assertIn("still site.env.example's value", err)
+        code, out, err = render_site(MINIMAL, strict=True)
+        self.assertEqual(code, 0, err)
+        code, out, err = render_site(MINIMAL.replace("alice@dash", "alice@dash.example.org"), strict=True)
+        self.assertEqual(code, 2)
 
 
 class TestNoSiteInTheKit(unittest.TestCase):

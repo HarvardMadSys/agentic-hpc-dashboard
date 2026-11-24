@@ -1,92 +1,192 @@
-# /etc/default/ebpfm — environment for the ebpfm.service (eBPF collector tier).
+# /etc/default/ebpfm -- the collector's settings.
 #
-# Read by the systemd unit via `EnvironmentFile=-/etc/default/ebpfm`. Format is
-# KEY=VALUE, one per line (systemd env-file syntax, NOT a shell script: no
-# export, no command substitution, no $VAR expansion).
+# Read by both systemd units (ebpfm.service, the eBPF tier; ebpfm-node.service,
+# the node tier) through EnvironmentFile=, and by the `ebpfm` command itself, so
+# `ebpfm status`, `tail` and `config` see what the units see. The environment of
+# an `ebpfm` command wins over this file, and this file over the defaults.
 #
-# Everything in the "tunables" sections below has a safe shipped default — those
-# lines are commented out so this file changes nothing until you uncomment a
-# key. The one ACTIVE line is EBPFM_MIN_UID (see its warning). After editing,
-# `systemctl daemon-reload` is NOT required (EnvironmentFile is read at start),
-# but you must restart the service: `systemctl restart ebpfm`.
+# Format: KEY=VALUE, one per line: systemd's environment-file syntax, NOT a shell
+# script (no export, no $VAR expansion, no command substitution). `#` starts a
+# comment. Every setting is listed, commented out at its default, except
+# EBPFM_MIN_UID (see its note). Each tier reads its settings when it starts:
+# after an edit, `systemctl restart ebpfm ebpfm-node` (the eBPF tier writes every
+# live process as `truncated` when it stops). `ebpfm config` shows what applies
+# and where each value came from, and refuses a value a tier cannot use.
 #
-# NOTE: EBPFM_OUTPUT_DIR set here overrides the unit's (/scratch/ebpfm): systemd's
-# EnvironmentFile= wins over its Environment=. Off /scratch, also drop the unit's
-# RequiresMountsFor=/scratch with an override, and give `ebpfm status`/`tail` the
-# same EBPFM_OUTPUT_DIR: they read their own environment, not this file.
+# Generated from collector/lib/ebpfm_settings.py
+# (python3 collector/lib/ebpfm_settings.py defaults-file); edit the table there.
 
-# --- attribution (load-bearing — do not change the value) ------------------
-# EBPFM_MIN_UID=0 is deliberate: it defines what actor3="human" MEANS. Raising
-# it (e.g. to 1000 to drop system daemons) changes the human population and
-# makes a capture incomparable with every earlier one. Leave it 0 and filter
-# downstream on `attribution` instead. Shipped active so the value is explicit.
+# --- attribution (load-bearing: do not change the value) ---------------------
+# EBPFM_MIN_UID=0 is deliberate: it defines what actor3="human" MEANS.
+# Raising it (e.g. to 1000 to drop system daemons) changes the human
+# population and makes a capture incomparable with every earlier one.
+# Leave it 0 and filter downstream on `attribution` instead. Shipped
+# active so the value is explicit.
 EBPFM_MIN_UID=0
 
-# --- output permissions ----------------------------------------------------
-# The collected JSONL is sensitive (argv, cwd, all-user I/O), so output dirs and
-# files are created with NO access for "other" by default: dirs 0750, files
-# 0640. To grant read access to a specific team, set EBPFM_GROUP to a group name
-# or gid and the collector chgrps every dir/file it creates. Leave EBPFM_GROUP
-# empty to keep the default (root) group. Modes are octal; empty/0 means "leave
-# whatever the umask produced" (opt out of tightening).
-#EBPFM_DIR_MODE=0750
-#EBPFM_FILE_MODE=0640
-#EBPFM_GROUP=
-
-# --- output / cadence ------------------------------------------------------
-# The eBPF tier's output dir is the unit's /scratch/ebpfm (large, root-writable,
-# unlike the small root disk) unless EBPFM_OUTPUT_DIR is set here (the NOTE above). The unit runs the eBPF tier only,
-# so nothing reads the node tier's setting from this file: `ebpfm start`, run
-# as a user, takes EBPFM_NODE_OUTPUT_DIR from its own environment.
+# --- Where it runs and writes -----------------------------------------------
+# Which tiers `start`, `stop`, `status`, `check` and `once` act on: node, ebpf
+# or all. Default: all as root, node otherwise.
+#EBPFM_TIER=all
+# The eBPF tier's day-files:
+# `<dir>/<YYYY-MM-DD>/<host>.{snapshot,exits}.jsonl`. An installed unit sets
+# the folder it was installed with; this file overrides it. Default: as root
+# /scratch/ebpfm where /scratch is writable, else /var/log/ebpfm; as a user
+# ~/.ebpfm/ebpf.
+#EBPFM_OUTPUT_DIR=/scratch/ebpfm
+# The node tier's day-files: `<dir>/<YYYY-MM-DD>/<host>.jsonl`. Default: as
+# root /scratch/ebpfm-login where /scratch is writable, else
+# /var/log/ebpfm-login; as a user ~/.ebpfm/login.
 #EBPFM_NODE_OUTPUT_DIR=/scratch/ebpfm-login
+# Where `start` keeps its pid files, and each running tier a note of its
+# settings that `status`, `stop` and `tail` read. Default: /run as root,
+# ~/.run otherwise.
+#EBPFM_PID_DIR=/run
+# Mode of the folders both tiers create. 0 or empty: leave the umask's.
+#EBPFM_DIR_MODE=0750
+# Mode of the day-files both tiers create. 0 or empty: leave the umask's.
+#EBPFM_FILE_MODE=0640
+# A group (name or gid) given every folder and day-file, so its members can
+# read them. The output names real users and what they ran.
+#EBPFM_GROUP=
+# Where `install` and `install-unit` write ebpfm.service and
+# ebpfm-node.service.
+#EBPFM_UNIT_DIR=/etc/systemd/system
+# The host name both tiers write their day-files under, and every command
+# looks for. Set it in a container (-e EBPFM_HOST=$(hostname -s)), whose own
+# name is not the node's. Default: the short host name (hostname -s).
+#EBPFM_HOST=
 
-# Compress sealed day-files to <file>.jsonl.gz (default on). Each day's streams
-# are gzipped out of band when the day rolls over -- the live day stays plain --
-# and a startup sweep catches any sealed day a prior run left uncompressed. The
-# exits stream can exceed 1 GB/day; gzip is ~10-20x. Set to 0 to disable.
-#EBPFM_COMPRESS=1
+# --- Node tier --------------------------------------------------------------
+# Seconds between node snapshots. A snapshot is cut short 10 s before the next
+# is due.
+#EBPFM_NODE_INTERVAL=300
+# Rows kept in each per-process and per-user table of a snapshot.
+#EBPFM_NODE_TOP_N=25
+# full: every section. node: leave out the four per-process sections the eBPF
+# tier collects properly (top_io_processes, top_sleeping_procs,
+# sleeping_wchans, socket_talkers). Default: node beside the eBPF tier, full
+# without it.
+#SNAPSHOT_MODE=node
+# Characters of each command line a snapshot keeps, after masking.
+#SNAPSHOT_ARGS_MAXLEN=256
+# Seconds each tool a snapshot runs (ps, w, mpstat, ...) may take before its
+# section is left empty.
+#SNAPSHOT_CMD_TIMEOUT=20
+# The whole-host process tree (pid, ppid, command, agent tag). 0 leaves it
+# out.
+#SNAPSHOT_PROC_TREE=1
+# Processes in D state whose kernel stack and open files a snapshot reads (as
+# root).
+#SNAPSHOT_D_STACK_MAX=300
+# A file on NFS that each snapshot reads one block of, to time an NFS read
+# (responsiveness.nfs_read_ms).
+#SNAPSHOT_PROBE_NFS_PATH=
 
-# Run for a fixed number of seconds then exit (0 = run forever, the default).
+# --- Masking ----------------------------------------------------------------
+# keys: credentials become [REDACTED]; prompts: the prompt handed to a coding
+# agent becomes [REDACTED-PROMPT]. 0 (or none, off) writes command lines raw.
+# A value that cannot be read masks both.
+#EBPFM_REDACT=keys,prompts
+
+# --- eBPF tier: running -----------------------------------------------------
+# Seconds to run, then stop; 0 runs until stopped. `once` defaults to 30.
 #EBPFM_DURATION=0
-
-# Residency-sampling tick, seconds (0 disables the "what is alive now" view).
+# Seconds between residency ticks (what is running, open sockets, totals); 0:
+# no tick. `status` calls the tier stale after two ticks without a record.
 #EBPFM_RESIDENCY_S=60
-
-# perf ring-buffer poll interval (ms) and pages per CPU. Larger pages absorb
-# bigger exit bursts at the cost of locked memory.
+# Milliseconds between drains of the kernel rings.
 #EBPFM_POLL_MS=100
+# Pages per CPU in each kernel ring. More absorbs bigger bursts at the cost of
+# locked memory.
 #EBPFM_PERF_PAGES=256
-
-# --- capture scope ---------------------------------------------------------
-# Emitted argv cap in bytes (0 = uncapped; classification is always uncapped).
-#EBPFM_ARGS_MAXLEN=0
-# In-kernel argv read limit (bytes) — the real cap when ARGS_MAXLEN is 0.
-#EBPFM_ARGV_KMAX=4096
-# Per-write() payload capture (bytes).
-#EBPFM_WRITE_KMAX=1024
-
-# Drop processes shorter than this many seconds / below this CPU-second floor.
-#EBPFM_MIN_DURATION=0.0
-#EBPFM_MIN_CPU=0.0
-
-# Garbage-collect tracking state for a pid this many seconds after exit.
+# poll: one write(2) per stream per poll round. record: one per record.
+#EBPFM_FLUSH_MODE=poll
+# At stop, write every live tracked process as `truncated`. Not
+# EBPFM_FLUSH_MODE.
+#EBPFM_FLUSH=1
+# Gzip a day's files once the day is over (`<file>.jsonl.gz`). 0 leaves them
+# plain.
+#EBPFM_COMPRESS=1
+# Milliseconds behind kernel time that events are applied, so they apply in
+# order.
+#EBPFM_REORDER_MS=20
+# Milliseconds an exit record waits for the connections that close after the
+# exit. 0 writes it at once, without them.
+#EBPFM_EXIT_HOLD_MS=250
+# Seconds an exited process's state is kept.
 #EBPFM_GC_GRACE=300
 
-# --- network ---------------------------------------------------------------
-# Fold connections for untracked pids too (1), and emit loopback/private peers
-# (1). Both default off to keep records to agent-relevant egress.
-#EBPFM_TCP_ALL=0
-#EBPFM_CONN_ALL=0
-# Peers/providers kept per record, and endpoints listed per record.
-#EBPFM_CONNS_TOPN=5
-#EBPFM_NET_ENDPOINTS_MAX=256
-# Hold an exit record this many ms so late socket-close events fold into it.
-#EBPFM_EXIT_HOLD_MS=250
+# --- eBPF tier: command lines and Slurm -------------------------------------
+# Characters of `args` written; 0: no cap beyond what is read.
+#EBPFM_ARGS_MAXLEN=0
+# Bytes of argv read in the kernel at exec: the real limit when
+# EBPFM_ARGS_MAXLEN is 0.
+#EBPFM_ARGV_KMAX=4096
+# Bytes captured from each write() of a Slurm submit tool.
+#EBPFM_WRITE_KMAX=1024
+# The tools whose output a `submit` record captures, comma-separated.
+#EBPFM_SUBMIT_COMMS=sbatch,salloc,srun
+# Bytes of a submit tool's output captured before capture stops.
+#EBPFM_SUBMIT_BUDGET=8192
 
-# --- feature probing -------------------------------------------------------
-# 'auto' probes the kernel for usable BPF blocks; a comma list pins them.
+# --- eBPF tier: which processes ---------------------------------------------
+# Record an agent's own process. 0: only what it runs.
+#EBPFM_INCLUDE_ROOTS=1
+# Leave out processes that used less CPU than this many seconds.
+#EBPFM_MIN_CPU=0
+# Leave out processes that ran for less than this many seconds.
+#EBPFM_MIN_DURATION=0
+# Record a timer (EBPFM_TIMER_COMMS) that is no agent and used no CPU or I/O.
+#EBPFM_KEEP_TIMERS=0
+# The commands treated as timers, comma-separated.
+#EBPFM_TIMER_COMMS=sleep,usleep
+
+# --- eBPF tier: per-process reads -------------------------------------------
+# Read each reported process's working directory.
+#EBPFM_CWD=1
+# Read the working directory at every exec instead of inheriting it (to
+# validate).
+#EBPFM_CWD_ALWAYS=0
+# Read each reported process's namespaces and confinement.
+#EBPFM_SANDBOX=1
+# Read the sandbox state at every exec (to validate).
+#EBPFM_SANDBOX_ALWAYS=0
+# Heaviest processes listed per agent tree in a residency record.
+#EBPFM_RESIDENCY_TOPN=5
+# Kernel stacks of processes in D state read per tick.
+#EBPFM_DSTACK_MAX=300
+# Frames kept of each kernel stack.
+#EBPFM_DSTACK_DEPTH=5
+
+# --- eBPF tier: network -----------------------------------------------------
+# Also report loopback and private standing sockets, not only external ones.
+#EBPFM_CONN_ALL=0
+# Report standing sockets no tracked process owns (uid, no pid).
+#EBPFM_CONN_UNTRACKED=1
+# Also fold the connections of untracked processes.
+#EBPFM_TCP_ALL=0
+# Peers and providers kept in a `conns` block.
+#EBPFM_CONNS_TOPN=5
+# Entries in the kernel endpoint table (about 3 MB at the default).
+#EBPFM_NETPEER_MAX=65536
+# Endpoints listed per record; the rest are counted in `overflow`.
+#EBPFM_NET_ENDPOINTS_MAX=256
+# The per-tick `netio` series. 0: none (`net_endpoints` stays).
+#EBPFM_NETIO=1
+# Name endpoints from host names on the command line, resolved with the host's
+# resolver. 0: no lookups.
+#EBPFM_ARGV_HOSTS=1
+
+# --- eBPF tier: BPF blocks --------------------------------------------------
+# auto: probe which BPF blocks this kernel loads. A comma list pins them
+# (`ebpfm features` lists them).
 #EBPFM_FEATURES=auto
-# Cache the probed feature set per kernel (1) to avoid re-probing on restart.
+# Keep each kernel's probe result, so a restart does not probe again.
 #EBPFM_FEATURE_CACHE=1
-# Print per-block probe results to the journal on start (1).
+# Print the compiler's message for each block it rejects.
 #EBPFM_PROBE_VERBOSE=0
+
+# --- Commands ---------------------------------------------------------------
+# Timed repetitions per condition in `overhead`.
+#EBPFM_BENCH_REPS=3

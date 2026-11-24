@@ -42,7 +42,8 @@ export function Svg({ w, h, children, label, fit }: SvgProps) {
       viewBox={`0 0 ${w} ${h}`}
       width={w}
       height={h}
-      role="img"
+      // an image only with a name: role="img" and no label was an image a screen reader could not name
+      role={label ? 'img' : undefined}
       aria-label={label}
       preserveAspectRatio="xMidYMin meet"
     >
@@ -517,9 +518,11 @@ export function HBars({
   const words = (ss: string[]) => Math.ceil(Math.max(...ss.map((s) => s.length)) * VLBL_CH);
   const fitted = fitW < natW;
   const labelW = fitted ? Math.min(natLabelW, words(items.map((d) => d.k)) + 12) : natLabelW;
-  const valW = fitted
-    ? Math.min(natValW, words(items.map((d) => (d.lbl != null ? d.lbl : fmt(d.v)))) + 13)
-    : natValW;
+  // At full width, never narrower than its longest value: a full-length bar's
+  // label ran off the chart's edge ("28 min · 17 us") where a caller's valW was
+  // too small for its words.
+  const valWords = words(items.map((d) => (d.lbl != null ? d.lbl : fmt(d.v)))) + 13;
+  const valW = fitted ? Math.min(natValW, valWords) : Math.max(natValW, valWords);
   // Where the words still leave the bars too little room to differ -- long
   // tool names on a small phone -- the chart is drawn as wide as the bars need,
   // up to `natW`, and scaled into its box a little: smaller words, rather than
@@ -966,6 +969,10 @@ export interface LineSeries {
   area?: boolean;
   mark?: string | null;
   dashed?: boolean;
+  /** the series' own word ("agent"), drawn at its line's end: which line is
+   *  which, told without its colour (a red-green colour-blind reader sees the
+   *  agent's crimson and the human's green as one brown). Opt in per chart. */
+  tag?: string;
 }
 
 /** The x scale, axis value to SVG units: linear, or log10 on a log axis. The
@@ -1214,7 +1221,7 @@ export function Lines({
       while (b >= 0 && pts[b].x > x1) b--;
       return pts.slice(Math.max(0, a - 1), Math.min(pts.length, b + 2));
     };
-    return series.map((se) => {
+    const els = series.map((se) => {
       const pts = drawn(se.pts);
       const seen = pts.filter(inView);
       // One subpath per run of consecutive present points: a null is a gap.
@@ -1310,7 +1317,7 @@ export function Lines({
                     y={Y(last.y as number) - 9}
                     textAnchor="end"
                   >
-                    {se.mark}
+                    {se.tag ? `${se.tag} ${se.mark}` : se.mark}
                   </text>
                 </g>
               );
@@ -1318,6 +1325,39 @@ export function Lines({
         </g>
       );
     });
+    // Each tagged series' word at its newest point in view (a series with a
+    // mark says it in its mark), nudged apart so two lines ending close
+    // together keep two legible words.
+    const tags: { k: string; x: number; y: number; t: string }[] = [];
+    for (const se of series) {
+      if (!se.tag || se.mark) continue;
+      const seen = drawn(se.pts).filter(inView);
+      let last: LinePt | undefined;
+      for (let i = seen.length - 1; i >= 0; i--) {
+        if (seen[i].y != null) {
+          last = seen[i];
+          break;
+        }
+      }
+      if (last) tags.push({ k: se.lbl, x: X(last.x) - 6, y: Y(last.y as number) - 6, t: se.tag });
+    }
+    tags.sort((a, b) => a.y - b.y);
+    for (let i = 1; i < tags.length; i++) {
+      if (tags[i].y - tags[i - 1].y < 12) tags[i].y = tags[i - 1].y + 12;
+    }
+    for (const t of tags) t.y = Math.min(Math.max(t.y, TOP + 9), TOP + ph - 2);
+    if (tags.length) {
+      els.push(
+        <g key="__tags" aria-hidden="true">
+          {tags.map((t) => (
+            <text key={t.k} className="ltag" x={t.x} y={t.y} textAnchor="end">
+              {t.t}
+            </text>
+          ))}
+        </g>,
+      );
+    }
+    return els;
   }, [series, zoomed, clip, L, pw, ph, TOP, x0, x1, y0, y1, xlog, ylog, xname, yname, xfmt, xtip, yfmt]);
 
   if (!series.length) return null;

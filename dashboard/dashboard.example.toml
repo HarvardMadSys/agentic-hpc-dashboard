@@ -1,0 +1,13 @@
+# Copy to dashboard/dashboard.toml and edit (or let `uv run --frozen rc-dashboard init` write one).
+# Every setting, with its default: `uv run --frozen rc-dashboard print-config --reference`.
+[site]
+name = ""                       # on every page: "cluster X · login nodes"; empty is this host's name
+
+[feeds.ebpf]
+# roots = ["/scratch/ebpfm"]    # the collector's EBPFM_OUTPUT_DIR; unset, the default places are read
+
+[server.auth]
+password_hash_file = "~/.config/rc-dashboard/password.hash"   # rc-dashboard new-password --install <it>
+
+[slurm]
+enabled = true                  # false on a cluster without Slurm: no HPC tab

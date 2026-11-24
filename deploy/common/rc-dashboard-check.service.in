@@ -1,0 +1,32 @@
+# Rendered by deploy/common/install-dashboard.sh into /etc/systemd/system/rc-dashboard-check.service,
+# and run every hour by rc-dashboard-check.timer. Edit the template and run the installer again.
+#
+# deploy/common/check.sh: `rc-dashboard status --json`, from the dashboard's own settings,
+# as its own account: every collector's heartbeat, and (fleet) every node's copy. A level
+# of warn or crit goes to the journal, and to Slack when @ETC@/slack_webhook holds a
+# webhook URL. The unit ends failed on crit, so `systemctl --failed` shows it too.
+[Unit]
+Description=rc dashboard: the hourly check (rc-dashboard status)
+Documentation=file://@REPO@/deploy/README.md
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@USER@
+# The group the collector writes for, on a host whose own collector it reads (single).
+SupplementaryGroups=@GROUP@
+WorkingDirectory=@REPO@/dashboard
+EnvironmentFile=@ETC@/dashboard.env
+EnvironmentFile=@ETC@/paths.env
+Environment=RC_CHECK_ETC=@ETC@
+Environment=RC_CHECK_VENV=@VENV@
+ExecStart=@REPO@/deploy/common/check.sh
+# 1 is warn: logged (and posted), but the unit ends failed on crit (2) or a check that
+# could not run (3) alone.
+SuccessExitStatus=1
+TimeoutStartSec=900
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only

@@ -28,6 +28,8 @@ export interface TimeLine {
   dashed?: boolean;
   /** a point opens the commands behind its bin, which starts at `t` */
   onPick?: (t: number) => void;
+  /** the line's word at its end, so it is told without its colour (LineSeries.tag) */
+  tag?: string;
 }
 
 export const anyValue = (lines: TimeLine[]) => lines.some((l) => l.v?.some((x) => x != null));
@@ -71,6 +73,7 @@ export function TimeChart({
     c: l.c,
     dashed: l.dashed,
     onPick: l.onPick,
+    tag: l.tag,
     pts: s.t.map((x, i) => {
       const v = l.v?.[i];
       return { x, y: v == null ? null : v * k };

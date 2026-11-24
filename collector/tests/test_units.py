@@ -49,10 +49,14 @@ class Rig(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def run_sh(self, *args, script=SCRIPT, active="", **env):
+        # a settings file and a package of its own, so a host's /etc/default/ebpfm
+        # or an installed ebpfm-collector cannot change what a test sees
         e = dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"], STUB_LOG=self.log,
                  STUB_ACTIVE=active, EBPFM_UNIT_DIR=self.units, EBPFM_OUTPUT_DIR=self.out,
                  EBPFM_NODE_OUTPUT_DIR=self.node_out,
-                 EBPFM_PID_DIR=os.path.join(self.tmp, "run"), HOME=self.tmp)
+                 EBPFM_PID_DIR=os.path.join(self.tmp, "run"), HOME=self.tmp,
+                 EBPFM_DEFAULT_FILE=os.path.join(self.tmp, "default-ebpfm"),
+                 EBPFM_PACKAGED_UNIT=os.path.join(self.tmp, "no-package"))
         e.update(env)
         return subprocess.run(["bash", script] + list(args), env=e, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, universal_newlines=True, timeout=60)
@@ -76,7 +80,11 @@ class TestInstall(Rig):
         ebpf, node = self.unit("ebpfm.service"), self.unit("ebpfm-node.service")
         for text in (ebpf, node):
             self.assertNotIn("@EBPFM", text)
-        self.assertIn("ExecStart=/usr/bin/env python3 %s/ebpf_trace.py %%H" % _ROOT, ebpf)
+        # no host argument: the tracer's short name, as ebpfm.sh and the node tier use
+        self.assertIn("ExecStart=/usr/bin/env python3 %s/ebpf_trace.py\n" % _ROOT, ebpf)
+        self.assertNotIn("%H", ebpf)
+        self.assertIn("RestartPreventExitStatus=2", ebpf)
+        self.assertIn("RestartPreventExitStatus=2", node)
         self.assertIn("Environment=EBPFM_OUTPUT_DIR=%s" % self.out, ebpf)
         self.assertIn("ExecStart=/bin/bash %s/ebpfm.sh _node_daemon" % _ROOT, node)
         self.assertIn("Environment=EBPFM_NODE_OUTPUT_DIR=%s" % self.node_out, node)
@@ -84,6 +92,26 @@ class TestInstall(Rig):
         # installed, not enabled: the admin enables each tier
         self.assertNotIn("enable", self.calls())
         self.assertIn("systemctl enable --now ebpfm-node", p.stdout)
+
+    def test_the_units_read_the_settings_file_this_install_read(self):
+        """EBPFM_DEFAULT_FILE moves the settings file: install read and wrote it there,
+        and units reading /etc/default/ebpfm ran on other settings, or none."""
+        def directives(name):
+            return [l for l in self.unit(name).splitlines() if l and not l.startswith("#")]
+        f = os.path.join(self.tmp, "default-ebpfm")
+        p = self.run_sh("install-unit")
+        self.assertEqual(p.returncode, 0, p.stdout)
+        for name in ("ebpfm.service", "ebpfm-node.service"):
+            d = directives(name)
+            self.assertIn("EnvironmentFile=-%s" % f, d)
+            self.assertIn("Environment=EBPFM_DEFAULT_FILE=%s" % f, d, "the node daemon reads it too")
+            self.assertNotIn("EnvironmentFile=-/etc/default/ebpfm", d)
+        p = self.run_sh("install-unit", EBPFM_DEFAULT_FILE="")      # none: neither reads one
+        self.assertEqual(p.returncode, 0, p.stdout)
+        for name in ("ebpfm.service", "ebpfm-node.service"):
+            d = directives(name)
+            self.assertFalse([l for l in d if l.startswith("EnvironmentFile=")], d)
+            self.assertIn("Environment=EBPFM_DEFAULT_FILE=", d)
 
     def test_a_copy_without_the_node_template_installs_the_one(self):
         """A bundle or package from before the node tier had a unit."""

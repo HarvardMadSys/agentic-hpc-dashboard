@@ -33,6 +33,16 @@ export const CLS_COL: Record<string, string> = table({
   other: 'var(--sg)',
 });
 
+/** A class's colour as TEXT: the series hue where it is legible on the page
+ *  (WCAG AA, 4.5:1), the human class's green darkened where it is not. A
+ *  swatch or a line keeps CLS_COL. */
+export const CLS_INK: Record<string, string> = table({
+  agent: 'var(--s1)',
+  human: 'var(--s3-ink)',
+  ide: 'var(--s2)',
+  unlabeled: 'var(--muted)',
+});
+
 /** Each agent or editor type's own colour, inside the agent class's crimson:
  * a tree can hold more than one type, so each box says which by colour too. */
 export const AGENT_TYPE_COL: Record<string, string> = table({

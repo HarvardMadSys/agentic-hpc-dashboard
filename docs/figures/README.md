@@ -243,6 +243,12 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
 | SH-9 | the rail's foot: one line, the rest its hover | LIVE, BUILD | transport, last frame, `window`, `full_built_at`, `window_status.cache` | `aggregator.py:Aggregator.panels` · `App.tsx:App` |
 | SH-10 | classes shown | none | the URL's `cls` | `App.tsx:App` |
 | SH-11 | the commands behind an I/O number (drawer) | IOCMDS | job `totals`, `rows` | `iocmds.py:IoCommands._read`, `Job.page` · `components/IoCmds.tsx:IoCmdsDrawer` |
+| SH-12 | the time zone every time is in | CONFIG | `_meta.tz` (`name`, `abbrev`, `utc_offset_s`) | `config.py:Config.as_dict` · `lib/zone.ts:setZone`, `zoneLabel`; `App.tsx:App` |
+| SH-13 | no data: the setup screen | FEEDS | every feed's `status`, `candidates`, `synthetic_hosts` | `feeds.py:resolve` · `components/SetupScreen.tsx:noData`, `SetupScreen` |
+| SH-14 | how to read a panel (drawer) | none: the panel as drawn | its labels' `data-tip`s | `components/About.tsx:notesOf`, `AboutButton` |
+| SH-15 | copy a panel's tables as CSV | none: the panel as drawn | its `<table>`s | `components/CopyCsv.tsx:tablesCsv` |
+| SH-16 | Ask LLM beside the open tab (drawer) | ASK | `/api/ask` `enabled` | `ask.py` · `components/AskDrawer.tsx`, `tabs/ChatTab.tsx` |
+| SH-17 | go to a user, login node or session | LIVE, BUILD | `facets.users`, live `hosts`, the sessions' `rows` | `App.tsx:App` (`paletteItems`) · `components/CommandPalette.tsx` |
 
 #### SH-1 status pill
 
@@ -767,8 +773,8 @@ See [Agents: subagents and blast radius](../../dashboard/README.md#agents-subage
 
 ## Agents › Sessions
 
-The Sessions tab's figures, the Agents tab's last part now, under AG-10 (`?tab=trajectories` lands on
-them). The inspector (SE-4 to SE-9) opens under a portrait on the Users tab too (US-11), the same
+The Sessions sub-tab's figures, beside the Agents sub-tab under the rail's Agents stop (`?tab=sessions`;
+`?tab=trajectories` opens it too). The inspector (SE-4 to SE-9) opens under a portrait on the Users tab too (US-11), the same
 component (`tabs/OpenSession.tsx`) over the same read.
 
 See [Sessions: tasks, phases, and processes](../../dashboard/README.md#sessions-tasks-phases-and-processes),
@@ -912,7 +918,7 @@ and for how the page draws them
   about 44 µs on FAS, in the `inspect_workers` processes, and feeding it to the tree about 6 µs, in
   the service's own process. Trees are cached for 600 s.
 
-## Security
+## Risk › Security
 
 The checks (SC-1, `tabs/SecurityTab.tsx`), the sandbox panels (SC-2 to SC-5, `tabs/SandboxTab.tsx`)
 and the writes outside the start folder (SC-6); credentials on command lines are checked here and
@@ -1000,7 +1006,7 @@ and `netio` among them, for its launch (`_approval`, `_approval_detail`).
   counted in `flags_more`), in the service's order.
 - **Cost:** none past AG-4's.
 
-## Login nodes › Resources
+## Usage › Login nodes
 
 Login node health, the window's time series over time on one zoom, the worst individual
 processes, then the I/O panels, drawn by Risks' code
@@ -1166,7 +1172,7 @@ RE-2, on one zoom (`tabs/LiveCharts.tsx`); they were Live's until it was cut to 
   has, a class with none gets 0.
 - **Cost:** O(1) per record; per read, one pass over the bins.
 
-## Login nodes › Risks
+## Risk › Site rules
 
 See [Risk rules differ by cluster](../../dashboard/README.md#risk-rules-differ-by-cluster). A section
 the cluster's profile leaves out is neither computed nor drawn.
@@ -1328,7 +1334,7 @@ Requests are read off argv: a `#SBATCH` line is not seen.
   the session's process tree, read by INSPECT (`Aggregator._ask_session`, `ask.py:session_digest`).
 - **Cost:** as AL-1.
 
-## Internal
+## System › Internal
 
 The per-process tables of the resource and I/O reducers (IN-1 to IN-4), drawn through
 `ResourcesTab part="internal"` and `RiskIoTab io="internal"` (`tabs/InternalTab.tsx`).
@@ -1377,7 +1383,7 @@ The per-process tables of the resource and I/O reducers (IN-1 to IN-4), drawn th
 - **Computation:** a `Quant` per counter and class (IN-1's sketch); a record with no `io` block is
   counted as not measured.
 
-## Feeds
+## System › Feeds
 
 See [Is each collector OK?](../../dashboard/README.md#is-each-collector-ok). No window and no filter.
 

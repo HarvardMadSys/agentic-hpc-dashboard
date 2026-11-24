@@ -16,10 +16,14 @@ Type=simple
 User=@USER@
 Group=@USER@
 ExecStart=@VENV@/bin/python @REPO@/deploy/fleet/pull.py --config @ETC@/fleet.env loop
+# `systemctl reload rc-pull` reads fleet.env again: a node added starts, one taken out
+# stops, and no other node, nor the dashboard, restarts.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10
-# 2: fleet.env is wrong; 3: another pull.py holds the copy. Starting again changes neither.
-RestartPreventExitStatus=2 3
+# 2: fleet.env is wrong; 3: another pull.py holds the copy; 4: fleet.env names no node.
+# Starting again changes none of them.
+RestartPreventExitStatus=2 3 4
 StateDirectory=rc-dashboard
 StateDirectoryMode=0700
 UMask=0077

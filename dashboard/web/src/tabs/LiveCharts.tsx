@@ -52,10 +52,10 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
   const sortOf = useSortMap();
 
   const byCls = (field: 'cpu_s' | 'sched_wait_s' | 'maj_flt'): TimeLine[] =>
-    shown(s?.by_class, cls).map((c) => ({ lbl: CLS_LBL[c] ?? c, c: CLS_COL[c], v: s?.by_class?.[c]?.[field] }));
+    shown(s?.by_class, cls).map((c) => ({ lbl: CLS_LBL[c] ?? c, c: CLS_COL[c], v: s?.by_class?.[c]?.[field], tag: CLS_LBL[c] ?? c }));
 
   const memCls = shown(s?.resident, cls);
-  const memLines: TimeLine[] = memCls.map((c) => ({ lbl: CLS_LBL[c] ?? c, c: CLS_COL[c], v: s?.resident[c]?.rss_mb }));
+  const memLines: TimeLine[] = memCls.map((c) => ({ lbl: CLS_LBL[c] ?? c, c: CLS_COL[c], v: s?.resident[c]?.rss_mb, tag: CLS_LBL[c] ?? c }));
   const mem = Object.fromEntries(
     memCls.map((c) => {
       const vals = s?.resident[c]?.rss_mb ?? [];
@@ -86,7 +86,7 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
     });
   const ioLines = (disk: 'rd_mb' | 'wr_mb', sys: 'rchar_mb' | 'wchar_mb', sysWord: string): TimeLine[] =>
     ioCls.flatMap((c) => [
-      { lbl: `${CLS_LBL[c] ?? c} · disk`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.[disk],
+      { lbl: `${CLS_LBL[c] ?? c} · disk`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.[disk], tag: CLS_LBL[c] ?? c,
         onPick: binPick(c, disk, disk === 'rd_mb' ? 'disk read' : 'disk written') },
       { lbl: `${CLS_LBL[c] ?? c} · ${sysWord}`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.[sys], dashed: true,
         onPick: binPick(c, sys, sys === 'rchar_mb' ? 'read requested' : 'write requested') },
@@ -98,7 +98,7 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
   ];
   // network: each class's bytes sent (solid) and received (dashed)
   const netLines: TimeLine[] = ioCls.flatMap((c) => [
-    { lbl: `${CLS_LBL[c] ?? c} · sent`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.net_tx_mb ?? [],
+    { lbl: `${CLS_LBL[c] ?? c} · sent`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.net_tx_mb ?? [], tag: CLS_LBL[c] ?? c,
       onPick: binPick(c, 'tx_mb', 'network sent') },
     { lbl: `${CLS_LBL[c] ?? c} · received`, c: CLS_COL[c] ?? 'var(--ink-3)', v: s?.by_class[c]?.net_rx_mb ?? [], dashed: true,
       onPick: binPick(c, 'rx_mb', 'network received') },
@@ -111,7 +111,7 @@ export const WindowCharts = memo(function WindowCharts({ P, cls }: { P: Panels; 
   if (s?.stall_other.some((v) => v)) stallLines.push({ lbl: 'every other tool', c: 'var(--sg)', v: s.stall_other });
   const ss = sp.series;
   const slurmLines = (field: 'jobs' | 'queries'): TimeLine[] =>
-    shown(ss?.by_class, cls).map((c) => ({ lbl: CLS_LBL[c] ?? c, c: CLS_COL[c], v: ss?.by_class[c]?.[field] }));
+    shown(ss?.by_class, cls).map((c) => ({ lbl: CLS_LBL[c] ?? c, c: CLS_COL[c], v: ss?.by_class[c]?.[field], tag: CLS_LBL[c] ?? c }));
 
   const PICKS: { k: PickKey; lbl: string; tip?: string; show: boolean }[] = [
     { k: 'wait', lbl: 'runqueue wait', tip: 'runqueue', show: true },

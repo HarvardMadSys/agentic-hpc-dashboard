@@ -16,7 +16,7 @@ import { SortTh } from '../components/SortTh';
 import { useSort } from '../lib/useSort';
 import { GLOSS } from '../lib/glossary';
 import { Panel, More } from '../components/Panel';
-import { CLS_COL, CLS_LBL } from '../lib/classes';
+import { CLS_COL, CLS_INK, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, fmt, mb, notMeasured, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
 import { InstanceTable, RiskIoTab } from './RiskIoTab';
@@ -184,7 +184,7 @@ function DistTable({ byClass, have, on }: { byClass: Resources['by_class']; have
             <SortTh s={s} k="measure" first="asc" rowSpan={2} className="pin">per process</SortTh>
             {have.map((c) => (
               <th key={c} colSpan={qs.length} className="grp" style={{ ...tint(c), borderTop: `3px solid ${CLS_COL[c]}` }}>
-                <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
+                <span style={{ color: CLS_INK[c] }}>{CLS_LBL[c] ?? c}</span>
                 <span className="sub"> · {fint(byClass[c]?.events)} processes</span>
               </th>
             ))}
@@ -264,7 +264,7 @@ function FaultTable({
             <SortTh s={s} k="measure" first="asc">average per process</SortTh>
             {have.map((c) => (
               <th key={c} className="num" style={{ ...tint(c), borderTop: `3px solid ${CLS_COL[c]}` }}>
-                <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
+                <span style={{ color: CLS_INK[c] }}>{CLS_LBL[c] ?? c}</span>
                 <div className="sub">{fint(byClass[c]?.events)} processes</div>
               </th>
             ))}

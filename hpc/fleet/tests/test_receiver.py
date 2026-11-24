@@ -140,6 +140,32 @@ class TestReceiver(Base):
             time.sleep(0.2)
         self.wait_same()
 
+    def test_a_link_retired_while_its_transport_starts_copies_nothing(self):
+        """A reload that retired a link between run()'s check and the transport's start
+        found no process to end, and the session, which looked only at stop and paused,
+        went on copying a host the config no longer named."""
+        c = FakeCollector(self.rig.src)
+        c.append("exits", b'{"a":1}\n' * 100)
+        starting, go = threading.Event(), threading.Event()
+        real = fs.subprocess.Popen
+
+        def held(*a, **kw):            # the transport's start, held until the retirement
+            starting.set()
+            go.wait(10)
+            return real(*a, **kw)
+        fs.subprocess.Popen = held
+        try:
+            self.rig.start()
+            self.assertTrue(starting.wait(10), "the link never started its transport")
+            self.rig.link.retire()
+            go.set()
+            self.rig.thread.join(10)
+        finally:
+            fs.subprocess.Popen = real
+        self.assertFalse(self.rig.thread.is_alive(), "a retired link stops")
+        self.assertIsNotNone(self.rig.link.proc.poll(), "its transport ended")
+        self.assertEqual(mirror_tree(self.rig.mdir), {}, "and copied nothing")
+
     def test_receiver_restart_resumes(self):
         c = FakeCollector(self.rig.src)
         c.append("exits", b'{"a":1}\n' * 1000)

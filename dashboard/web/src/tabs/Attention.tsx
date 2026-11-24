@@ -3,9 +3,10 @@
  *
  * It holds no threshold of its own. Each line is a rule the service or another
  * panel already applies -- a feed past its own max age, a risk rule's hits, a
- * session the scheduler panel calls polling, a refusal, a filesystem past the
- * service's full line, an account the kernel held back at its CPU limit, an
- * NFS retransmission -- so this list and those panels cannot disagree. The
+ * session that broke one of the scheduler's abnormal-activity rules, a
+ * filesystem past the service's full line, an account the kernel held back at
+ * its CPU limit, an NFS retransmission -- so this list and those panels cannot
+ * disagree. The
  * agent's count leads, as on the panels' plates, with the other classes beside
  * it for scale.
  *
@@ -24,6 +25,7 @@ import { fint, fmt, lagStr, pc } from '../lib/format';
 import { useNodeWords } from '../lib/nodes';
 import { pick } from '../lib/panels';
 import type { Panels } from '../lib/panels';
+import { RULE_LBL } from '../lib/slurmRules';
 
 interface Flag {
   key: string;
@@ -55,11 +57,17 @@ export function Attention({ P, cls, feeds }: { P: Panels; cls: Cls[]; feeds: Fee
       if (f.status === 'missing' && f.required) {
         flags.push({ key: `feed:${f.name}`, kind: 'data', what: `${f.label} not found`,
           note: `no files where it is expected${f.configured?.length ? `: ${f.configured.join(', ')}` : ''}`,
-          to: at('feeds'), where: 'Feeds' });
+          to: at('feeds'), where: 'System › Feeds' });
+      } else if (f.status === 'empty' && f.required) {
+        // found, but nothing in it: every panel below is empty for that reason,
+        // which an all-clear above them would hide
+        flags.push({ key: `feed:${f.name}`, kind: 'data', what: `${f.label} has no records`,
+          note: `its folder is there and holds nothing yet${f.resolved?.length ? `: ${f.resolved.join(', ')}` : ''}`,
+          to: at('feeds'), where: 'System › Feeds' });
       } else if (f.lag_s != null && f.max_age_s != null && f.lag_s > f.max_age_s) {
         flags.push({ key: `feed:${f.name}`, kind: 'data', what: `${f.label} is ${lagStr(f.lag_s)} behind`,
           note: `past its own limit of ${lagStr(f.max_age_s)}: what it feeds is not current`,
-          to: at('feeds'), where: 'Feeds' });
+          to: at('feeds'), where: 'System › Feeds' });
       }
     }
   } else {
@@ -99,39 +107,39 @@ export function Attention({ P, cls, feeds }: { P: Panels; cls: Cls[]; feeds: Fee
           ? `${sc.title}: ${plural(by.agent, 'match', 'matches')} on agent command lines`
           : `${sc.title}: agents ran ${plural(by.agent, 'such command')}`,
         note: sc.kind === 'credentials' ? `${top.join(' · ')} · the values are never shown` : top.join(' · '),
-        by, to: at('risk', slug(sc.title)), where: `Risks › ${sc.title}`,
+        by, to: at('risk', slug(sc.title)), where: `Risk › Site rules › ${sc.title}`,
       });
     }
   }
 
-  // ---- the scheduler: the agent's polling sessions and refused submissions
+  // ---- the scheduler: the agent's sessions that broke one of its rules. One
+  // judgment, the service's (reducers/slurm.py), here as on HPC's own table:
+  // polling the queue is how an agent waits for its job, and one refusal is
+  // not a pattern, so both are counted on HPC and flagged only by a rule.
+  // Flagging every poll here once read "5 sessions polled" above an HPC table
+  // that said no session broke a rule.
   const sp = pick<SlurmPanel>(P, 'slurm', 'ebpfm');
   if (absent(sp)) {
     unchecked.push('the scheduler (no Slurm panel)');
   } else if (!agent) {
     unchecked.push('the scheduler (the agent class is filtered out)');
+  } else if (!sp.abnormal) {
+    unchecked.push('the scheduler (the service judges no rule)');
   } else {
     checked.push('the scheduler');
     const by = sp.by_class ?? {};
     const a = by.agent;
-    const split = (f: 'polling_sessions' | 'rejected') =>
-      Object.fromEntries(Object.entries(by).map(([c, b]) => [c, b?.[f] ?? 0]));
-    if (a && a.polling_sessions > 0) {
+    const broke = a?.abnormal_sessions ?? 0;
+    if (a && broke > 0) {
+      const rules = Object.entries(a.abnormal_by ?? {})
+        .filter(([, n]) => (n ?? 0) > 0)
+        .map(([id, n]) => `${RULE_LBL[id] ?? id} ×${fint(n)}`);
       flags.push({
-        key: 'slurm:polling', kind: 'slurm',
-        what: `${plural(a.polling_sessions, 'agent session')} polled the queue`,
-        note: `${fmt(a.polling_h)} h of polling`,
-        by: split('polling_sessions'), to: at('slurm', 'sec-sessions-at-the-scheduler'), where: 'HPC › Sessions at the scheduler',
-      });
-    }
-    if (a && a.rejected > 0) {
-      const why = (sp.rejections ?? []).find((r) => r.cls === 'agent')?.why;
-      flags.push({
-        key: 'slurm:refused', kind: 'slurm',
-        what: `${plural(a.rejected, 'agent submission')} refused by the scheduler`,
-        note: `${pc(a.rejected_pct)} of agent submissions${why ? ` · most: ${why}` : ''}`,
-        by: split('rejected'), to: at('slurm', 'sec-submissions-the-scheduler-refused'),
-        where: 'HPC › Submissions the scheduler refused',
+        key: 'slurm:abnormal', kind: 'slurm',
+        what: `${plural(broke, 'agent session')} broke a rule at the scheduler`,
+        note: rules.join(' · '),
+        by: Object.fromEntries(Object.entries(by).map(([c, b]) => [c, b?.abnormal_sessions ?? 0])),
+        to: at('slurm', 'sec-abnormal-slurm-activity'), where: 'Usage › HPC › Abnormal Slurm activity',
       });
     }
   }
@@ -139,7 +147,7 @@ export function Attention({ P, cls, feeds }: { P: Panels; cls: Cls[]; feeds: Fee
   // ---- the nodes themselves: no class here, they are the node's
   const node = pick<NodePanel>(P, 'node', 'ebpf_node');
   const health = at('resources', 'sec-node-health');
-  const healthWhere = `${nodes.Many} › Resources › ${nodes.One} health`;
+  const healthWhere = `Usage › ${nodes.Many} › ${nodes.One} health`;
   if (absent(node) || !(node.hosts?.length)) {
     unchecked.push(`${nodes.one} health (no node-tier snapshot)`);
   } else {
@@ -179,9 +187,17 @@ export function Attention({ P, cls, feeds }: { P: Panels; cls: Cls[]; feeds: Fee
       id="sec-needs-attention"
       span
       header={
-        <span className={`pill${flags.length ? ' stale' : ' ok'}`}>
-          {flags.length ? `${fint(flags.length)} flagged` : 'nothing flagged'}
-        </span>
+        // green only for a full check that found nothing: with a source not
+        // checked, "nothing flagged" is about part of the page, and says so
+        flags.length ? (
+          <span className="pill stale">{`${fint(flags.length)} flagged`}</span>
+        ) : unchecked.length ? (
+          <span className="pill" data-tip={`not checked: ${unchecked.join(', ')}`}>
+            nothing flagged in what was checked
+          </span>
+        ) : (
+          <span className="pill ok">nothing flagged</span>
+        )
       }
     >
       {flags.length > 0 && (

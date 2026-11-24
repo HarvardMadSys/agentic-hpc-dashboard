@@ -1,4 +1,6 @@
-/* Go to anything: a tab, a section of the open tab, a window, an action.
+/* Go to anything: a tab, a section of the open tab, a window, an action, and,
+ * once a word is typed, who and what the window holds: a user's portrait, a
+ * login node's health, an agent type, a session.
  *
  * Opened with Ctrl+K or Cmd+K, or `/` when no field has the cursor (App.tsx).
  * Twelve tabs and a section list per tab is a lot to reach by pointer; typed,
@@ -21,12 +23,15 @@ export interface PaletteItem {
   icon: IconName;
   /** extra words it answers to */
   keywords?: string;
+  /** offered only once something is typed: who and what the window holds (users,
+   *  login nodes, sessions), too many to list before a word narrows them */
+  searchOnly?: boolean;
   run: () => void;
 }
 
 /** Every word typed must appear somewhere in the item; its label leads the rank. */
 function rank(item: PaletteItem, q: string): number {
-  if (!q) return 1;
+  if (!q) return item.searchOnly ? 0 : 1;
   const label = item.label.toLowerCase();
   const all = `${label} ${item.group.toLowerCase()} ${(item.hint ?? '').toLowerCase()} ${(item.keywords ?? '').toLowerCase()}`;
   const words = q.split(/\s+/).filter(Boolean);
@@ -123,7 +128,7 @@ export const CommandPalette = memo(function CommandPalette({
           <input
             ref={input}
             value={q}
-            placeholder="Go to a tab, a section, a window…"
+            placeholder="Go to a tab, a user, a login node, a session, a window…"
             aria-label="Go to"
             aria-controls="cmdk-list"
             aria-activedescendant={shown.length ? `cmdk-${at}` : undefined}

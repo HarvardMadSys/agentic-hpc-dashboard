@@ -29,7 +29,7 @@
 #   ./run.sh api        Backend only, no frontend watcher.
 #
 # Requires: uv, node/npm. `watchfiles` is pulled in on the fly by
-# `uv run --with watchfiles`, so it need not be a project dependency.
+# `uv run --frozen --with watchfiles`, so it need not be a project dependency.
 
 set -euo pipefail
 set -m   # give every background job its own process group, so cleanup can
@@ -45,27 +45,20 @@ case "$MODE" in
 esac
 
 # ---- Environment -----------------------------------------------------
-# Overridable, so a wrapper can point a second instance at another feed
-# (run-fasrc.sh).
-export RC_DASH_EBPF_ROOTS="${RC_DASH_EBPF_ROOTS:-/scratch/marthen/ebpfm/ebpf}"
-export RC_DASH_NODE_ROOTS="${RC_DASH_NODE_ROOTS:-/scratch/marthen/ebpfm/login}"
+# The feed comes from the config file (dashboard.toml, dashboard.config.json),
+# RC_DASH_EBPF_ROOTS / RC_DASH_NODE_ROOTS, or the service's default candidates
+# (`uv run --frozen rc-dashboard check-feeds` lists them). A wrapper points a
+# second instance at another feed (run-dev.sh, run-fasrc.sh).
 export RC_DASH_PORT="${RC_DASH_PORT:-8124}"
 export RC_DASH_STATIC_DIR="${RC_DASH_STATIC_DIR:-$WEB/dist}"
 # What the backend runs: `serve`, or `demo` for the service over a synthetic
 # feed it writes itself (run-demo.sh, rc_dashboard/demo).
-# `serve` starts only with a password: server.auth.password_hash in
-# dashboard.config.json (`uv run python -m rc_dashboard new-password` makes one and
-# prints its hash), or RC_DASH_PASSWORD_HASH. RC_DASH_OPEN=1 serves without one,
-# to anyone who reaches the port. A demo needs neither.
+# `serve` starts only with a password: a hash file named by
+# server.auth.password_hash_file or RC_DASH_PASSWORD_HASH_FILE (`uv run --frozen
+# rc-dashboard new-password --install FILE` makes one), or the hash itself in
+# server.auth.password_hash or RC_DASH_PASSWORD_HASH. RC_DASH_OPEN=1 serves
+# without one, to anyone who reaches the port. A demo needs neither.
 RC_DASH_COMMAND="${RC_DASH_COMMAND:-serve}"
-# These clusters' accounts whose records are dropped (filters.drop_global and
-# filters.drop_agent, none by default): the monitoring operator's, and one
-# account's agent records (period3 agent build skew). Not the demo's, whose
-# users are made up. Either set empty leaves it to the config file.
-if [ "$RC_DASH_COMMAND" != demo ]; then
-  export RC_DASH_DROP_USERS="${RC_DASH_DROP_USERS-juncheng}"
-  export RC_DASH_DROP_AGENT_USERS="${RC_DASH_DROP_AGENT_USERS-flamraoui}"
-fi
 # A bundle built anywhere but web/dist is passed to vite as its outDir: a second
 # instance must not share the first one's watcher output, which vite empties
 # on every rebuild.
@@ -103,7 +96,7 @@ WATCH_PATHS=("$HERE/rc_dashboard")
 
 # .py is not the only thing worth restarting on: the config file changes the
 # app that create_app() builds, so watch it too when it exists.
-for cfg in "$HERE/dashboard.config.json" "${RC_DASH_CONFIG:-}"; do
+for cfg in "$HERE/dashboard.config.json" "$HERE/dashboard.toml" "${RC_DASH_CONFIG:-}"; do
   [ -n "$cfg" ] && [ -f "$cfg" ] && WATCH_PATHS+=("$cfg")
 done
 
@@ -119,9 +112,10 @@ backend() {
   # reach the server, and the SIGKILL after the timeout reached only uv. The
   # server was orphaned with the port bound, every restart after it failed to
   # bind, and the orphan went on serving the code from before the edit. One
-  # `uv run` first does the sync each restart's `uv run` used to.
-  (cd "$HERE" && uv run python -c '')
-  exec uv run --with watchfiles watchfiles \
+  # `uv run` first does the sync each restart's `uv run` used to. --frozen, so
+  # it installs what uv.lock pins and never rewrites the lock (CLAUDE.md).
+  (cd "$HERE" && uv run --frozen python -c '')
+  exec uv run --frozen --with watchfiles watchfiles \
     --filter default \
     --sigint-timeout 15 \
     "$HERE/.venv/bin/python -m rc_dashboard $RC_DASH_COMMAND" \

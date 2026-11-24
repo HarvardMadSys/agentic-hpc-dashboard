@@ -54,20 +54,25 @@ interface Place {
   titled?: string;
 }
 
-/** As App.tsx's TABS names them. */
+/** Where each tab is, as the rail and the head name it (App.tsx's TABS and
+ *  PARENTS): the rail's stop, then the sub-tab. */
 const TAB_LBL: Record<string, string> = table({
   live: 'Live',
+  users: 'Users',
   agents: 'Agents',
-  resources: 'Resources',
-  risk: 'Risks',
-  slurm: 'HPC',
-  security: 'Security',
-  internal: 'Internal',
+  sessions: 'Agents › Sessions',
+  security: 'Risk › Security',
+  risk: 'Risk › Site rules',
+  resources: 'Usage › Login nodes',
+  slurm: 'Usage › HPC',
+  trend: 'Usage › Trend',
+  feeds: 'System › Feeds',
+  internal: 'System › Internal',
 });
 
 /** The inspector's title, which is also its anchor (TrajectoryInspector.tsx). */
 const INSPECTOR = 'Session inspector';
-/** The list of every session beside it (TrajectoriesTab.tsx): the Agents tab's last part, as the inspector is. */
+/** The list of every session beside it (TrajectoriesTab.tsx), on the Sessions tab as the inspector is. */
 const SESSIONS = 'Sessions';
 
 /** Where each part of a snapshot is drawn: the longest matching prefix of a
@@ -113,14 +118,14 @@ const PLACES: [string, Place][] = [
   ['facets.users', { tab: 'live', panel: 'Active users', anchor: 'live-users' }],
   ['facets', { tab: 'live', panel: 'Who uses what', anchor: 'sec-who-uses-what' }],
   // the Sessions tab's list and inspector, the Agents tab's last part now
-  ['sessions', { tab: 'agents', panel: SESSIONS, anchor: 'sec-ranked-sessions' }],
+  ['sessions', { tab: 'sessions', panel: SESSIONS, anchor: 'sec-ranked-sessions' }],
   // one session's digest (ask.session_digest): the inspector it was asked from
-  ['session', { tab: 'agents', panel: INSPECTOR }],
-  ['tools', { tab: 'agents', panel: INSPECTOR }],
-  ['purposes', { tab: 'agents', panel: INSPECTOR }],
-  ['landmarks', { tab: 'agents', panel: INSPECTOR }],
-  ['tree', { tab: 'agents', panel: INSPECTOR }],
-  ['read', { tab: 'agents', panel: INSPECTOR }],
+  ['session', { tab: 'sessions', panel: INSPECTOR }],
+  ['tools', { tab: 'sessions', panel: INSPECTOR }],
+  ['purposes', { tab: 'sessions', panel: INSPECTOR }],
+  ['landmarks', { tab: 'sessions', panel: INSPECTOR }],
+  ['tree', { tab: 'sessions', panel: INSPECTOR }],
+  ['read', { tab: 'sessions', panel: INSPECTOR }],
 ];
 
 /** Panel.tsx's anchor for a title. */
@@ -276,7 +281,8 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
   const tabLbl = TAB_LBL[place.tab] ?? place.tab;
   // an answer about one session is read inside that session's inspector
   const here = place.panel === INSPECTOR && !!view?.sid;
-  const where = here ? 'this session' : place.panel ? `${tabLbl} › ${place.panel}` : tabLbl;
+  // a panel named as its tab is ("Sessions" on Agents › Sessions) is not named twice
+  const where = here ? 'this session' : place.panel && !tabLbl.endsWith(place.panel) ? `${tabLbl} › ${place.panel}` : tabLbl;
   const base = viewPatch(view);
   const nm = names(d);
   // whom it is: its own fields, or for a part of a row that names no one (a
@@ -307,7 +313,7 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
       label: mark ?? (line ? line.slice(0, 90) : rest.length ? human(rest[0]) : 'process'),
       narrows: null,
       arrival: {
-        patch: { ...base, tab: 'agents', traj: view.sid, tuser: null },
+        patch: { ...base, tab: 'sessions', traj: view.sid, tuser: null },
         find: [],
         sid: view.sid,
         jump,
@@ -325,12 +331,12 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
     // read from the list of sessions or the inspector: no other panel to open
     const isSession = place.panel === SESSIONS || place.panel === INSPECTOR;
     return {
-      where: sid === view?.sid ? 'this session' : `${TAB_LBL.agents} › ${INSPECTOR}`,
+      where: sid === view?.sid ? 'this session' : `${TAB_LBL.sessions} › ${INSPECTOR}`,
       // a part of it by its own name; the agent or the session itself as the session
       label: c.of ? `${nm[0] ?? part} in ${sess}` : sess,
       narrows: null,
       arrival: {
-        patch: { ...base, tab: 'agents', traj: sid, tfrom: null, tuser: null },
+        patch: { ...base, tab: 'sessions', traj: sid, tfrom: null, tuser: null },
         anchor: slug(INSPECTOR),
         find: [],
       },
@@ -344,7 +350,7 @@ export function target(c: AskCite, view: AskView | null | undefined): Target {
       label: c.path.filter((k) => typeof k === 'string').map(human).join(' › '),
       narrows: null,
       arrival: view?.sid
-        ? { patch: { ...base, tab: 'agents', traj: view.sid, tuser: null }, anchor: slug(INSPECTOR), find: [] }
+        ? { patch: { ...base, tab: 'sessions', traj: view.sid, tuser: null }, anchor: slug(INSPECTOR), find: [] }
         : null,
     };
   }

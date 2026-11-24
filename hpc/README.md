@@ -9,7 +9,7 @@ use [`deploy/`](../deploy/README.md) instead.
 | Folder | What |
 |---|---|
 | [`fleet/`](fleet/) | The fleet stream: `fleet_stream.py` carries each node's collector files to the dashboard's host as they are written, over one ssh connection per node, started by a forced-command key that can run nothing else. `seed_mirror.py` and `pull-gz.sh` seed a new copy from sealed days pulled ahead of time. |
-| [`deploy/`](deploy/) | The kit that runs the stream and the dashboard on a host of your own: one settings file (`site.env`), systemd user units, the hourly check, and the privacy checks a shared host needs. [`deploy/README.md`](deploy/README.md) is the runbook. |
+| [`deploy/`](deploy/) | The kit that runs the stream and the dashboard on a host of your own: one settings file (`site.env`), systemd user units, the hourly check, and the privacy checks a shared host needs. [`deploy/README.md`](deploy/README.md) is the runbook. [`../deploy/rc-deploy`](../deploy/rc-deploy) `init` writes `site.env` from four questions, and runs this kit's scripts (`apply`, `add-node`, `password`, `status`, `upgrade`, `rollback`, `backup`, `uninstall`). |
 
 ## What stays where it is
 
@@ -18,9 +18,9 @@ of the collector or the dashboard, switched by a setting:
 
 - **Slurm.** The collector records `sbatch`/`salloc`/`srun` submissions as they happen; with
   no Slurm on a host there are none. `RC_DASH_SLURM=0` (`slurm.enabled`) turns off the
-  dashboard's HPC tab.
+  dashboard's HPC tab; every kit takes `SLURM=yes|no` for it, and `rc-deploy init` asks.
 - **What a node is called.** The page says "login nodes" unless `RC_DASH_NODE_NOUN`
-  (`ui.node_noun`) names them otherwise.
+  (`ui.node_noun`; `NODE_NOUN` in every kit) names them otherwise.
 - **Risk rules per cluster.** [`dashboard/risk-profiles/`](../dashboard/risk-profiles/README.md)
   holds one profile per site (`fasrc.json` among them), chosen by `RC_DASH_RISK_PROFILE`.
 - **The RPM.** [`packaging/rpm`](../packaging/rpm) builds the collector for EL8, writing to

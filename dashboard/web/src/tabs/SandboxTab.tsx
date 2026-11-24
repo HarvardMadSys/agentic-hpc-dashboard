@@ -27,7 +27,7 @@ import { ShareCell } from '../components/ShareCell';
 import { ByUser, distinct } from '../components/ByUser';
 import { SortTh } from '../components/SortTh';
 import { useSort, useSortMap } from '../lib/useSort';
-import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
+import { AGENT_TYPE_LBL, CLS_INK, CLS_LBL } from '../lib/classes';
 import { useNodeWords } from '../lib/nodes';
 import { DASH, fint, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
@@ -91,7 +91,7 @@ function AxisBlock({ by, have, order, col, lbl, grain, known }: {
               <SortTh key={c} s={sort} k={c} className="cls"
                 tip={`the shares are of the ${fint(judged(c).known)} of ${fint(tot(c))} ${grain} whose state is known; the rest are counted below them`}
                 sub={<>{fint(tot(c))} {grain} <Coverage pct={judged(c).coverage} /></>}>
-                <span style={{ color: CLS_COL[c] }}>{CLS_LBL[c] ?? c}</span>
+                <span style={{ color: CLS_INK[c] }}>{CLS_LBL[c] ?? c}</span>
               </SortTh>
             ))}
           </tr>

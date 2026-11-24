@@ -14,7 +14,7 @@ import type { EndpointCover, EndpointList, EndpointRow, EndpointUse, IoClassBloc
 import { Segmented } from '../components/ClassFilter';
 import { ShareCell } from '../components/ShareCell';
 import { SortTh } from '../components/SortTh';
-import { CLS_COL, CLS_LBL } from '../lib/classes';
+import { CLS_COL, CLS_INK, CLS_LBL } from '../lib/classes';
 import { DASH, fint, mb, pc } from '../lib/format';
 import { useSort } from '../lib/useSort';
 import { useNodeWords } from '../lib/nodes';
@@ -132,7 +132,7 @@ export function NetEndpoints({ ep, have, byClass }: {
                 <SortTh s={s} k="tx" num tip="bytes sent to it">sent</SortTh>
                 <SortTh s={s} k="rx" num tip="bytes received from it">received</SortTh>
                 {cls.map((c) => (
-                  <SortTh key={c} s={s} k={c} className="cls" style={{ color: CLS_COL[c] }}
+                  <SortTh key={c} s={s} k={c} className="cls" style={{ color: CLS_INK[c] }}
                     tip={`${CLS_LBL[c] ?? c}'s share of each endpoint's ${by === 'calls' ? 'calls' : 'bytes'}`}>
                     {CLS_LBL[c] ?? c}
                   </SortTh>

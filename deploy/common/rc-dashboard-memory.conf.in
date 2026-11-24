@@ -1,0 +1,9 @@
+# rc-dashboard.service's memory cap. Written by deploy/common/install-dashboard.sh when there
+# was none, or when MEMORY_MAX was given; a plain rerun leaves it as it is, so an edit here
+# (or `systemctl edit rc-dashboard`) stays. A hard cap: past it the kernel stops the
+# process, and systemd starts it again. There is no soft cap: with no swap, MemoryHigh
+# stalls a process instead, and a stalled dashboard answers nothing. Raise it for many busy
+# nodes (hpc/deploy/README.md, "Memory and disk"); after an edit: systemctl daemon-reload,
+# then systemctl restart rc-dashboard.
+[Service]
+MemoryMax=@MEMORY_MAX@

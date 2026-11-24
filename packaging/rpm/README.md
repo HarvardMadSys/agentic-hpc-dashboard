@@ -21,23 +21,27 @@ and the two kernel settings that tier needs, and `dnf` resolves every dependency
 
 ```bash
 sudo dnf install ./ebpfm-collector-<version>-<release>.el8.noarch.rpm
-sudo ebpfm check                      # expect 0 FAIL on real hardware
+sudo ebpfm check                      # expect 0 FAIL on real hardware; each FAIL has a fix: line
 sudo systemctl enable --now ebpfm
-sudo systemctl status ebpfm
+sudo ebpfm status                     # running, and writing? (exit 0 healthy, 1 degraded or stale)
 ```
 
 The service is **not** enabled on install: run `ebpfm check` first. The unit runs the eBPF
-tier only; for the node tier as well, run `ebpfm start` as an ordinary user.
+tier only; for the node tier as well, run `ebpfm start` as an ordinary user, which lasts
+until the next reboot (the package has no unit for that tier yet). `ebpfm install`, the
+first-install command for a checkout or an unpacked bundle, refuses on the package's copy,
+since the package has done its work. [OPERATIONS.md](../../collector/OPERATIONS.md) covers
+running it from there.
 
 ## What it lays down
 
 | path | what |
 |---|---|
-| `/usr/lib/ebpfm/` | the collector (`ebpf_trace.py`, `node_snapshot.py`, `lib/`, `ebpfm.sh`, `README.md`, `.vendored.sha256`) |
-| `/usr/bin/ebpfm` | a symlink to `ebpfm.sh`, the entry point for `check`, `status`, `tail` and the rest |
+| `/usr/lib/ebpfm/` | the collector (`ebpf_trace.py`, `node_snapshot.py`, `lib/`, `ebpfm.sh`, `README.md`, `OPERATIONS.md`, `.vendored.sha256`), and `VERSION`, the package's version-release, which `ebpfm version` prints and the tracer records as `collector_version` |
+| `/usr/bin/ebpfm` | a symlink to `ebpfm.sh`, the entry point for `check`, `status`, `config`, `tail` and the rest |
 | `/usr/lib/systemd/system/ebpfm.service` | the eBPF tier's unit, its paths filled in (no `install-unit` needed) |
 | `/usr/lib/sysctl.d/99-ebpfm.conf` | the two required kernel settings, applied on install and at every boot |
-| `/etc/default/ebpfm` | the unit's environment: the collector's settings, kept across upgrades |
+| `/etc/default/ebpfm` | the collector's settings: the unit's environment, which the `ebpfm` command reads too; kept across upgrades |
 
 The unit writes to `/scratch/ebpfm/` (its `EBPFM_OUTPUT_DIR`, which `/etc/default/ebpfm` can
 override) rather than `/var/log`: the exits stream can pass 1 GB a day, and `/scratch` is the
@@ -60,10 +64,38 @@ its first start, and the unit waits for `/scratch` to be mounted (`RequiresMount
   absent knob silently, and `ebpfm check` reports it as a non-blocking WARN ("no such knob
   (compile-time only)"). `sched_schedstats` exists on 4.18 and is set to 1.
 
+## Upgrading
+
+```bash
+sudo dnf upgrade ./ebpfm-collector-<version>-<release>.el8.noarch.rpm   # or from a repository
+sudo ebpfm status        # the running version against the installed one
+```
+
+The package restarts a running `ebpfm.service` itself after an upgrade, and the tracer
+writes every live process as `truncated` as it stops: upgrade when that suits you.
+`/etc/default/ebpfm` keeps your changes (a new default arrives as `.rpmnew` only if you
+changed it); `ebpfm config` shows what applies. From the version that records
+`collector_version`, the unit names the day-files with the short host name, as the node
+tier always did: on a node whose kernel hostname is fully qualified, the eBPF tier's
+files move from the long name to the short one at this upgrade
+([OPERATIONS.md](../../collector/OPERATIONS.md#the-host-name)).
+
+## Removing it
+
+```bash
+sudo dnf remove ebpfm-collector
+```
+
+`dnf` stops and disables the unit and removes the package's files; a changed
+`/etc/default/ebpfm` stays as `/etc/default/ebpfm.rpmsave`. The day-files stay in
+`/scratch/ebpfm` until you delete them; they name real users. A node tier started with
+`ebpfm start` keeps running until a reboot: stop it first (`ebpfm stop`, as the user who
+started it).
+
 ## The files here
 
 | file | what |
 |---|---|
 | [`ebpfm-collector.spec`](ebpfm-collector.spec) | the spec; the workflow sets Version and Release (`--define _ebpfm_version …`, `_ebpfm_release …`) |
 | [`99-ebpfm.conf`](99-ebpfm.conf) | the sysctl drop-in |
-| [`ebpfm.default`](ebpfm.default) | `/etc/default/ebpfm`: every setting commented out at its default, but `EBPFM_MIN_UID=0` |
+| [`ebpfm.default`](ebpfm.default) | `/etc/default/ebpfm`: every setting commented out at its default, but `EBPFM_MIN_UID=0`. Generated from [`collector/lib/ebpfm_settings.py`](../../collector/lib/ebpfm_settings.py), which a test holds it to: `python3 collector/lib/ebpfm_settings.py defaults-file > packaging/rpm/ebpfm.default` |

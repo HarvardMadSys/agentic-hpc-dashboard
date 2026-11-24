@@ -5,6 +5,7 @@
  * numeric formatters refuse to invent a zero for an absent value.
  */
 import type { Accum, Quant } from '../api/types';
+import { hms } from './zone';
 
 export const DASH = '—';
 
@@ -87,8 +88,8 @@ export function notMeasured(o: Accum | Quant | null | undefined): boolean {
   return (o.n ?? 0) === 0;
 }
 
-/** `hh:mm:ss` from an epoch-seconds value, local time. */
+/** `hh:mm:ss` from an epoch-seconds value, in the page's zone (the service's: lib/zone.ts). */
 export function clock(epoch: number | null | undefined): string {
   if (nil(epoch)) return DASH;
-  return new Date((epoch as number) * 1000).toTimeString().slice(0, 8);
+  return hms((epoch as number) * 1000);
 }

@@ -64,9 +64,12 @@ export const WindowPlates = memo(function WindowPlates({
   const dgAgent = classSum(risk.dangerous?.rows, 'agent');
   const secAgent = classSum(risk.secrets?.rows, 'agent');
   // A risk module this cluster's profile leaves out is not counted (absent),
-  // which must not read as zero: the plate names only what was counted.
-  const hasDg = risk.dangerous != null;
-  const hasSec = risk.secrets != null;
+  // which must not read as zero: the plate names only what was counted. Nor is
+  // anything counted while the panel is not present -- no feed, or the panel
+  // not reduced -- though its envelope may still carry the empty kinds.
+  const riskIn = risk._present !== false;
+  const hasDg = riskIn && risk.dangerous != null;
+  const hasSec = riskIn && risk.secrets != null;
   const riskyAgent = hasDg || hasSec ? dgAgent + secAgent : null;
   // per class, only when a kind was counted: a cluster whose profile shows
   // neither has no zeros to give (reducers/risk.py leaves the kind out)
@@ -75,10 +78,24 @@ export const WindowPlates = memo(function WindowPlates({
     : undefined;
   const failedAgent = sb.tool_calls?.agent?.failed ?? 0;
 
+  // what the risk rules found, in words; nothing at all while they could not run
+  const riskWhy = risk._waiting
+    ? 'waiting for the service'
+    : risk._unsent
+      ? 'no risk panel was sent'
+      : risk._error
+        ? 'its rules could not be applied'
+        : 'no records to check yet';
+  const riskWords = !riskIn
+    ? `not checked: ${riskWhy}`
+    : [hasDg ? `${fint(dgAgent)} commands that should not run here` : null,
+       hasSec ? `${fint(secAgent)} credentials on a command line` : null]
+        .filter(Boolean).join(' · ') || 'no command or credential section on this cluster';
+
   return (
     <div className="plates three">
       <Plate
-        k="agent processes exited"
+        k="processes exited"
         tip={[GLOSS.exited, typeTip].filter(Boolean).join('\n\n')}
         total={cls.includes('agent') ? tmBy.agent?.calls ?? null : null}
         by={Object.fromEntries(have.map((c) => [c, tmBy[c]?.calls ?? null]))}
@@ -87,7 +104,7 @@ export const WindowPlates = memo(function WindowPlates({
           : cls.includes('agent') ? noShare(allN) ?? undefined : undefined}
       />
       <Plate
-        k="agent sessions"
+        k="sessions"
         total={agentSum?.sessions ?? null}
         by={Object.fromEntries(cls.filter((c) => traj?.summary?.[c]).map((c) => [c, traj!.summary![c].sessions]))}
         tip={[
@@ -97,15 +114,13 @@ export const WindowPlates = memo(function WindowPlates({
         note={riskLine(launch, sessSb ? sessSb.unsandboxed ?? 0 : null)}
       />
       <Plate
-        k="risky agent actions"
-        total={cls.includes('agent') && risk._present ? riskyAgent : null}
+        k="risky actions"
+        total={cls.includes('agent') && riskIn ? riskyAgent : null}
         alarm={(riskyAgent ?? 0) > 0}
         by={riskyBy}
         tip="commands this site's rules flag, and credentials typed into a command line"
         note={
-          ([hasDg ? `${fint(dgAgent)} commands that should not run here` : null,
-            hasSec ? `${fint(secAgent)} credentials on a command line` : null]
-            .filter(Boolean).join(' · ') || 'no command or credential section on this cluster') +
+          riskWords +
           (callIso && callIso.known
             ? ` · ${pc(callIso.pct)} of tool calls sandboxed${failedAgent ? `, ${fint(failedAgent)} sandboxes failed to start` : ''}`
             : '')

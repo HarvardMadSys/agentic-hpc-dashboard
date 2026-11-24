@@ -81,6 +81,14 @@ class Verdicts(unittest.TestCase):
                 now=T0 + 90)["h1"]
         self.assertEqual(r["verdict"], "degraded")
 
+    def test_each_run_says_which_collector_wrote_it(self):
+        m = meta(T0, 1)
+        m["collector_version"] = "1.4.0-1"
+        recs = [m, beat(T0 + 60, 1), stop(T0 + 100, 1), meta(T0 + 110, 2), beat(T0 + 170, 2)]
+        r = run(recs, now=T0 + 200)["h1"]
+        self.assertIsNone(r["running"]["collector_version"])       # its meta does not say
+        self.assertEqual([x["collector_version"] for x in r["runs"]], [None, "1.4.0-1"])
+
     def test_files_without_a_heartbeat_and_the_worst_host_first(self):
         files = {"h2": {"ebpf": {"files": 1, "bytes": 10, "last_write": T0}}}
         out = CollectorHealth(Cfg())

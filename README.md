@@ -71,17 +71,22 @@ remote-IDE servers), or **human** (a person at a terminal). Every signal in plai
 
 ## What the dashboard shows
 
-| tab | shows |
+Six stops in the rail, each answering one question; an entry with more than one tab holds them
+as sub-tabs.
+
+| stop | shows |
 |---|---|
 | **Live** | what needs attention now; processes exited per minute (per 5 minutes past an hour's window), by class; each class's share of the nodes' CPU, memory, disk and network and of what was asked of Slurm; who is active |
-| **Trend** | each class's processes, CPU, users and Slurm submissions per day, week or month over up to a year, from a roll-up table kept as records are ingested |
 | **Users** | a portrait of each user from how they use coding agents, and their sessions, each opening its process tree under the portrait |
-| **Agents** | every agent and its subagents; where each one's processes ran and wrote (its blast radius); the mix of tools they ran; the commands that failed; then every session, ranked, and an inspector that reads one as tasks, phases and its process tree |
-| **Security** | how agents were launched (a bypass flag, auto mode), whether their tool calls ran sandboxed, credentials on their command lines, and where they wrote outside their start folder: each a check of its own, with what it found |
-| **Login nodes** | node health, the window's series over time and each login node's responsiveness, and the worst processes (*Resources*); dangerous commands, and credentials on command lines, counted but never shown (*Risks*) |
-| **HPC** | the Slurm scheduler: abnormal use first (polling the queue fast, bursts of checks or submissions, refusals, cancels and failed runs again and again, each a rule with a threshold the site sets), then each session's and each class's use of it, its refusals and the latest submissions |
-| **Ask LLM** | questions about the window on screen, answered by an agent that cites the panels it read; off unless a site turns it on |
-| **Feeds** | each collector and feed: where it was looked for, its status, how fresh it is; and every resolved setting |
+| **Agents** › Agents · Sessions | every agent and its subagents, where each one's processes ran and wrote (its blast radius), the mix of tools they ran and the commands that failed; then every session, ranked, and an inspector that reads one as tasks, phases and its process tree |
+| **Risk** › Security · Site rules | how agents were launched (a bypass flag, auto mode), whether their tool calls ran sandboxed, credentials on their command lines, and where they wrote outside their start folder, each a check of its own; and what the site's rules say should not run on a login node, credentials counted but never shown |
+| **Usage** › Login nodes · HPC · Trend | node health, the window's series and each login node's responsiveness, the worst processes; the Slurm scheduler, abnormal use first, each rule a threshold the site sets; each class's use per day, week or month over up to a year |
+| **System** › Feeds | each collector and feed: where it was looked for, its status, how fresh it is, and the version of each; every resolved setting |
+
+**Ask LLM** opens beside any tab, from the head's Ask button, where a site turns it on:
+questions about the window on screen, answered by an agent that cites the panels it read. With
+no data at all, the tabs give way to a setup screen that says where the dashboard looked and
+how to fix it; Trend stays, since its roll-up table outlives the day-files it was made from. Ctrl+K (or `/`) goes to any tab, section, user, login node or session.
 
 The whole page can be narrowed to classes, users and agent types, over any window the
 service offers. What each tab holds: [`dashboard/web/README.md`](dashboard/web/README.md#tabs);
@@ -99,7 +104,7 @@ missing, and Node.js with npm to build the page.
 cd dashboard
 uv sync --frozen
 (cd web && npm ci && npm run build)
-uv run --frozen python -m rc_dashboard demo     # then open http://127.0.0.1:8080
+uv run --frozen rc-dashboard demo     # then open http://127.0.0.1:8080
 ```
 
 The demo runs the real service over a synthetic feed it writes itself, for fictional login
@@ -110,56 +115,70 @@ nodes and users, and keeps appending to it; every page says *fake data*. It also
 
 ### Collect on a login node
 
-From the source tree, as root, for both tiers:
+From the source tree, as root, both tiers in one step:
 
 ```bash
-sudo ./collector/ebpfm.sh bootstrap    # once per node: dependencies and two kernel settings
-sudo ./collector/ebpfm.sh check        # one line per precondition; expect 0 FAIL
-sudo ./collector/ebpfm.sh start        # both tiers
-sudo ./collector/ebpfm.sh status       # each stream's records and size today
-sudo ./collector/ebpfm.sh stop         # processes still running are written as `truncated`
+sudo ./collector/ebpfm.sh install --dry-run   # the plan; changes nothing
+sudo ./collector/ebpfm.sh install             # dependencies, /etc/default/ebpfm, both units started, check, verdict
+sudo ./collector/ebpfm.sh status              # each tier: running, and writing? exit 0 healthy, 1 degraded or stale, 3 not running
 ```
 
-- Without `sudo`, `start` runs the node tier alone: half of the data, not a degraded mode.
-- `start` lasts until a reboot. To keep the collector running, install its units
-  (`sudo ./collector/ebpfm.sh install-unit`, then `sudo systemctl enable --now ebpfm ebpfm-node`),
-  the [RPM](packaging/rpm/README.md) for Rocky/RHEL 8, or the
-  [container image](docker/README.md#the-collector).
-- The `collector/` folder is self-contained: copy it to the node, or hand over the single
-  file `./collector/ebpfm.sh bundle` writes.
+- `install` ends with `READY: both tiers`, `READY: node tier only` or `NOT READY: N FAIL`,
+  each FAIL with its fix; run it again once fixed, or after an upgrade. The units start both
+  tiers at every boot.
+- Without root, `./collector/ebpfm.sh start` runs the node tier alone, until a reboot: half of
+  the data, not a degraded mode. `start`, `stop` and `status` drive the tiers without units too.
+- `./collector/ebpfm.sh help` lists every command and `<command> --help` explains one;
+  `./collector/ebpfm.sh config` shows each setting and where it came from: the environment,
+  then `/etc/default/ebpfm`, then the default.
+- The [RPM](packaging/rpm/README.md) for Rocky/RHEL 8 and the
+  [container image](docker/README.md#the-collector) run the eBPF tier.
+- The `collector/` folder is self-contained: copy it to the node, or hand over the single file
+  `./collector/ebpfm.sh bundle` writes (`./ebpfm-bundle.sh --extract /opt/ebpfm` unpacks it
+  for `install`).
 
 As root it writes to `/scratch/ebpfm` and `/scratch/ebpfm-login` where `/scratch` is
 writable, else to `/var/log/ebpfm` and `/var/log/ebpfm-login`; as a user, to
-`~/.ebpfm/login`. `EBPFM_OUTPUT_DIR` and `EBPFM_NODE_OUTPUT_DIR` override them; the RPM's unit
-writes to `/scratch/ebpfm`.
+`~/.ebpfm/login`. `install` records the choice in `/etc/default/ebpfm`, and
+`EBPFM_OUTPUT_DIR` and `EBPFM_NODE_OUTPUT_DIR` override it; the RPM's unit writes to
+`/scratch/ebpfm`. Running it day to day, upgrading and removing it:
+[`collector/OPERATIONS.md`](collector/OPERATIONS.md).
 
 ### Run the dashboard over real data
 
 ```bash
 cd dashboard
 uv sync --frozen
-(cd web && npm ci && npm run build)                   # builds the page into web/dist/
-uv run --frozen python -m rc_dashboard new-password   # once: writes a password, prints its hash
+(cd web && npm ci && npm run build)    # builds the page into web/dist/
+uv run --frozen rc-dashboard init      # finds the collector's folders, makes a password, writes dashboard.toml
+uv run --frozen rc-dashboard serve     # on 127.0.0.1:8080: the command init printed
 ```
 
-Put the hash in `dashboard/dashboard.config.json` (gitignored) as
-`{"server": {"auth": {"password_hash": "<hash>"}}}`, then point the service at the
-collector's folders and start it:
-
-```bash
-export RC_DASH_EBPF_ROOTS=/scratch/ebpfm RC_DASH_NODE_ROOTS=/scratch/ebpfm-login   # the defaults skip /scratch
-uv run --frozen python -m rc_dashboard --check-feeds  # what it found, and everywhere it looked
-uv run --frozen python -m rc_dashboard serve          # on 127.0.0.1:8080 (RC_DASH_HOST, RC_DASH_PORT)
-```
-
-From another machine, open it through a tunnel: `ssh -L 8080:127.0.0.1:8080 <host>`. `serve`
-refuses to start without a password, since on a login node every user can reach 127.0.0.1
-([Password](dashboard/README.md#password)).
+`init` asks for each value, showing what it found (`--yes` takes them all; `rc-dashboard init
+--help`). It writes a short `dashboard/dashboard.toml`, keeps the password in
+`~/.config/rc-dashboard/password` with its hash in `password.hash` beside it, checks the feeds,
+and prints the `ssh -L` command to reach the page from another machine.
+`rc-dashboard check-feeds` lists every place it looked and what it found there. `serve` refuses
+to start without a password, since on a login node every user can reach 127.0.0.1
+([Password](dashboard/README.md#password)). `rc-dashboard status` says per node whether its
+collector and its copy work (exit 0, 1 or 2, for a monitor). The page also comes as a wheel
+and an image with the page built in, needing no Node ([`docker`](docker/README.md#the-dashboard)).
 
 ### Run it live
 
 Three layouts, the same collector and dashboard in each, the dashboard behind a password on
 127.0.0.1:
+
+One front door picks the layout from four questions (Slurm? which nodes? root on the nodes?
+root on the dashboard's host?) and runs its scripts:
+
+```bash
+deploy/rc-deploy init           # writes the settings file, and records the layout in it
+sudo deploy/rc-deploy plan      # what it would do; nothing done (hpc runs as you, no sudo)
+sudo deploy/rc-deploy apply
+sudo deploy/rc-deploy password  # makes the password; its hash goes where the dashboard reads it
+deploy/rc-deploy status         # every collector's verdict and every node's copy
+```
 
 | Layout | What runs where | Guide |
 |---|---|---|
@@ -168,15 +187,24 @@ Three layouts, the same collector and dashboard in each, the dashboard behind a 
 | **A cluster's login nodes** | the same where you have no root anywhere: each node's files stream over ssh to a host of your own ([`hpc/fleet/`](hpc/fleet/README.md)), set from one file and checked every hour | [`hpc/deploy`](hpc/deploy/README.md) |
 
 [`deploy/README.md`](deploy/README.md) covers what the first two share: the units, the
-password, watching and upgrading. [`hpc/README.md`](hpc/README.md) says what is HPC-specific.
+password, the hourly check, settings, upgrading, backups, moving and removing.
+[`hpc/README.md`](hpc/README.md) says what is HPC-specific. `rc-deploy --help` lists the rest.
 
 ## Configuration
 
 Each setting resolves on its own: a command-line flag wins over an `RC_DASH_*` environment
-variable, which wins over `dashboard/dashboard.config.json`, which wins over the default.
-[`dashboard.config.example.json`](dashboard/dashboard.config.example.json) describes every
-key, and `--print-config` prints each resolved setting and where it came from. How they
+variable, which wins over the config file (`dashboard/dashboard.toml` or
+`dashboard/dashboard.config.json`, TOML or JSON), which wins over the default.
+[`dashboard.example.toml`](dashboard/dashboard.example.toml) is a dozen lines to start from.
+`rc-dashboard print-config --reference` prints every setting with its default, and
+`rc-dashboard print-config` prints each resolved setting and where it came from. How they
 resolve, and what each does: [`dashboard/README.md`](dashboard/README.md#configuration).
+
+The deployment kits take the same names for the same settings: `SITE_NAME`, `SITE_DESCRIPTION`,
+`SLURM`, `NODE_NOUN`, `ANONYMIZE` (1/0, true/false, yes/no, on/off), `MEMORY_MAX` and
+`FREE_MIN_GB`. They go in `deploy/site.env` (rc-deploy), the deploy/ installers' environment,
+or `hpc/deploy/site.env`; each sets the dashboard's own setting (`deploy/README.md`,
+"Settings"). The collector reads `/etc/default/ebpfm` (`ebpfm config` shows every setting).
 
 ## Data and privacy
 
@@ -205,6 +233,8 @@ The records name real users and show what they ran, so both halves keep them clo
 
 | document | read it for |
 |---|---|
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | something is wrong: no data, a node stopped reporting, sign-in fails, the page is blank; each symptom's causes and the command that tells them apart |
+| [`collector/OPERATIONS.md`](collector/OPERATIONS.md) | installing, checking, running and watching the collector; every setting; upgrading, removing, troubleshooting |
 | [`collector/README.md`](collector/README.md) | the two tiers; why eBPF; measured overhead; every record and field; the `ebpfm.sh` commands and settings; kernel support |
 | [`collector/WHAT-IT-COLLECTS.md`](collector/WHAT-IT-COLLECTS.md) | every signal the collector records, in plain words |
 | [`collector/COVERAGE.md`](collector/COVERAGE.md) | which tier reads each observable login-node signal |

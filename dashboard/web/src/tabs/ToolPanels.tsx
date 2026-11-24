@@ -14,7 +14,7 @@ import { Term } from '../components/Term';
 import { GLOSS } from '../lib/glossary';
 import { HBars } from '../charts/primitives';
 import { Panel } from '../components/Panel';
-import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
+import { AGENT_TYPE_LBL, CLS_COL, CLS_INK, CLS_LBL } from '../lib/classes';
 import { DASH, dur, fint, mb, pc } from '../lib/format';
 import { pick, shown } from '../lib/panels';
 import type { Panels } from '../lib/panels';
@@ -253,7 +253,7 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
               <tr>
                 <SortTh s={s} k="kind" first="asc">kind of tool</SortTh>
                 {have.map((c) => (
-                  <SortTh key={c} s={s} k={`cls:${c}`} className="cls" style={{ color: CLS_COL[c] }}
+                  <SortTh key={c} s={s} k={`cls:${c}`} className="cls" style={{ color: CLS_INK[c] }}
                     tip={`share of ${scope.lbl(c)}'s ${METRICS.find((m) => m.k === metric)!.lbl}`}>
                     {scope.lbl(c)}
                   </SortTh>
@@ -345,7 +345,7 @@ function HeadPanel({ tm, have, scope = CLASS_SCOPE }: { tm: ToolMix; have: strin
             .slice(0, 12);
           return (
             <div key={c}>
-              <div className="eyebrow" style={{ margin: '8px 0 5px', color: CLS_COL[c] }}>
+              <div className="eyebrow" style={{ margin: '8px 0 5px', color: CLS_INK[c] }}>
                 {scope.lbl(c)}
               </div>
               {rows.length ? (

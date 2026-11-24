@@ -38,6 +38,8 @@ from . import jsonout
 from . import portraits
 from . import proctree
 from . import rollup as rollupmod
+from . import status as statusmod
+from .config import is_pattern
 from .health import CollectorHealth
 from .reducers.risk import ruleset as risk_ruleset
 from . import windows as winmod
@@ -132,9 +134,7 @@ class Aggregator:
         # The store of sealed day-files' Parquet tables (history.py), set by
         # the app once this is made, or None.
         self.history = None
-        self.source = FileTailSource(
-            self.reports["ebpf"]["resolved"] or cfg.get("feeds.ebpf.roots") or [],
-            days=int(cfg.get("feeds.ebpf.days", 8)))
+        self.source = FileTailSource(self.roots(), days=int(cfg.get("feeds.ebpf.days", 8)))
         # One live reducer, sized at retention; every window slices it.
         self.live = LiveReducer(cfg, self.classes)
         # The roll-up table the Trend tab reads (rollup.py): each local day's
@@ -193,8 +193,12 @@ class Aggregator:
         self._portraits = collections.OrderedDict()
 
     def roots(self):
+        """The eBPF tier's roots read now: as resolved at the last feed refresh
+        (a glob pattern's matches, each folder once), else the configured roots
+        that name a folder outright, so one made later is followed."""
         return (self.reports["ebpf"]["resolved"]
-                or self.cfg.get("feeds.ebpf.roots") or [])
+                or [r for r in (self.cfg.get("feeds.ebpf.roots") or [])
+                    if not is_pattern(r) and r not in self.reports["ebpf"].get("denied", ())])
 
     def start(self):
         self.nodehist.start()
@@ -553,6 +557,12 @@ class Aggregator:
         reports = feedmod.resolve(self.cfg)
         with self.lock:
             self.reports = reports
+            # A root matched by a pattern since, or made since: the tail follows
+            # it from now on, reading its files from their start as it reads any
+            # file first seen after startup (tail.py).
+            roots = self.roots()
+            if list(roots) != list(self.source.roots):
+                self.source.roots = list(roots)
             for name, rep in self.reports.items():
                 if name == "ebpf":
                     rep["rows"] = self.stats["records"]
@@ -587,6 +597,16 @@ class Aggregator:
         a capture copied from another cluster reads the same as a live feed.
         """
         with self.lock:
+            reports = dict(self.reports)
+        # What copies each host's files here, from its state files
+        # (status.transport_files): read off the lock.
+        try:
+            transport, unmatched = statusmod.transports_by_host(self.cfg, reports)
+        except Exception as e:                   # the page must not break on it
+            transport, unmatched = {}, []
+            print("collectors: transport files: %s: %s" % (type(e).__name__, e),
+                  file=sys.stderr, flush=True)
+        with self.lock:
             files = {}
             for tier in ("ebpf", "ebpf_node"):
                 for f in (self.reports.get(tier) or {}).get("files", []):
@@ -595,12 +615,24 @@ class Aggregator:
                     d["files"] += 1
                     d["bytes"] += f.get("size") or 0
                     d["last_write"] = max(d["last_write"] or 0, f.get("mtime") or 0) or None
+            # a host whose copy brought no file yet still has a row: the copy
+            # is what to fix, and the row says why
+            bare = {name for name, _t in unmatched if name not in files}
+            for name in bare:
+                files[name] = {}
             tiers = {t: {k: (self.reports.get(t) or {}).get(k) for k in (
                          "status", "notice", "configured", "resolved", "env", "lag",
                          "newest_record_ts", "max_age_s", "hosts")}
                      for t in ("ebpf", "ebpf_node")}
-            return {"hosts": self.health.report(files), "tiers": tiers,
-                    "now": time.time(), "backfill": dict(self.backfill)}
+            rows = self.health.report(files)
+            out = {"hosts": rows, "tiers": tiers,
+                   "now": time.time(), "backfill": dict(self.backfill)}
+        by_name = dict(unmatched)
+        for r in rows:
+            r["transport"] = transport.get(r["host"]) or by_name.get(r["host"])
+            if r["host"] in bare:
+                r["reasons"] = ["no day-file of this host here"]
+        return out
 
     def rebuild_history(self):
         """The scheduled tick: refresh the node snapshot, then every held window.

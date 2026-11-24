@@ -1,0 +1,15 @@
+# BuildKit reads this for docker/dashboard/Dockerfile alone (the build context is the
+# repo root, as for docker/collector). Only what the image copies goes in, and never
+# a local build or a local config: node_modules, dist, a venv, the cache, a stamp.
+*
+!dashboard/pyproject.toml
+!dashboard/uv.lock
+!dashboard/rc_dashboard/
+!dashboard/risk-profiles/
+!dashboard/web/
+dashboard/web/node_modules/
+dashboard/web/dist/
+dashboard/rc_dashboard/BUILD.json
+**/__pycache__/
+**/.cache/
+**/*.tsbuildinfo

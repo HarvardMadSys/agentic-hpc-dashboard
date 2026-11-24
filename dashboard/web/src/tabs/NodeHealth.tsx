@@ -45,10 +45,12 @@ const NODE_COLS: { k: string; lbl: string; tip?: string; get: (h: NodeHost) => n
   { k: 'cpu_iowait_pct', lbl: 'I/O wait', tip: GLOSS.iowait, get: (h) => h.cpu_iowait_pct, show: (h) => pc(h.cpu_iowait_pct) },
   { k: 'mem_used_pct', lbl: 'memory used', tip: 'memory in use, of the node’s total', get: (h) => h.mem_used_pct,
     show: (h) => (h.mem_used_pct == null ? DASH : `${pc(h.mem_used_pct)} of ${fmt(h.mem_total_gb)} GB`) },
-  { k: 'fork_exec_ms', lbl: 'answers in', get: (h) => h.fork_exec_ms ?? h.getent_ms,
-    tip: 'start a process · stat a local file · look up an account, in ms; sorts by the first',
+  // each of the three times named where it is read: three bare numbers in a row
+  // read as one triple nobody could decode without the hover
+  { k: 'fork_exec_ms', lbl: 'responds in', get: (h) => h.fork_exec_ms ?? h.getent_ms,
+    tip: 'how long the node took to start a process, stat a local file, and look up an account, in ms; sorts by the first',
     show: (h) => (h.fork_exec_ms == null && h.stat_local_ms == null && h.getent_ms == null ? DASH
-      : `${fmt(h.fork_exec_ms)} · ${fmt(h.stat_local_ms)} · ${fmt(h.getent_ms)} ms`) },
+      : `start ${fmt(h.fork_exec_ms)} · stat ${fmt(h.stat_local_ms)} · lookup ${fmt(h.getent_ms)} ms`) },
   { k: 'd_state_procs', lbl: 'D-state', tip: `${GLOSS.dstate}; hover a count for what they wait in`, get: (h) => h.d_state_procs, show: (h) => fint(h.d_state_procs) },
   { k: 'logged_in_users', lbl: 'logged in', tip: 'accounts with a terminal login on the node',
     get: (h) => h.logged_in_users, show: (h) => fint(h.logged_in_users) },

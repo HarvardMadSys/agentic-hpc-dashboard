@@ -304,6 +304,49 @@ class TestSettings(Rig):
         self.assertEqual(r["cwd"], self.code)
         self.assertEqual((r["umask"], r["core"], r["unbuffered"]), ("0077", "0", "1"))
 
+    def test_a_quoted_hash_reaches_the_dashboard_without_its_quotes(self):
+        """deploy/README.md puts a hash in single quotes, as systemd's EnvironmentFile=
+        takes them off; read as they were, the dashboard refused the hash at every start
+        while the start check passed it."""
+        for line in ("RC_DASH_PASSWORD_HASH='%s'" % HASH, 'RC_DASH_PASSWORD_HASH="%s"' % HASH,
+                     "RC_DASH_PASSWORD_HASH= %s " % HASH):
+            with open(os.path.join(self.etc, "auth.env"), "w") as fh:
+                fh.write(line + "\n")
+            if os.path.exists(self.log_path("dashboard")):
+                os.unlink(self.log_path("dashboard"))
+            self.run_loop("dashboard", self.REPORT)
+            self.assertEqual(self.report("dashboard")["hash"], HASH, line)
+
+    def test_dashboard_gets_the_hash_file_and_the_streams_status(self):
+        """etc/password.hash, read again by the dashboard when it changes, and the
+        stream's status.json, so the dashboard can tell a link down from a collector
+        stopped."""
+        with open(os.path.join(self.etc, "password.hash"), "w") as fh:
+            fh.write(HASH + "\n")
+        report = ('echo "cfg=x|file=${RC_DASH_PASSWORD_HASH_FILE:-none}'
+                  '|transport=${RC_DASH_TRANSPORT_FILES:-none}"; exit 3')
+        self.run_loop("dashboard", report)
+        r = self.report("dashboard")
+        self.assertEqual(r["file"], os.path.join(self.etc, "password.hash"))
+        self.assertEqual(r["transport"], os.path.join(self.tmpd, "data", "state", "status.json"))
+        os.unlink(self.log_path("dashboard"))
+        self.run_loop("stream", report)
+        r = self.report("stream")
+        self.assertEqual((r["file"], r["transport"]), ("none", "none"))
+
+    def test_the_hash_file_wins_over_a_hash_left_in_auth_env(self):
+        """A rollback to a release from before the hash file puts the hash back in
+        auth.env (rollback.sh), beside etc/password.hash. A later release handed the
+        dashboard both, which it refuses, and every start failed: the file is the
+        password, as the start check reads it (check-local.sh)."""
+        with open(os.path.join(self.etc, "password.hash"), "w") as fh:
+            fh.write(HASH + "\n")
+        report = ('echo "cfg=x|file=${RC_DASH_PASSWORD_HASH_FILE:-none}'
+                  '|hash=${RC_DASH_PASSWORD_HASH:-none}"; exit 3')
+        self.run_loop("dashboard", report)       # auth.env holds RC_DASH_PASSWORD_HASH (Rig)
+        r = self.report("dashboard")
+        self.assertEqual((r["file"], r["hash"]), (os.path.join(self.etc, "password.hash"), "none"))
+
     def test_child_has_a_session_of_its_own(self):
         """Ctrl-C and the hang-up when tmux goes away reach the loop, never the process."""
         self.run_loop("stream", self.REPORT)

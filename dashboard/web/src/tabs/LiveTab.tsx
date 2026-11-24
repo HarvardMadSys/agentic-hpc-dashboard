@@ -24,6 +24,7 @@ import { useSort } from '../lib/useSort';
 import { useNodeWords } from '../lib/nodes';
 import { pick } from '../lib/panels';
 import type { Panels } from '../lib/panels';
+import { offsetAt } from '../lib/zone';
 import { rateBucketS, rateSeries, rateWords } from '../lib/rate';
 
 /* ------------------------------------------------------------- helpers */
@@ -189,12 +190,15 @@ export const LiveTab = memo(function LiveTab({
   const bucketS = rateBucketS(L?.window?.minutes, binS);
   const words = rateWords(bucketS);
   const series: LineSeries[] = useMemo(() => {
-    const pts = rateSeries(rate, cls, binS, bucketS, new Date().getTimezoneOffset() * 60);
+    // buckets on the page zone's wall clock (lib/zone.ts): seconds west of UTC, as getTimezoneOffset counts
+    const pts = rateSeries(rate, cls, binS, bucketS, -offsetAt(Date.now()));
     return cls.map((c, k) => {
       const last = c === 'agent' ? latestPt(pts[k]) : null;
       return {
         lbl: CLS_LBL[c],
         c: CLS_COL[c],
+        // the class's word at the line's end: told apart without its colour
+        tag: CLS_LBL[c],
         area: c === 'agent',
         mark: c === 'agent' ? (last != null ? fint(last) + '/' + words.unit : null) : null,
         pts: pts[k],

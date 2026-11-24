@@ -148,6 +148,12 @@ const PATHS = {
     </>
   ),
   section: <path d="M5 6h10M5 10h10M5 14h6" />,
+  info: (
+    <>
+      <circle cx="10" cy="10" r="7" />
+      <path d="M10 9v5M10 6.2v.1" />
+    </>
+  ),
   window: (
     <>
       <circle cx="10" cy="10" r="7" />

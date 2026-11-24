@@ -1,0 +1,266 @@
+name: dashboard-image
+
+# Builds the dashboard's wheel and image (docker/dashboard/Dockerfile), and publishes
+# them only from develop and from release tags:
+#   * pull request, or a push to any branch,  -> built and checked, published nowhere
+#     that changes what goes into them
+#   * develop                                 -> the image pushed as `edge`
+#   * semver git tag  v1.2.3                  -> the image pushed as 1.2.3, 1.2 and latest,
+#                                                and the wheel attached to the tag's GitHub
+#                                                Release (made if there is none), as
+#                                                rpm-release.yml attaches the RPM
+# A tag runs whatever it changes (GitHub evaluates no path filter for a tag), and its
+# version is stamped into the wheel and the image (pyproject.toml, __version__), so
+# `rc-dashboard --version` says what the tag says. Every build stamps its commit
+# (rc_dashboard/BUILD.json, about.py).
+#
+# The page is built from dashboard/web in both, and the wheel carries it
+# (pyproject.toml): an install from the wheel serves the page without Node.
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*.*.*"]
+    # What goes into the wheel or the image (docker/dashboard/Dockerfile.dockerignore),
+    # less docs: nothing in either reads a .md file. Patterns apply in order, so the
+    # `!` one stays after the ones it narrows.
+    paths:
+      - "dashboard/pyproject.toml"
+      - "dashboard/uv.lock"
+      - "dashboard/rc_dashboard/**"
+      - "dashboard/risk-profiles/**"
+      - "dashboard/web/**"
+      - "docker/dashboard/**"
+      - ".github/workflows/dashboard-image.yml"
+      - "!**/*.md"
+  pull_request:
+    paths:
+      - "dashboard/pyproject.toml"
+      - "dashboard/uv.lock"
+      - "dashboard/rc_dashboard/**"
+      - "dashboard/risk-profiles/**"
+      - "dashboard/web/**"
+      - "docker/dashboard/**"
+      - ".github/workflows/dashboard-image.yml"
+      - "!**/*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: dashboard-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/dashboard
+
+# Nothing by default; each job asks for what it writes.
+permissions: {}
+
+jobs:
+  wheel:
+    name: Wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write   # on a tag: make or update the GitHub Release
+    steps:
+      # Actions pinned to a commit, not a tag, since this job can write releases.
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # The tag's name is text whoever pushed it chose: it reaches the script as
+      # data, is checked, and only then written into the package.
+      - name: Stamp the version and the commit
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ]; then
+            if ! printf '%s' "$REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::$REF_NAME is not vX.Y.Z: the wheel's version is X.Y.Z"
+              exit 1
+            fi
+            version="${REF_NAME#v}"
+            sed -i "s/^version = \".*\"/version = \"$version\"/" dashboard/pyproject.toml
+            sed -i "s/^__version__ = \".*\"/__version__ = \"$version\"/" dashboard/rc_dashboard/__init__.py
+            grep -q "^version = \"$version\"" dashboard/pyproject.toml
+          fi
+          printf '{"commit": "%s"}\n' "${GITHUB_SHA::7}" > dashboard/rc_dashboard/BUILD.json
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/web/package-lock.json
+
+      - name: Build the page
+        working-directory: dashboard/web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      # The uv docker/dashboard/Dockerfile pins, from PyPI, in a venv of its own (ci.yml).
+      - name: Install uv
+        run: |
+          python3 -m venv "$RUNNER_TEMP/uv"
+          "$RUNNER_TEMP/uv/bin/python" -m pip install --quiet --disable-pip-version-check uv==0.11.32
+          echo "$RUNNER_TEMP/uv/bin" >> "$GITHUB_PATH"
+
+      - name: Build the wheel
+        id: build
+        working-directory: dashboard
+        run: |
+          set -euo pipefail
+          uv build --wheel --out-dir dist
+          whl="$(ls dist/*.whl)"
+          echo "path=dashboard/${whl}" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$whl")" >> "$GITHUB_OUTPUT"
+
+      # The wheel serves the page without a checkout: the page, the risk profiles and
+      # the stamp are inside the package, and the installed command answers.
+      - name: Check the wheel
+        working-directory: dashboard
+        env:
+          WHEEL: ${{ steps.build.outputs.name }}
+        run: |
+          set -euo pipefail
+          python3 - "dist/$WHEEL" <<'PYEOF'
+          import sys, zipfile
+          names = set(zipfile.ZipFile(sys.argv[1]).namelist())
+          for want in ("rc_dashboard/web/index.html", "rc_dashboard/risk-profiles/fasrc.json",
+                       "rc_dashboard/BUILD.json", "rc_dashboard/__main__.py"):
+              if want not in names:
+                  sys.exit("the wheel lacks %s" % want)
+          print("the wheel holds the page, the risk profiles and the stamp")
+          PYEOF
+          uv venv "$RUNNER_TEMP/try"
+          VIRTUAL_ENV="$RUNNER_TEMP/try" uv pip install --quiet "dist/$WHEEL"
+          (cd "$RUNNER_TEMP" && "$RUNNER_TEMP/try/bin/rc-dashboard" --version)
+
+      - name: Upload the wheel as a workflow artifact
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: ${{ steps.build.outputs.name }}
+          path: ${{ steps.build.outputs.path }}
+          if-no-files-found: error
+
+      - name: Attach the wheel to the GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: ${{ steps.build.outputs.path }}
+          fail_on_unmatched_files: true
+
+  image:
+    name: Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write   # develop and tags only: the push step's login asks for it
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Stamp the version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ]; then
+            if ! printf '%s' "$REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::$REF_NAME is not vX.Y.Z: the image's version is X.Y.Z"
+              exit 1
+            fi
+            version="${REF_NAME#v}"
+            sed -i "s/^version = \".*\"/version = \"$version\"/" dashboard/pyproject.toml
+            sed -i "s/^__version__ = \".*\"/__version__ = \"$version\"/" dashboard/rc_dashboard/__init__.py
+          fi
+
+      # Published only from develop (edge) and from a release tag; everything else is
+      # built and checked here, and pushed nowhere.
+      - name: Publish this build?
+        id: publish
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && \
+             { [ "$GITHUB_REF" = "refs/heads/develop" ] || [ "$GITHUB_REF_TYPE" = "tag" ]; }; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: docker/dashboard/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+          tags: rc-dashboard:ci
+          cache-from: type=gha,scope=dashboard-image
+          cache-to: type=gha,mode=max,scope=dashboard-image
+
+      # It must refuse to start with no password, as the service does anywhere, and
+      # say which build it is. The step's shell is `bash -e`, under which a failing
+      # `out=$(...)` ends the step: the refusal's exit 2 is caught with `||`, never
+      # left to errexit.
+      - name: Check the image
+        run: |
+          set -uo pipefail
+          docker run --rm rc-dashboard:ci rc-dashboard --version
+          code=0
+          out=$(docker run --rm rc-dashboard:ci 2>&1) || code=$?
+          printf '%s\n' "$out" | head -n 5
+          if [ "$code" != 2 ] || ! printf '%s' "$out" | grep -q "refusing to serve"; then
+            echo "::error::the image started with no password (exit $code)"
+            exit 1
+          fi
+
+      - name: Log in to ghcr.io
+        if: steps.publish.outputs.push == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image metadata
+        if: steps.publish.outputs.push == 'true'
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/develop' }}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+
+      # The same build as above, from its cache, pushed.
+      - name: Push
+        if: steps.publish.outputs.push == 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: docker/dashboard/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=dashboard-image
+          cache-to: type=gha,mode=max,scope=dashboard-image

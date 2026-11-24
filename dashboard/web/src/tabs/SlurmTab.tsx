@@ -33,7 +33,6 @@ import type {
   LiveSubmit,
   SlurmClass,
   SlurmPanel,
-  SlurmRule,
   SlurmRuleId,
   SlurmSession,
   ToolMix,
@@ -51,6 +50,7 @@ import { hasBody, pick, shown, winLabel } from '../lib/panels';
 import { useNodeWords } from '../lib/nodes';
 import type { Panels } from '../lib/panels';
 import { own, table } from '../lib/lookup';
+import { ruleWords } from '../lib/slurmRules';
 
 type Flag = 'parsable' | 'dependency' | 'array' | 'wrap';
 const FLAGS: [Flag, string, string][] = [
@@ -368,27 +368,8 @@ function Latest({ rows }: { rows: LiveSubmit[] }) {
 
 /* ---------------------------------------------------- abnormal activity */
 
-/** A rule in the page's words, from the threshold the service sent with it. */
-export function ruleWords(r: SlurmRule): { lbl: string; when: string } {
-  switch (r.id) {
-    case 'fast_polling':
-      // not the Slurm tab's polling loop (every 3 min or less, for 10 min), which is
-      // how an agent waits for its job: a stretch the site calls fast
-      return { lbl: 'polling the queue fast', when: `checks at most ${dur(r.gap_s)} apart, for ${dur(r.min_s)} or more` };
-    case 'query_burst':
-      return { lbl: 'a burst of queue checks', when: `${fint(r.min)} or more in one minute` };
-    case 'submit_burst':
-      return { lbl: 'a burst of submissions', when: `${fint(r.min)} or more jobs in one minute; an array is one submission` };
-    case 'refused':
-      return { lbl: 'refused again and again', when: `${fint(r.min)} or more submissions refused` };
-    case 'cancels':
-      return { lbl: 'cancelling again and again', when: `${fint(r.min)} or more scancel calls` };
-    case 'failed_runs':
-      return { lbl: 'runs failing again and again', when: `${fint(r.min)} or more srun or salloc runs that failed` };
-  }
-  // a rule from a service newer than the page: its name, and no words of ours
-  return { lbl: String((r as { id: unknown }).id), when: 'a rule this page has no words for' };
-}
+/** A rule in the page's words (lib/slurmRules.ts, which Live's Needs attention shares). */
+export { ruleWords };
 
 /** A row's key: the agent session, else the login node, class and user the
  *  service folds a person's or an IDE's activity by -- one user on two login
@@ -543,6 +524,13 @@ function Abnormal({ sp, cls, have }: { sp: SlurmPanel; cls: Cls[]; have: string[
 /** No class block: one empty map, so what is made from it holds. */
 const NO_CLASSES: Record<string, SlurmClass> = {};
 
+/** What a rule said of the agent's sessions, after a plate's note: nothing when
+ *  the service judged no such rule, so a rule not judged never reads as none. */
+function ruleNote(n: number | null | undefined, words: string): string {
+  if (n == null) return '';
+  return n ? ` · ${fint(n)} session${n === 1 ? '' : 's'} ${words}` : ` · no session ${words}`;
+}
+
 // It reads the live frame, so it is drawn with each one; it is not drawn for renders of App that change nothing it shows.
 export const SlurmTab = memo(function SlurmTab({ P, live, cls, goResources = () => {} }: {
   P: Panels;
@@ -577,7 +565,7 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goResources = () 
     <>
       <div className="plates">
         <Plate
-          k={`agent jobs submitted ${win}`}
+          k={`jobs submitted ${win}`}
           total={cls.includes('agent') && sp._present ? a?.jobs ?? 0 : null}
           by={byOf((c) => c.jobs)}
           tip="submissions that came back with a job id"
@@ -591,21 +579,31 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goResources = () 
           tip="squeue, sacct, scontrol, sinfo, … calls for every job submitted"
           note={a ? `${fint(a.queries)} queue checks by agents` : undefined}
         />
+        {/* Polling and refusals are counted here and flagged only by the rules
+            below (reducers/slurm.py): an agent waiting on its own job polls,
+            and one refusal is not a pattern. A red edge here said "abnormal"
+            above a table that said none. */}
         <Plate
-          k="agent sessions polling the queue"
+          k="sessions polling the queue"
           total={cls.includes('agent') && sp._present ? a?.polling_sessions ?? 0 : null}
-          alarm={(a?.polling_sessions ?? 0) > 0}
+          alarm={(a?.abnormal_by?.fast_polling ?? 0) > 0}
           by={byOf((c) => c.polling_sessions)}
-          tip="a session that polled the scheduler at least every 3 minutes for 10 minutes or more"
-          note={a ? `${fmt(a.polling_h)} h spent polling` : undefined}
+          tip={
+            'a session that polled the scheduler at least every 3 minutes for 10 minutes or more: how an agent ' +
+            'waits for its own job, so counted, not flagged; the fast-polling rule below flags what is'
+          }
+          note={a ? `${fmt(a.polling_h)} h spent polling${ruleNote(a.abnormal_by?.fast_polling, 'polled fast enough to break the rule')}` : undefined}
         />
         <Plate
           k="submissions refused"
           total={cls.includes('agent') && sp._present ? a?.rejected ?? 0 : null}
-          alarm={(a?.rejected ?? 0) > 0}
+          alarm={(a?.abnormal_by?.refused ?? 0) > 0}
           by={byOf((c) => c.rejected)}
           tip="no job id, a non-zero exit, and the scheduler's own refusal"
-          note={a?.rejected ? `${pc(a.rejected_pct)} of agent submissions${topWhy ? ` · most: ${topWhy.why}` : ''}` : undefined}
+          note={a?.rejected
+            ? `${pc(a.rejected_pct)} of agent submissions${topWhy ? ` · most: ${topWhy.why}` : ''}` +
+              ruleNote(a.abnormal_by?.refused, 'refused again and again')
+            : undefined}
         />
       </div>
 

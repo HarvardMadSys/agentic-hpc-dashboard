@@ -20,9 +20,16 @@ module; `docs/README.md` indexes the rest.
     artifact, and one that changes `collector/`, `docker/collector/` or `docker/base/` pushes a
     branch-tagged collector image to GHCR (`docker/base/` rebuilds the base image too). Docs
     count: these paths take `*.md` files as well.
-  - A `v*.*.*` tag runs all three whatever it changes: it publishes the `X.Y.Z`, `X.Y` and
-    `latest` images and attaches the RPM to the tag's GitHub Release, creating the release if
-    there is none. Push a tag only when a release is asked for.
+  - A push to any branch, or a pull request, that changes `dashboard/pyproject.toml`,
+    `dashboard/uv.lock`, `dashboard/rc_dashboard/`, `dashboard/risk-profiles/`,
+    `dashboard/web/`, `docker/dashboard/` or `.github/workflows/dashboard-image.yml` (not
+    `*.md` alone) builds the dashboard's wheel and image; a push to `develop` also pushes the
+    image to GHCR as `edge`.
+  - A `v*.*.*` tag runs all four whatever it changes: it publishes the collector's and the
+    dashboard's `X.Y.Z`, `X.Y` and `latest` images and attaches the RPM and the dashboard's
+    wheel to the tag's GitHub Release, creating the release if there is none (the dashboard
+    takes only `vX.Y.Z`, whose version it stamps into the wheel and image). Push a tag only
+    when a release is asked for.
 
 ## Commands
 
@@ -36,7 +43,7 @@ python3 -m unittest discover -s hpc/fleet/tests -q
 python3 -m unittest discover -s hpc/deploy/tests -q
 (cd dashboard && uv sync --frozen && uv run --no-sync python -m unittest discover -s tests -q)   # ~3 min
 (cd dashboard/web && npm ci && npm run typecheck && npm run check && npm run build)
-(cd dashboard && uv run --frozen python -m rc_dashboard demo)   # synthetic feed on :8080
+(cd dashboard && uv run --frozen rc-dashboard demo)            # synthetic feed on :8080
 (cd dashboard/web && npm run dev)                               # the page alone, from mock/api.json, on :5173
 ```
 
@@ -49,6 +56,9 @@ python3 -m unittest discover -s hpc/deploy/tests -q
   `--restart --seal-between`.
 - `npm run dev`'s mock answers only the main routes; `npm run dev:real` with
   `RC_BACKEND=http://127.0.0.1:<port>` proxies to a running service.
+- `deploy/common/tests` runs the installers as root with stand-ins: any new host-changing
+  command an installer runs needs a stand-in in that rig, and installer tests always pass
+  `--no-bootstrap`.
 
 ## Research-integrity rules
 
@@ -65,8 +75,8 @@ Each is a past mistake.
 ## Constraints
 
 - **Python 3.6** for `collector/` (the Python inside `ebpfm.sh` included),
-  `hpc/fleet/{fleet_stream,seed_mirror}.py` and `deploy/fleet/pull.py`. A newer local Python
-  won't catch a break; CI's EL8 job will. The dashboard needs 3.11+.
+  `hpc/fleet/{fleet_stream,seed_mirror}.py`, `deploy/fleet/pull.py` and `deploy/rc-deploy`. A
+  newer local Python won't catch a break; CI's EL8 job will. The dashboard needs 3.11+.
 - **Vendored files**: `collector/node_snapshot.py` and
   `collector/lib/{procparse,agent_classify,provider_cidrs,slurm_args}.py` are copies from an
   upstream measurement repository, which is also what `collect/`, `analyze/` and `findings/`
@@ -75,6 +85,10 @@ Each is a past mistake.
 - A copy of a day-file must grow in place, never be replaced by rename (rsync's default): the
   dashboard knows a file by inode and offset, and would count a renamed copy again.
 - `dashboard/web/src/api/types.ts` mirrors the service's payloads: change them together.
+- `dashboard.config.example.json`'s values are the built-in defaults (a test holds them equal);
+  `rc-dashboard print-config --reference` is the full list. A new config section that no
+  reduction reads goes in `config.UNREDUCED`, or it changes the saved builds' and hours'
+  fingerprints and discards them.
 - `dashboard/web/mock/api.json` is generated: edit `mock/gen_fixture.mjs` and run
   `TZ=America/New_York npm run fixture`.
 - **Docs track the code**: a change to a setting, route, panel, module or command updates the

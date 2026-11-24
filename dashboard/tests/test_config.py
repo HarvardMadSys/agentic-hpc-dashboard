@@ -11,8 +11,9 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -355,3 +356,234 @@ class RetiredSections(Case):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Toml(Case):
+    """A TOML file is the same settings as a JSON one, checked the same way."""
+
+    def test_toml_and_json_resolve_the_same(self):
+        js = self.write({"site": {"name": "x"}, "slurm": {"enabled": False},
+                         "live": {"retention_min": 1440}, "ask": {"env_passthrough": ["AWS_*"]}})
+        tm = self.write('[site]\nname = "x"\n[slurm]\nenabled = false\n[live]\n'
+                        'retention_min = 1440\n[ask]\nenv_passthrough = ["AWS_*"]\n', "c.toml")
+        a, _ = self.load(path=js)
+        b, _ = self.load(path=tm)
+        self.assertEqual(a.as_dict(), b.as_dict())
+        self.assertEqual(b.origin("site.name"), "file:%s" % tm)
+
+    def test_the_same_checks(self):
+        msg = self.refused(path=self.write('[server]\nhots = "0.0.0.0"\n', "c.toml"))
+        self.assertIn("server.hots is not a setting; the nearest is server.host", msg)
+        msg = self.refused(path=self.write('[ask]\nenabled = "maybe"\n', "c.toml"))
+        self.assertIn("ask.enabled", msg)
+        cfg, _ = self.load(path=self.write('[ask]\nenabled = "off"\n', "c.toml"))
+        self.assertIs(cfg.get("ask.enabled"), False)
+        msg = self.refused(path=self.write('[site\nname = 1\n', "c.toml"))
+        self.assertIn("c.toml", msg)
+
+    def test_the_toml_writer_keeps_any_text(self):
+        """json.dumps wrote a character past U+FFFF as a UTF-16 pair, which TOML refuses:
+        `rc-dashboard init` for a site named `Cluster 🚀` wrote a config that would not
+        load. Every string goes in as itself, escaped only where TOML says."""
+        import tomllib
+        for v in ("Cluster 🚀", "ünïcödé · 日本", 'a "quote" and a \\ backslash',
+                  "tab\tnewline\nreturn\r", "bell\x07 and del\x7f", ""):
+            self.assertEqual(tomllib.loads("k = " + configmod._toml_value(v))["k"], v, repr(v))
+        self.assertEqual(tomllib.loads(configmod._toml_key("rack 🚀") + " = 1"), {"rack 🚀": 1})
+        self.assertIn("🚀", configmod._toml_value("Cluster 🚀"), "as itself, not escaped")
+        from rc_dashboard import init_cmd
+        text = init_cmd.toml_config("Cluster 🚀", "/scratch/ebpfm/日本", "/var/log/ebpfm-login",
+                                    False, 8080, "", "2026-11-24", "login01")
+        self.assertEqual(tomllib.loads(text)["site"]["name"], "Cluster 🚀")
+
+    def test_a_toml_date_reads_as_text(self):
+        cfg, _ = self.load(path=self.write("[clock]\nas_of = 2026-11-02T09:00:00\n", "c.toml"))
+        self.assertEqual(cfg.get("clock.as_of"), "2026-11-02 09:00:00")
+
+    def test_named_by_the_environment(self):
+        tm = self.write('[site]\nname = "from toml"\n', "x.toml")
+        with mock.patch.dict(os.environ, {"RC_DASH_CONFIG": tm}):
+            cfg = configmod.load(None, None)
+        self.assertEqual(cfg.get("site.name"), "from toml")
+
+
+class DefaultFiles(Case):
+    def test_either_default_file_is_read(self):
+        for name, text in (("dashboard.config.json", '{"site": {"name": "j"}}'),
+                           ("dashboard.toml", '[site]\nname = "t"\n')):
+            with self.subTest(name=name):
+                path = self.write(text, name)
+                self.assertEqual(configmod.find_config_file(), path)
+                os.unlink(path)
+
+    def test_both_are_refused_naming_which_to_keep(self):
+        self.write("{}", "dashboard.config.json")
+        later = self.write("", "dashboard.toml")
+        os.utime(later, (time.time() + 60,) * 2)
+        with self.assertRaises(SystemExit) as cm:
+            configmod.find_config_file()
+        msg = str(cm.exception)
+        self.assertIn("dashboard.config.json and", msg)
+        self.assertIn("dashboard.toml was changed last", msg)
+        # a file named outright settles it
+        self.assertEqual(configmod.find_config_file("/x.toml"), "/x.toml")
+
+
+class RelativePaths(Case):
+    def test_relative_paths_are_under_the_repository(self):
+        cfg, _ = self.load({"cache": {"dir": "dashboard/.cache"},
+                            "server": {"static_dir": "dashboard/web/dist",
+                                       "auth": {"password_hash_file": "~/pw.hash"}},
+                            "feeds": {"ebpf": {"roots": ["log/x", "/abs/y", "data/*/ebpf"]}},
+                            "history": {"dir": ""}})
+        repo = configmod.REPO
+        self.assertEqual(cfg.get("cache.dir"), os.path.join(repo, "dashboard", ".cache"))
+        self.assertEqual(cfg.get("server.static_dir"), os.path.join(repo, "dashboard", "web", "dist"))
+        self.assertEqual(cfg.get("server.auth.password_hash_file"),
+                         os.path.expanduser("~/pw.hash"))
+        self.assertEqual(cfg.get("feeds.ebpf.roots"),
+                         [os.path.join(repo, "log", "x"), "/abs/y",
+                          os.path.join(repo, "data", "*", "ebpf")])
+        self.assertEqual(cfg.get("history.dir"), "")      # empty is the default, still
+
+    def test_a_verbatim_copy_of_the_example_finds_the_page_and_the_cache(self):
+        with mock.patch.object(configmod, "HERE", DASH):
+            cfg, _ = self.load(path=os.path.join(DASH, "dashboard.config.example.json"))
+        self.assertEqual(cfg.get("cache.dir"), os.path.join(DASH, ".cache"))
+        self.assertEqual(cfg.get("server.static_dir"), os.path.join(DASH, "web", "dist"))
+
+    def test_installed_without_a_checkout_they_are_beside_the_file(self):
+        with mock.patch.object(configmod, "CHECKOUT", False):
+            cfg, _ = self.load({"cache": {"dir": "state"}})
+        self.assertEqual(cfg.get("cache.dir"), os.path.join(self.tmp, "state"))
+
+    def test_a_flag_or_a_variable_is_the_shells(self):
+        with mock.patch.dict(os.environ, {"RC_DASH_CACHE_DIR": "rel/cache"}):
+            cfg, _ = self.load({})
+        self.assertEqual(cfg.get("cache.dir"), "rel/cache")
+
+
+class Candidates(Case):
+    def test_the_collectors_defaults_and_its_settings_file(self):
+        etc = self.write('# comment\nEBPFM_MIN_UID=0\nEBPFM_OUTPUT_DIR = "/data/ebpfm"\n'
+                         "EBPFM_OUTPUT_DIR='/data/ebpfm2'\n; old\nEBPFM_NODE_OUTPUT_DIR=/data/login\n",
+                         "ebpfm.default")
+        with mock.patch.object(configmod, "EBPFM_DEFAULTS", etc):
+            ebpf, node = configmod._ebpf_candidates(), configmod._node_candidates()
+        # the last assignment wins, quotes off, ahead of the fixed list
+        self.assertEqual(ebpf[0], "/data/ebpfm2")
+        self.assertLess(ebpf.index("/scratch/ebpfm"), ebpf.index("/var/log/ebpfm"))
+        self.assertEqual(node[0], "/data/login")
+        self.assertLess(node.index("/scratch/ebpfm-login"), node.index("/var/log/ebpfm-login"))
+        with mock.patch.object(configmod, "EBPFM_DEFAULTS", os.path.join(self.tmp, "none")):
+            self.assertNotIn("/data/ebpfm2", configmod._ebpf_candidates())
+
+    def test_a_folder_named_twice_is_listed_once(self):
+        with mock.patch.dict(os.environ, {"EBPFM_OUTPUT_DIR": "/var/log/ebpfm/"}):
+            c = configmod._ebpf_candidates()
+        self.assertEqual(sum(os.path.normpath(p) == "/var/log/ebpfm" for p in c), 1)
+
+    def test_the_env_file_reader(self):
+        etc = self.write('A=1\nexport B="two words"\n  C = \'3\'  \nnot a line\n#D=4\nA=5\n', "e")
+        self.assertEqual(configmod.env_file(etc), {"A": "5", "B": "two words", "C": "3"})
+        self.assertEqual(configmod.env_file(os.path.join(self.tmp, "none")), {})
+
+
+class Reference(Case):
+    def test_it_reads_back_as_the_defaults(self):
+        import tomllib
+        tree = tomllib.loads(configmod.reference_toml())
+
+        def drop_none(node):
+            return {k: drop_none(v) if isinstance(v, dict) else v
+                    for k, v in node.items() if v is not None}
+        self.assertEqual(tree, drop_none(configmod.defaults()))
+
+    def test_it_names_each_variable(self):
+        text = configmod.reference_toml()
+        for dotted, (var, _c) in configmod.ENV_MAP.items():
+            self.assertIn("# %s" % var, text, dotted)
+        self.assertIn("# command = (unset)  # RC_DASH_ASK_CMD", text)
+
+    def test_the_command_prints_it(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(cli.main(["print-config", "--reference"]), 0)
+        self.assertEqual(out.getvalue(), configmod.reference_toml())
+
+
+class Examples(Case):
+    """The example files hold the built-in defaults and nothing of one site's."""
+
+    def leaves(self, node, prefix=""):
+        for k, v in node.items():
+            path = prefix + k
+            if isinstance(v, dict) and v:
+                yield from self.leaves(v, path + ".")
+            else:
+                yield path, v
+
+    def test_every_value_in_the_json_example_is_the_default(self):
+        with open(os.path.join(DASH, "dashboard.config.example.json")) as fh:
+            tree = configmod.strip_comments(json.load(fh))
+        with mock.patch.object(configmod, "HERE", DASH):
+            configmod._resolve_paths(tree, os.path.join(DASH, "x.json"))
+            dflt = configmod.defaults()
+        for path, val in self.leaves(tree):
+            if configmod._code_key(path):
+                continue
+            with self.subTest(key=path):
+                self.assertEqual(val, configmod._get(dflt, path))
+
+    def test_no_site_of_ours_in_the_examples_or_run_sh(self):
+        """No value of one site's set: the JSON example's comments may point at a
+        site's profile, its settings may not use one."""
+        for name in ("dashboard.config.example.json", "dashboard.example.toml", "run.sh"):
+            with open(os.path.join(DASH, name)) as fh:
+                text = fh.read()
+            if name.endswith(".json"):
+                text = json.dumps(configmod.strip_comments(json.loads(text)))
+            for word in ("netscratch", "juncheng", "flamraoui", "marthen", "fasrc.json",
+                         "holy|bos", "human-vscode"):
+                with self.subTest(file=name, word=word):
+                    self.assertNotIn(word, text)
+        with open(os.path.join(DASH, "run.sh")) as fh:
+            for line in fh:
+                if line.lstrip().startswith("#") or "uv run" not in line:
+                    continue
+                self.assertIn("uv run --frozen", line)
+
+    def test_the_toml_starter_loads(self):
+        with mock.patch.object(configmod, "HERE", DASH):
+            cfg, err = self.load(path=os.path.join(DASH, "dashboard.example.toml"))
+        self.assertEqual(err, "")
+        self.assertEqual(cfg.get("server.auth.password_hash_file"),
+                         os.path.expanduser("~/.config/rc-dashboard/password.hash"))
+        with open(os.path.join(DASH, "dashboard.example.toml")) as fh:
+            self.assertLessEqual(len(fh.read().splitlines()), 16)
+
+
+class Unreduced(Case):
+    """What no reduction reads moves neither saved-state fingerprint."""
+
+    def test_new_settings_keep_the_fingerprints(self):
+        from rc_dashboard import hours, snapshots
+        a, _ = self.load({})
+        b, _ = self.load({"status": {"transport_files": ["/x/*.json"], "stale_s": 60},
+                          "ui": {"show_internal": True},
+                          "server": {"auth": {"password_hash_file": "/etc/pw.hash"}}})
+        for fp in (snapshots.fingerprint, hours.fingerprint):
+            self.assertEqual(fp("code", a, ["/r"]), fp("code", b, ["/r"]))
+        self.assertNotIn("status", a.as_dict())
+        self.assertIn("status", a.as_dict(with_origins=True))
+
+    def test_status_settings_are_checked(self):
+        msg = self.refused({"status": {"transport_files": "/x.json"}})
+        self.assertIn("status.transport_files", msg)
+        msg = self.refused({"status": {"stale_s": 0}})
+        self.assertIn("status.stale_s", msg)
+        with mock.patch.dict(os.environ, {"RC_DASH_TRANSPORT_FILES": "/a.json,/b/*.json",
+                                          "RC_DASH_SHOW_INTERNAL": "yes"}):
+            cfg, _ = self.load({})
+        self.assertEqual(cfg.get("status.transport_files"), ["/a.json", "/b/*.json"])
+        self.assertIs(cfg.get("ui.show_internal"), True)

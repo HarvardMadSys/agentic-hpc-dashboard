@@ -694,7 +694,8 @@ export function UsersPanel({
   const [run, setRun] = useState<string | null>(null);
   const fallback = knownCols(defaultCols ?? []);
   const [cols, setCols] = useState<ColKey[]>(() => loadCols(fallback.length ? fallback : DEFAULT_COLS));
-  const sort = useSort<ColKey | 'user'>('user', 'asc');
+  // the most recently active first: an operator opens this table to see who is busy now
+  const sort = useSort<ColKey | 'user'>('last');
   const cascades = pick<Cascades>(P, 'cascades', 'ebpfm');
 
   // the frame holds the busiest rows only: past them, the server searches

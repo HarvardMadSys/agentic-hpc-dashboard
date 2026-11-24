@@ -86,10 +86,8 @@ const RANKS = new Set<string>(TRAJ_RANKS);
 /** Renamed tabs: old key -> current key. */
 const TAB_ALIAS: Record<string, string> = table({
   cascades: 'agents',
-  // the consolidation (roadmap notes 41-47): a saved link still lands on the panels
-  sessions: 'agents',
-  // the Sessions tab: its list and its inspector are the Agents tab's last part, and App.tsx lands such a link on them
-  trajectories: 'agents',
+  // the Sessions tab's old key: a sub-tab of the Agents entry again (`sessions`), its list and inspector
+  trajectories: 'sessions',
   io: 'resources',
   // the sandbox panels were Internal's, and are Security's confinement half now
   sandbox: 'security',
@@ -133,7 +131,12 @@ export function parseUrl(search: string): UrlState {
     atypes: [...new Set(many(p, 'atype', 'agent_type').map((t) => (UNTAGGED_ALIAS.has(t) ? UNTAGGED : t)))],
     // `cascades` is the Agents tab's old name: a link saved before the rename
     // still opens it.
-    tab: TAB_ALIAS[p.get('tab') ?? ''] ?? (p.get('tab') || 'live'),
+    // A link to the Agents tab that opened a session, or narrowed the list to
+    // one user's, was a link to its sessions, the tab's last part then: it
+    // opens the Sessions sub-tab they are now.
+    tab: ((t) => (t === 'agents' && (p.get('traj') || p.get('tuser')) ? 'sessions' : t))(
+      TAB_ALIAS[p.get('tab') ?? ''] ?? (p.get('tab') || 'live'),
+    ),
     rank: (rank && RANKS.has(rank) ? rank : 'recent') as TrajRank,
     // Nonsense in the query string falls back to the default rather than being
     // clamped to a number nobody asked for. The backend clamps what it is sent.
@@ -147,7 +150,7 @@ export function parseUrl(search: string): UrlState {
 }
 
 /** The state with `patch` applied. A session is open on the tab it was opened
- *  on -- the Agents tab, or a portrait on Users -- so a patch that goes to
+ *  on -- the Sessions tab, or a portrait on Users -- so a patch that goes to
  *  another tab closes it (`traj`, and where its read starts), unless the patch
  *  opens one there itself: one left open would open again on a tab that did not
  *  ask for it, and scroll that tab down to it. */

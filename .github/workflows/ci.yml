@@ -64,8 +64,8 @@ jobs:
           python3 --version
           python3 -m unittest discover -s collector/tests -q
 
-      - name: The fleet sender and the fleet puller compile on Python 3.6
-        run: python3 -m py_compile hpc/fleet/fleet_stream.py hpc/fleet/seed_mirror.py deploy/fleet/pull.py
+      - name: The fleet sender, the fleet puller and rc-deploy compile on Python 3.6
+        run: python3 -m py_compile hpc/fleet/fleet_stream.py hpc/fleet/seed_mirror.py deploy/fleet/pull.py deploy/rc-deploy
 
   python:
     name: Collector, deploy modes and HPC kit

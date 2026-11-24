@@ -305,6 +305,36 @@ class TestVerified(MirrorCase):
                          ["nodeA.exits.jsonl.gz"])
 
 
+class TestPurgedCopy(MirrorCase):
+    """A node's copy removed (`rc-deploy remove-node --purge-copy`, or by hand) and the
+    node added again. Its ledger, left behind or written back by a frame its retired
+    link had in hand, still held the removed files as verified. Every frame that sent
+    them again was refused ("which is verified"), and the node was never copied again."""
+
+    BODY = b'{"real":1}\n' * 100
+
+    def check(self, **kw):
+        self.verify(self.BODY)
+        self.base.rmtree("mirror/" + HOST)                 # the copy purged, not the ledger
+        self.m = fs.Mirror(self.base, HOST, **kw)          # the node added again
+        self.assertNotIn(KEY, self.m.verified)
+        self.assertNotIn(KEY, self.m.inventory())
+        self.assertNotIn(KEY, fs.Mirror(self.base, HOST, **kw).verified)   # the ledger on disk
+        self.lone({"t": "data", "path": KEY, "off": 0}, self.BODY)         # sent again
+        self.assertEqual(self.held(), self.BODY)
+
+    def test_a_purged_copy_takes_its_files_again(self):
+        self.check()
+
+    def test_and_with_keep_gz(self):
+        self.m = fs.Mirror(self.base, HOST, keep_gz=True)
+        self.check(keep_gz=True)
+
+    def test_a_held_file_stays_verified(self):
+        self.verify(self.BODY)
+        self.assertIn(KEY, fs.Mirror(self.base, HOST).verified)
+
+
 class TestDays(MirrorCase):
     def test_a_day_after_tomorrow_or_no_date_is_refused(self):
         """Frames for 9999-12-29 to 9999-12-31 made folders that retention then kept

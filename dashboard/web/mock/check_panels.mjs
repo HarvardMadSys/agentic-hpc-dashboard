@@ -61,7 +61,7 @@ test('<Panel> says the service could not reduce it, and neither "none" nor a mis
 
 test('the Slurm plates read a dash, not 0, when the Slurm panel could not be reduced', async () => {
   const text = textOf(await ui.render('tabs/SlurmTab.tsx', 'SlurmTab', { P: { ...FIX, slurm: failed() }, live: null, cls: ALL }));
-  for (const k of ['agent jobs submitted', 'agent sessions polling the queue', 'submissions refused']) {
+  for (const k of ['jobs submitted', 'sessions polling the queue', 'submissions refused']) {
     const after = text.split(k)[1];
     assert.ok(after, k);
     // on develop: 0, the plate's number for a panel with no body

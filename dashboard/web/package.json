@@ -27,7 +27,8 @@
     "check:hpc": "node --test mock/check_hpc.mjs",
     "check:io": "node --test mock/check_io.mjs",
     "check:tabs": "node --test mock/check_tabs.mjs",
-    "check:internal": "node --test mock/check_internal.mjs"
+    "check:internal": "node --test mock/check_internal.mjs",
+    "check:ux": "node --test mock/check_ux.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",

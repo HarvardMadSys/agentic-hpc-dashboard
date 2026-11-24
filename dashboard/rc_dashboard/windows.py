@@ -1602,7 +1602,16 @@ class WindowRegistry:
         closed = None
         if self.hours is not None:
             now, roots = time.time(), self.roots_fn()
-            if self.hours.behind(now, roots):
+            # The newest saved hour as the worker's last list of the store left it: this
+            # runs on the rebuild loop's thread, and on the backfill's as the worker starts,
+            # and only the worker lists the store. A list empties the saved-hour sets before
+            # it fills them (`HourStore._sync`), and a build reading them meanwhile found
+            # every hour missing and reduced them all again (tests/test_hours.py,
+            # TickListTest). `HourStore.behind` lists first, so it is not asked here; it is
+            # left as it is because hours.py is in the saved hours' code fingerprint, and
+            # any edit to it would reduce every site's saved hours again.
+            chain = self.hours.chain
+            if chain is not None and chain[0] < self.hours.closed_end(now, roots) - 1:
                 self._enqueue(HOURS_JOB)    # reduce the hours closed since, behind the builds
             if any(v.own_open_hour is not None for _k, v in held):
                 closed = self.hours.closed_end(now, roots)

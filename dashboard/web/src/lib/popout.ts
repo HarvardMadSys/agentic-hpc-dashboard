@@ -50,7 +50,7 @@ export function readTreePop(search: string): TreePop | null {
 
 /** The same session in the dashboard's inspector, beside the Agents tab's list of every session. */
 export function dashboardHref(t: TreePop): string {
-  const p = new URLSearchParams({ tab: 'agents' });
+  const p = new URLSearchParams({ tab: 'sessions' });
   if (t.sid) p.set('traj', t.sid);
   if (t.win != null) p.set('win', String(t.win));
   if (t.from != null) p.set('tfrom', String(t.from));

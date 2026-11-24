@@ -4,7 +4,8 @@
 # ROOT is the deployment's folder (site.env's DASH_ROOT), which holds everything, and
 # PYTHON (site.env's DASH_PYTHON, python3 if not given) makes the venv. Installs the
 # release, moves `current` to it, installs the settings deploy.sh rendered and the tmux
-# unit, keeps etc/auth.env, and starts the session (or restarts it with RESTART=1).
+# unit, keeps etc/auth.env and etc/password.hash, notes the release in
+# releases/.history (rollback.sh), and starts the session (or restarts it with RESTART=1).
 set -euo pipefail
 umask 077
 if [ $# -lt 4 ] || [ $# -gt 5 ] || [ -z "$4" ]; then
@@ -70,6 +71,8 @@ fi
 
 ln -sfn "releases/$sha" "$R/current.new"
 mv -T "$R/current.new" "$R/current"
+# Which release came before which, for rollback.sh.
+printf '%s %s\n' "$sha" "$(date '+%F %T')" >> "$R/releases/.history"
 
 install -m 600 "$inc/stream.json" "$R/etc/stream.json"
 install -m 600 "$inc/dashboard.config.json" "$R/etc/dashboard.config.json"

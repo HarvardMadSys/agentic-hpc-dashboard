@@ -114,11 +114,37 @@ on_term() {
 trap on_int INT QUIT
 trap on_term TERM HUP
 
-load_auth() {   # etc/auth.env as systemd's EnvironmentFile= read it: no shell expansion
+# etc/auth.env as systemd's EnvironmentFile= reads it: KEY=VALUE, the blanks around
+# the value dropped, then one pair of matching quotes around it (deploy/README.md tells
+# a hash to go in single quotes, and systemd takes them off). No shell expansion: a
+# hash is full of `$` signs.
+unquote() {
+  local v=$1
+  v=${v#"${v%%[![:space:]]*}"}
+  v=${v%"${v##*[![:space:]]}"}
+  if [ ${#v} -ge 2 ]; then
+    case $v in
+      \"*\"|\'*\') v=${v:1:${#v}-2} ;;
+    esac
+  fi
+  printf '%s' "$v"
+}
+load_auth() {
   local line
-  while IFS= read -r line || [ -n "$line" ]; do
-    case $line in RC_DASH_*=*) export "${line%%=*}=${line#*=}" ;; esac
-  done < "$ETC/auth.env"
+  if [ -f "$ETC/auth.env" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case $line in RC_DASH_*=*) export "${line%%=*}=$(unquote "${line#*=}")" ;; esac
+    done < "$ETC/auth.env"
+  fi
+  # The hash file that password.sh (rc-deploy password) writes: the dashboard reads it
+  # again when it changes, so a new password needs no restart.
+  if [ -z "${RC_DASH_PASSWORD_HASH_FILE:-}" ] && [ -s "$ETC/password.hash" ]; then
+    export RC_DASH_PASSWORD_HASH_FILE="$ETC/password.hash"
+    # The file is the password, as the start check reads it (check-local.sh): a hash
+    # left in auth.env beside it (rollback.sh puts one back for a release from before
+    # the hash file) is not handed on too, which the dashboard refuses.
+    unset RC_DASH_PASSWORD_HASH
+  fi
 }
 
 run_once() {    # start the process in its scope, and wait for it to end; sets status
@@ -131,6 +157,9 @@ run_once() {    # start the process in its scope, and wait for it to end; sets s
     export PYTHONUNBUFFERED=1
     if [ "$name" = dashboard ]; then
       export RC_DASH_CONFIG="$ETC/dashboard.config.json" MALLOC_ARENA_MAX=2
+      # The stream's status, so the Feeds tab and `rc-dashboard status` can tell a link
+      # that is down from a collector that stopped.
+      export RC_DASH_TRANSPORT_FILES="${RC_DASH_TRANSPORT_FILES:-$RUN/data/state/status.json}"
       [ -n "${RC_DASH_PATH:-}" ] && export PATH="$RC_DASH_PATH"
       load_auth
     fi

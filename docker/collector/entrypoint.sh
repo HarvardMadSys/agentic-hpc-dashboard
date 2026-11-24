@@ -29,7 +29,16 @@ case "${1:-collector}" in
     # Foreground eBPF tracer. Hostname arg lets the operator override the
     # container hostname with the real node name (recommended: --hostname $(hostname)
     # or -e so the day files are named for the host, not the container id).
-    exec python3 "$EBPFM_DIR/ebpf_trace.py" "${EBPFM_HOST:-$(hostname -s)}"
+    host="${EBPFM_HOST:-$(hostname -s)}"
+    # The pid file and settings note ebpfm.sh reads, for the tracer this exec
+    # becomes (same pid), so `docker exec <container> ebpfm status` finds it.
+    mkdir -p /run
+    echo "$$" > "/run/ebpfm_${host}.pid"
+    printf '%s\n' "EBPFM_STATE_PID=$$" "EBPFM_STATE_STARTED=$(date +%s)" \
+        "EBPFM_STATE_LOG=the container's output (docker logs)" \
+        "EBPFM_OUTPUT_DIR=$EBPFM_OUTPUT_DIR" "EBPFM_RESIDENCY_S=${EBPFM_RESIDENCY_S:-60}" \
+        > "/run/ebpfm_${host}.env"
+    exec python3 "$EBPFM_DIR/ebpf_trace.py" "$host"
     ;;
   ebpfm)
     # Pass the remaining args straight to the bundle entrypoint.

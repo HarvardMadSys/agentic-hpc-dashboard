@@ -69,6 +69,8 @@ echo "  ${STUB_AGE:-7200}"
 }
 
 ACTIVE = "rc-tmux.service rc-dashboard.scope rc-fleet-stream.scope"
+# A hash of the right shape: scrypt$n$r$p$salt$key, an 8-byte salt and a 16-byte key.
+HASH = "scrypt$16384$8$1$c2FsdHNhbHQ=$aGFzaGhhc2hoYXNoaGFzaA=="
 OURS = 'LISTEN 0 128 127.0.0.1:28090 0.0.0.0:* users:(("python",pid=4242,fd=7))'
 
 
@@ -85,7 +87,7 @@ class Rig(unittest.TestCase):
                   self.home, os.path.join(self.home, "rc-dashboard"), self.etc):
             os.mkdir(d, 0o700)
         with open(os.path.join(self.etc, "auth.env"), "w") as fh:
-            fh.write("RC_DASH_PASSWORD_HASH=scrypt$x$y\n")
+            fh.write("RC_DASH_PASSWORD_HASH=%s\n" % HASH)
         os.chmod(os.path.join(self.etc, "auth.env"), 0o600)
         with open(os.path.join(self.etc, "dashboard.config.json"), "w") as fh:
             json.dump({"server": {"port": 28090}}, fh)
@@ -243,6 +245,83 @@ class TestFullRun(Rig):
         code, out, calls = self.run_check()
         self.assertEqual(code, 16)
         self.assertIn("STREAM status", out)
+
+
+class TestAuth(Rig):
+    def test_a_quoted_hash_is_the_hash(self):
+        """deploy/README.md puts a hash in single quotes, and systemd takes them off:
+        so do keep-running.sh and this check."""
+        self.listeners(OURS)
+        with open(os.path.join(self.etc, "auth.env"), "w") as fh:
+            fh.write("RC_DASH_PASSWORD_HASH='%s'\n" % HASH)
+        code, out, _ = self.run_check()
+        self.assertEqual((code, out), (0, "OK"))
+
+    def test_a_hash_that_does_not_parse_is_a_finding(self):
+        """The dashboard would refuse it at every start, while the old check passed it."""
+        self.listeners(OURS)
+        with open(os.path.join(self.etc, "auth.env"), "w") as fh:
+            fh.write("RC_DASH_PASSWORD_HASH=scrypt$x$y\n")
+        code, out, _ = self.run_check()
+        self.assertEqual(code, 15)
+        self.assertIn("does not parse", out)
+        self.assertNotIn("scrypt$x$y", out, "the hash itself is never printed")
+
+    def test_the_hash_file_is_read(self):
+        self.listeners(OURS)
+        os.unlink(os.path.join(self.etc, "auth.env"))
+        h = os.path.join(self.etc, "password.hash")
+        with open(h, "w") as fh:
+            fh.write(HASH + "\n")
+        os.chmod(h, 0o600)          # as password.sh leaves it; the audit flags anything wider
+        code, out, _ = self.run_check()
+        self.assertEqual((code, out), (0, "OK"))
+
+
+class TestStatus(Rig):
+    """The dashboard's own verdict, `rc-dashboard status --json`, stood in for by
+    RC_STATUS_CMD."""
+
+    def status(self, doc, rc=0):
+        p = os.path.join(self.tmp, "status.json")
+        with open(p, "w") as fh:
+            fh.write(doc if isinstance(doc, str) else json.dumps(doc))
+        return {"RC_STATUS_CMD": "cat %s; exit %d" % (p, rc)}
+
+    def test_ok_is_quiet(self):
+        self.listeners(OURS)
+        code, out, _ = self.run_check(**self.status({"level": "ok", "why": [], "hosts": []}))
+        self.assertEqual((code, out), (0, "OK"))
+
+    def test_warn_and_crit_are_findings(self):
+        self.listeners(OURS)
+        doc = {"level": "crit", "why": ["node02: silent for 2 h", "node03: copy failed"],
+               "hosts": []}
+        code, out, _ = self.run_check(**self.status(doc, rc=2))
+        self.assertEqual(code, 17)
+        self.assertIn("STATUS crit: node02: silent for 2 h; node03: copy failed", out)
+        code, out, _ = self.run_check(**self.status(dict(doc, level="warn"), rc=1))
+        self.assertEqual(code, 17)
+        self.assertIn("STATUS warn:", out)
+
+    def test_no_verdict_is_said(self):
+        self.listeners(OURS)
+        code, out, _ = self.run_check(**self.status("Traceback (most recent call last)", rc=1))
+        self.assertEqual(code, 17)
+        self.assertIn("gave no verdict (exit 1)", out)
+
+    def test_a_release_without_status_is_left_alone(self):
+        self.listeners(OURS)
+        env = {"RC_STATUS_CMD": "echo \"rc-dashboard: error: argument command: invalid choice: "
+                                "'status'\" >&2; exit 2"}
+        code, out, _ = self.run_check(**env)
+        self.assertEqual((code, out), (0, "OK"))
+
+    def test_a_trip_skips_the_status(self):
+        open(os.path.join(self.tmpd, "TRIPPED"), "w").close()
+        code, out, _ = self.run_check(**self.status({"level": "crit", "why": ["x"]}, rc=2))
+        self.assertEqual(code, 11)
+        self.assertNotIn("STATUS", out)
 
 
 class TestWithoutSs(Rig):

@@ -51,7 +51,7 @@ import { PhaseBand } from '../components/PhaseBand';
 import { Segmented } from '../components/ClassFilter';
 import { Plate } from '../components/Plate';
 import { AGENT_TYPE_LBL, CLS_COL } from '../lib/classes';
-import { sessionName } from '../lib/sessions';
+import { sessionTitle } from '../lib/sessions';
 import { DASH, ago, dur, fint, mb, pc } from '../lib/format';
 import { useClockPinned, useNow } from '../lib/useNow';
 import { bandAxis, calls, driverOf, edgeLabel, isBlock, phasesUnread, runningUnread, sequenceLine } from '../lib/phases';
@@ -212,7 +212,8 @@ const SessionItem = memo(function SessionItem({
   const edge = isBlock(ph) && r.running?.now != null;
   const now = useNow(rank === 'recent' || edge);
   useClockPinned();
-  const nm = sessionName(r);
+  // titled by whose it is and what ran it; the collector's key (a pid) goes to the line under it
+  const nm = sessionTitle(r);
   const extra = rankLine(r, rank, now);
   // a row whose commands are read is counted in its calls, tool calls or commands by who ran it (`driver`); a row of a
   // service that did not read it, in processes
@@ -227,7 +228,7 @@ const SessionItem = memo(function SessionItem({
       data-tip={`${r.sid}${counted ? `\n${fint(r.n_events)} processes` : ''}\nclick to open its process tree`}
     >
       <span className="tj-item-h">
-        <b>{nm.key}</b>
+        <b>{nm.title}</b>
         <span className="tj-date">{nm.date}</span>
         <SurfaceChip s={r.surface} detail={r.surface_detail} />
         {/* no chip for a session whose calls are running and none has ended: `no tool calls` would be wrong */}
@@ -241,7 +242,7 @@ const SessionItem = memo(function SessionItem({
         )}
       </span>
       <span className="tj-item-s">
-        {(r.user ?? (r.users ?? [])[0]) ?? DASH} · {count} · {dur(r.cpu_s)} CPU · {dur(r.wall_s)}
+        {nm.detail ? `${nm.detail} · ` : ''}{count} · {dur(r.cpu_s)} CPU · {dur(r.wall_s)}
       </span>
       {extra && <span className="tj-item-m">{extra}</span>}
       <RowRibbon r={r} nowS={now / 1000} />
@@ -357,6 +358,15 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
   const shownList = tuser ? listed.filter((r) => (r.user ?? (r.users ?? [])[0]) === tuser) : listed;
   // the rows drawn, in their order: a row that moves slides there (`useFlip`)
   const drawn = tuser && shownList.length ? shownList : listed;
+  // Nothing picked: the list's first session is open beside it, so the
+  // inspector never stands empty asking for a pick; picking one is still the
+  // reader's (`sel`, in the URL), and this only shows until they do. It is held
+  // while it stays listed: the list is read again every few seconds, and a new
+  // session at its top must not swap the tree under the reader.
+  const auto = useRef<string | null>(null);
+  if (sel) auto.current = null;
+  else if (!auto.current || !drawn.some((r) => r.sid === auto.current)) auto.current = drawn[0]?.sid ?? null;
+  const cur = sel ?? auto.current;
   useFlip(listRef, `${rank}|${win}|${tuser ?? ''}|${cls.join(',')}`, drawn.map((r) => r.sid).join('\n'));
   const sum = t?.summary ?? {};
   const agent = cls.includes('agent') ? sum.agent : undefined;
@@ -371,7 +381,7 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
           session: see `summary` in reducers/trajectories.py. */}
       <div className="plates">
         <Plate
-          k={`agent sessions · ${winLabel(t)}`}
+          k={`sessions · ${winLabel(t)}`}
           total={agent?.sessions ?? null}
           by={byCls((d) => d.sessions)}
           tip={
@@ -397,7 +407,7 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
           }
         />
         <Plate
-          k="processes per agent session · median"
+          k="processes per session · median"
           total={agent?.calls_p50 ?? null}
           by={byCls((d) => d.calls_p50)}
           note={
@@ -407,7 +417,7 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
           }
         />
         <Plate
-          k="agent session length · median"
+          k="session length · median"
           total={agent?.wall_p50_s ?? null}
           by={byCls((d) => d.wall_p50_s)}
           fmtFn={(n) => dur(n)}
@@ -421,7 +431,7 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
           }
         />
         <Plate
-          k="agent processes spent waiting"
+          k="processes spent waiting"
           total={agent?.wait_pct ?? null}
           by={byCls((d) => d.wait_pct)}
           fmtFn={(n) => (n == null ? DASH : pc(n))}
@@ -470,16 +480,16 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
           )}
           <div className="tj-list" ref={listRef}>
             {drawn.map((r) => (
-              <SessionItem key={r.sid} r={r} rank={rank} on={sel === r.sid} onOpen={openRow} />
+              <SessionItem key={r.sid} r={r} rank={rank} on={cur === r.sid} onOpen={openRow} />
             ))}
           </div>
         </Panel>
 
         <div>
-          {sel ? (
+          {cur ? (
             <OpenSession
-              sel={sel}
-              row={rows[sel] ?? null}
+              sel={cur}
+              row={rows[cur] ?? null}
               win={win}
               windowMin={t?.window?.minutes}
               select={select}
@@ -488,7 +498,8 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
               torder={torder}
               setTorder={setTorder}
               routine={routine}
-              scrollOnOpen={!landing}
+              // shown by default, not opened: the page stays where it is
+              scrollOnOpen={!landing && sel != null}
             />
           ) : (
             <div className="tj-empty">
