@@ -53,6 +53,7 @@ import { feedLabel } from './lib/feeds';
 import { table } from './lib/lookup';
 import { setZone, zoneLabel } from './lib/zone';
 import { SetupScreen, noData } from './components/SetupScreen';
+import { asksPassword } from './lib/auth';
 import { AskDrawer } from './components/AskDrawer';
 import type { ZoneInfo } from './lib/zone';
 
@@ -434,15 +435,9 @@ export default function App() {
   // Records the demo made up (rc_dashboard/demo) say so themselves, and the
   // header says it whenever any host's do, whatever the site is called.
   const synthetic = Object.values(feeds.data ?? {}).flatMap((f) => f.synthetic_hosts ?? []);
-  // A password is set (rc_dashboard/auth.py), so the rail offers to sign out.
-  // /api/config shows the hash as "(hidden)" when set and "" when not.
-  const passwordSet = Boolean(
-    (
-      (config.data?.server as Record<string, unknown> | undefined)?.auth as
-        | Record<string, { _value?: unknown }>
-        | undefined
-    )?.password_hash?._value,
-  );
+  // A password is set, inline or in a hash file (lib/auth.ts), so the rail offers to
+  // sign out.
+  const passwordSet = asksPassword(config.data as Record<string, unknown> | null | undefined);
   const mainRef = useRef<HTMLElement>(null);
   const { secs, go: goSec } = useSections(mainRef, tab.k);
   useScrollEdges(mainRef);

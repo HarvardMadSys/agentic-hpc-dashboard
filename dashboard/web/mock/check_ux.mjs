@@ -110,6 +110,17 @@ test('no feed holds a record: the setup screen, which names every folder it look
   assert.match(app, /live\.transport === 'ws' && !empty \? '' : ' off'/);
 });
 
+test('a password in a hash file is a password: the rail offers to sign out', async () => {
+  const A = await ui.load('lib/auth.ts');
+  const auth = (hash, file) => ({ server: { auth: { password_hash: { _value: hash }, password_hash_file: { _value: file } } } });
+  assert.equal(A.asksPassword(auth('(hidden)', '')), true, 'the hash, inline');
+  assert.equal(A.asksPassword(auth('', '/etc/rc-dashboard/password.hash')), true, 'the hash file, as init and the kits set it');
+  assert.equal(A.asksPassword(auth('', '')), false, 'an open page has no one to sign out');
+  assert.equal(A.asksPassword(null), false, 'no config yet');
+  const app = readFileSync(fileURLToPath(new URL('../src/App.tsx', import.meta.url)), 'utf8');
+  assert.match(app, /const passwordSet = asksPassword\(config\.data/);
+});
+
 test('every time on the page is in the service’s zone, named in the head', async () => {
   const Z = await ui.load('lib/zone.ts');
   const t = Date.UTC(2026, 10, 23, 22, 36, 5); // 22:36:05 UTC, 17:36:05 in New York (EST)
