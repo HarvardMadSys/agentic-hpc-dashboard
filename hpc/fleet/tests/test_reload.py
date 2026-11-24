@@ -84,6 +84,38 @@ class TestReload(unittest.TestCase):
         with open(os.path.join(self.base, "state", "status.json")) as fh:
             self.assertEqual(sorted(json.load(fh)["hosts"]), ["b"])
 
+    def test_a_changed_command_waits_for_the_old_writer(self):
+        """A reload that changed a host's command retired its link and started the new one
+        at once: a frame the old link was still applying landed beside the new link's own
+        Mirror of the same files, and its records twice. The new link starts once the old
+        writer is done."""
+        c = FakeCollector(self.src["a"])
+        c.append("exits", b'{"a":1}\n' * 50)
+        self.start(["a"])
+        self.assertTrue(wait_for(self.same("a")))
+        old = self.receiver.links[0]
+        entered, release = threading.Event(), threading.Event()
+        real = old.mirror.write
+
+        def held(fd, data):                 # the old link, past its size check, before it appends
+            entered.set()
+            release.wait(10)
+            return real(fd, data)
+        old.mirror.write = held
+        c.append("exits", b'{"a":2}\n' * 5)
+        self.assertTrue(entered.wait(10), "the old link never took the frame")
+        cfg = self.config(["a"])
+        cfg["hosts"]["a"] = ["env"] + cfg["hosts"]["a"]        # the same sender, a new command
+        with open(self.conf + ".new", "w") as fh:
+            json.dump(cfg, fh)
+        os.replace(self.conf + ".new", self.conf)
+        time.sleep(1.5)                 # a replacement started at once has caught up by now
+        release.set()
+        self.assertTrue(wait_for(lambda: [l.argv[0] for l in self.receiver.links] == ["env"]))
+        self.assertTrue(wait_for(self.same("a")), "a record was written twice, or lost")
+        time.sleep(0.5)
+        self.assertEqual(mirror_tree(os.path.join(self.base, "mirror", "a")), source_tree(self.src["a"]))
+
     def test_sighup_and_a_file_that_does_not_load(self):
         FakeCollector(self.src["a"]).append("exits", b'{"a":1}\n' * 5)
         FakeCollector(self.src["b"]).append("exits", b'{"b":1}\n' * 5)

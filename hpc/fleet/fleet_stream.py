@@ -1653,11 +1653,23 @@ class Receiver:
         gone = sorted(h for h in old if h not in hosts)
         changed = sorted(h for h in old if h in hosts and list(hosts[h]) != old[h].argv)
         added = sorted(h for h in hosts if h not in old)
+        waits = []
         for h in gone + changed:
             old[h].retire()
             i = self.links.index(old[h])
+            if h in changed:
+                waits.append((h, self.threads[i]))
             del self.links[i]
             del self.threads[i]
+        # A changed host's old link may be past a frame's size check and not yet done
+        # writing it: its replacement makes a Mirror of the same files, and started at
+        # once it wrote the same records beside it. It starts once the old writer is
+        # done; retire() ended the old transport, so that is the frame in hand.
+        for h, t in waits:
+            t.join(30)
+            if t.is_alive():
+                _log("reload: %s's old link has not ended after 30 s; its new one starts "
+                     "beside it" % h)
         for h in changed + added:
             self._start_link(h, hosts[h])
         self.cfg["hosts"] = hosts
