@@ -2,6 +2,7 @@
 from "this machine", with ssh a stand-in that runs the remote command here, against a
 temporary deployment folder, and uv, systemctl, crontab and the venv's Python stand-ins
 that log their calls."""
+import json
 import os
 import shutil
 import stat
@@ -183,6 +184,46 @@ class TestRollback(Rig):
                       % self.root, calls)
         self.assertIn("systemctl --user restart rc-tmux.service", calls)
         self.assertIn("current: aaaaaaaaaaaa (was bbbbbbbbbbbb)", out)
+
+    def globbed_config(self):
+        """The settings as this kit renders them: the copy as one pattern over the mirror."""
+        mirror = os.path.join(self.root, "data", "mirror")
+        for n in ("node02", "node01"):
+            os.makedirs(os.path.join(mirror, n))
+        p = os.path.join(self.root, "etc", "dashboard.config.json")
+        with open(p, "w") as fh:
+            json.dump({"feeds": {"ebpf": {"roots": [mirror + "/*"], "days": 8}}, "ingest": {}}, fh)
+        os.chmod(p, 0o600)
+        return p, mirror
+
+    def expands_patterns(self, sha):
+        d = os.path.join(self.root, "releases", sha, "dashboard", "rc_dashboard")
+        os.makedirs(d)
+        with open(os.path.join(d, "config.py"), "w") as fh:
+            fh.write("def expand_root(path):\n    return [path]\n")
+
+    def test_back_to_a_release_that_reads_no_pattern_names_each_node(self):
+        """A release from before the pattern root reads `data/mirror/*` as one folder of
+        that name, which is none: it started with no feed. Its settings name each node's
+        folder instead, as the pattern matches them now."""
+        p, mirror = self.globbed_config()
+        self.expands_patterns("bbbbbbbbbbbb")
+        out = self.run_script("rollback.sh")
+        with open(p) as fh:
+            cfg = json.load(fh)
+        self.assertEqual(cfg["feeds"]["ebpf"]["roots"],
+                         [os.path.join(mirror, "node01"), os.path.join(mirror, "node02")])
+        self.assertEqual(cfg["feeds"]["ebpf"]["days"], 8)
+        self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
+        self.assertIn("each node's folder", out)
+
+    def test_back_to_a_release_that_reads_patterns_keeps_the_pattern(self):
+        p, mirror = self.globbed_config()
+        for sha in ("aaaaaaaaaaaa", "bbbbbbbbbbbb"):
+            self.expands_patterns(sha)
+        before = self.read(p)
+        self.run_script("rollback.sh")
+        self.assertEqual(self.read(p), before)
 
     def test_plan_and_a_named_release(self):
         out = self.run_script("rollback.sh", "--plan")

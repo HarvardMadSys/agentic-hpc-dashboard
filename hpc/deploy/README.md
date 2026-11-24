@@ -271,9 +271,12 @@ same commit) keeps the release folder as it is and replaces only the settings.
 To go back, `hpc/deploy/rollback.sh` (or `deploy/rc-deploy rollback`) moves `current` on the
 dashboard's host to the release it ran before (`releases/.history`; or name one:
 `rollback.sh <sha>`), installs that release's pinned requirements in the venv, and
-restarts the session. The settings stay as the last deploy rendered them, and the nodes
-keep their sender, which is newer than the receiver: the order deploy.sh keeps anyway. For
-good, check out the older commit and `deploy.sh --restart`.
+restarts the session. The settings stay as the last deploy rendered them, except for a
+release from before the copy was one pattern root (`data/mirror/*`): that release would read
+the pattern as a folder of that name and find no feed, so its settings name each node's
+folder, as the pattern matches them then, until the next `deploy.sh`. The nodes keep their
+sender, which is newer than the receiver: the order deploy.sh keeps anyway. For good, check
+out the older commit and `deploy.sh --restart`.
 
 ## The hourly check
 
