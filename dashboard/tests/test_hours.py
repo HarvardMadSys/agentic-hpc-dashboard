@@ -405,6 +405,46 @@ class AdvanceTest(HourCase):
         self.assertIn("reducing 0 new hour", view.cache["note"])
 
 
+class TickListTest(HourCase):
+    """The tick (`WindowRegistry.refresh`: the rebuild loop's thread, and the backfill's
+    once the tail is positioned, just as the worker starts) never lists the store. A list
+    empties the saved-hour sets before it fills them (`HourStore._sync`), and a build on
+    the worker that read them meanwhile found every hour missing, with no chain to carry
+    on from: it reduced its window's hours again from where their run began, and a
+    restarted service served figures other than the saved hours' (the e2e history
+    check, `--restart`, failed so about one run in five)."""
+
+    def test_a_restarted_build_reduces_nothing_while_the_tick_runs(self):
+        self.write(gen(NOW - 6 * HOUR + 777, NOW - 30))
+        cfg = self.cfg()
+        self.build(self.registry(cfg), 300)         # the first run saves the hours
+        reg = self.registry(cfg)                    # the restart: a store not yet listed
+        store = reg.hours
+        tick = threading.Thread(target=reg.refresh, name="tick")
+        listing, release = threading.Event(), threading.Event()
+        real = os.listdir
+
+        def listdir(path="."):
+            # the tick, listing the store: held there while the build runs
+            if threading.current_thread() is tick and os.path.abspath(path) == store.dir:
+                listing.set()
+                release.wait(30)
+            return real(path)
+
+        with mock.patch("os.listdir", listdir):
+            tick.start()
+            try:
+                while tick.is_alive() and not listing.wait(0.05):
+                    pass
+                view = self.build(reg, 300)
+            finally:
+                release.set()
+                tick.join(30)
+        self.assertEqual(store.stats["hours_reduced"], 0, view.cache["note"])
+        self.assertIn("reducing 0 new hour", view.cache["note"])
+        self.assertFalse(listing.is_set(), "the tick listed the store")
+
+
 class InterruptedBuildTest(HourCase):
     """R67: a build stopped after it saved an hour is resumed as the build that was never stopped
     would have made the window. Every hour a run saves also saves the join state it carries out of
