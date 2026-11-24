@@ -148,6 +148,22 @@ class Collect(Feed):
         self.assertEqual(self.host(doc, "h-ok")["verdict"], "ok")
         self.assertEqual(doc["level"], "ok", doc["why"])
 
+    def test_every_flat_file_is_read_for_health_however_many_hosts(self):
+        """Flat files are a host's streams, not one file a day: cut to the newest
+        `feeds.ebpf.days` of them by name, nine hosts left h0 unread, and a live
+        collector read unknown (warn). Each host's read is bounded by its bytes."""
+        shutil.rmtree(os.path.join(self.ebpf, self.day))
+        shutil.rmtree(os.path.join(self.node, self.day))       # h-ok's, read for no beat
+        hosts = ["h%d" % i for i in range(9)]
+        for h in hosts:
+            write(os.path.join(self.ebpf, "%s.snapshot.jsonl" % h),
+                  [rec("meta", self.now - 600, h),
+                   rec("residency_totals", self.now - 30, h, interval_s=60.0)])
+        doc = statusmod.collect(self.cfg(**{"feeds.ebpf.days": 8}), now=self.now, wall=self.now)
+        self.assertEqual({h: self.host(doc, h)["verdict"] for h in hosts},
+                         {h: "ok" for h in hosts})
+        self.assertEqual(doc["level"], "ok", doc["why"])
+
     def test_the_scan_stops_at_two_starts(self):
         d = os.path.join(self.ebpf, self.day)
         p = os.path.join(d, "h-ok.snapshot.jsonl")

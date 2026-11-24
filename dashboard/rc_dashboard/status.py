@@ -292,8 +292,11 @@ def scan_health(cfg, report, scan_bytes=SCAN_BYTES):
     for root in report.get("resolved") or []:
         try:
             listing = [p for _d, files in dated_dirs(root, days) for p in files]
-            # a root may also hold flat day-files, as the feed reads them (feeds.resolve_dated)
-            listing += feed_files(root)[-days:]
+            # A root may also hold flat day-files (feeds.resolve_dated): every one of them.
+            # They are hosts' streams as often as days, and cut to the newest `days` by
+            # name, a host past the eighth went unread. Each host's read stops at
+            # `scan_bytes` whatever its files.
+            listing += feed_files(root)
         except OSError:
             continue
         for p in listing:
