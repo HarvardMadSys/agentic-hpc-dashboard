@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zlib
@@ -567,6 +568,41 @@ class TestNodesAndFolders(StubRig):
         self.assertIn("RC_DASH_NODE_ROOTS=%s/node/*\n" % self.mirror, self.run_pull("roots"))
         self.assertIn("RC_DASH_NODE_ROOTS=%s/node-tier-not-pulled\n" % self.mirror,
                       self.run_pull("roots", "--per-node"))
+
+
+class TestRetire(StubRig):
+    def test_a_node_retired_while_its_rsync_starts_copies_nothing(self):
+        """A reload retiring a node while Puller.rsync() was inside Popen found no process
+        to cancel, and the transfer ran to its end, after the node had left Loop.nodes --
+        and during a remove-node --purge-copy, which it could undo."""
+        mark = os.path.join(self.tmp, "copied")
+        slow = os.path.join(self.tmp, "slow-rsync")         # copies only if let run
+        with open(slow, "w") as fh:
+            fh.write("#!/bin/sh\nsleep 1\ntouch %s\n" % mark)
+        os.chmod(slow, 0o755)
+        self.settings("n1", FLEET_RSYNC=slow)
+        p = pull.Puller(pull.load(self.conf), "n1", threading.Event())
+        starting, go, got = threading.Event(), threading.Event(), []
+        real = pull.subprocess.Popen
+
+        def held(*a, **kw):                # rsync's start, held until the retirement
+            starting.set()
+            go.wait(10)
+            return real(*a, **kw)
+        pull.subprocess.Popen = held
+        try:
+            t = threading.Thread(target=lambda: got.append(p.rsync(["n1:ebpfm/", "x"])))
+            t.start()
+            self.assertTrue(starting.wait(10))
+            p.stop.set()                   # Loop.retire
+            p.cancel()
+            go.set()
+            t.join(10)
+        finally:
+            pull.subprocess.Popen = real
+        self.assertEqual(got[0][0], -1)
+        time.sleep(1.2)
+        self.assertFalse(os.path.exists(mark), "ended when it started, not run to its end")
 
 
 class TestStatus(StubRig):

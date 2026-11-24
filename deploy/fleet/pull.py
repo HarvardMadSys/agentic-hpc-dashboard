@@ -494,9 +494,22 @@ class Puller(object):
                                  stderr=subprocess.PIPE, universal_newlines=True, env=env)
         except OSError as e:
             raise PullError("cannot run %s: %s" % (cmd[0], e.strerror or e))
+        # Published, and the stop flag read, under the lock cancel() takes: retire()
+        # sets the flag and then cancels, so either cancel() finds this process or the
+        # flag is seen here. A retirement while Popen ran once found no process to end,
+        # and the transfer ran to its end for a node no longer pulled.
         with self.lock:
             self.proc = p
+            stopped = self.stop.is_set()
         try:
+            if stopped:
+                p.terminate()
+                try:
+                    p.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.communicate()
+                return -1, "", "stopped"
             out, err = p.communicate(stdin, timeout=timeout)
         except subprocess.TimeoutExpired:
             p.kill()
