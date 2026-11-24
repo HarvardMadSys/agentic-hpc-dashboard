@@ -161,8 +161,9 @@ def site_file(args):
         if not there:
             raise Refused("no settings yet: run `rc-deploy init` first (it asks four questions)")
         path = there[0]
+    path = os.path.abspath(path)            # the kits' scripts change directory
     vals = read_env(path)
-    kit = vals.get("KIT") or ("hpc" if os.path.abspath(path) == HPC_SITE else "")
+    kit = vals.get("KIT") or ("hpc" if path == HPC_SITE else "")
     if kit not in KITS:
         raise Refused("%s says KIT=%r: one of %s" % (path, kit, ", ".join(KITS)))
     if kit == "hpc":
@@ -512,7 +513,14 @@ def cmd_remove_node(args):
         say("%s taken out of SOURCE_NODES in %s" % (name, path))
         run([kit_script(kit, "deploy.sh")], env={"SITE_ENV": path})
         if args.purge_copy:
-            run(["ssh", vals["DASH_SSH"], "rm -rf %s/data/mirror/%s" % (vals["DASH_ROOT"], name)])
+            copy = "%s/data/mirror/%s" % (vals["DASH_ROOT"], name)
+            rc = run(_hpc_ssh(vals) + [vals["DASH_SSH"], "rm -rf %s" % shlex.quote(copy)],
+                     check=False)
+            if rc != 0:
+                # A retry would be refused, the node being no longer listed: say the rest.
+                raise Refused("%s is out of SOURCE_NODES and deployed without it, but its copy "
+                              "could not be removed (ssh ended with exit %d): remove %s on %s "
+                              "by hand" % (name, rc, copy, vals["DASH_SSH"]))
         say("on %s, take the stream key's line out of %s's ~/.ssh/authorized_keys if its home is "
             "its own" % (name, vals.get("SOURCE_USER")))
         return 0
@@ -552,6 +560,14 @@ def cmd_password(args):
     return run([os.path.join(HERE, "common", "password.sh")] + extra)
 
 
+def _hpc_ssh(vals):
+    """ssh to the dashboard's host as hpc/deploy/deploy.sh does: with the kit's key
+    (SSH_KEY), offering nothing else, never asking."""
+    key = os.path.expanduser(vals.get("SSH_KEY") or "~/.ssh/id_ed25519")
+    return ["ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=20", "-o", "LogLevel=ERROR"]
+
+
 def cmd_status(args):
     kit, path, vals = site_file(args)
     if kit == "hpc":
@@ -560,9 +576,7 @@ def cmd_status(args):
                   "RC_DASH_TRANSPORT_FILES=%s/data/state/status.json %s/venv/bin/python -m rc_dashboard "
                   "status; rc=$?; echo; /usr/bin/python3 %s/current/hpc/fleet/fleet_stream.py status "
                   "--base %s/data; exit $rc" % (r, r, r, r, r, r))
-        key = os.path.expanduser(vals.get("SSH_KEY") or "~/.ssh/id_ed25519")
-        return run(["ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
-                    vals["DASH_SSH"], remote], check=False)
+        return run(_hpc_ssh(vals) + [vals["DASH_SSH"], remote], check=False)
     need_root("status")
     return run([os.path.join(HERE, "common", "check.sh"), "--print"], check=False)
 

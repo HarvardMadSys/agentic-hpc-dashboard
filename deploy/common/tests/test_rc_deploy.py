@@ -277,6 +277,39 @@ class TestNodes(Rig):
             fh.write("SOURCE_USER=$(whoami)\n")
         self.assertIn("no $( ) or backquotes", self.tool("status", code=1))
 
+    def test_an_hpc_purge_reaches_the_host_as_deploy_sh_does(self):
+        """remove-node --purge-copy ssh'd to the dashboard's host without the kit's key:
+        with no agent holding it, the purge failed after SOURCE_NODES had changed, and a
+        retry was refused, the node being no longer listed."""
+        os.unlink(self.site)
+        self.tool("init", "--yes", "--set", "NODES=login01", "--set", "ROOT_ON_NODES=no",
+                  "--set", "ROOT_ON_DASHBOARD=no", "--set", "DASH_SSH=alice@dash",
+                  "--set", "DASH_ROOT=/data/rc")
+        self.tool("add-node", "login02")
+        with open(self.site, "a") as fh:
+            fh.write("SSH_KEY=$HOME/.ssh/id_test\n")
+        out = self.tool("remove-node", "login01", "--purge-copy", HOME="/home/tester")
+        self.assertIn("RUN ssh -i /home/tester/.ssh/id_test -o IdentitiesOnly=yes -o BatchMode=yes "
+                      "-o ConnectTimeout=20 -o LogLevel=ERROR alice@dash "
+                      "'rm -rf /data/rc/data/mirror/login01'", out)
+
+    def test_a_relative_site_file_reaches_the_kit_whole(self):
+        """The kit's scripts change directory: rc-deploy hands them the settings file's
+        full path, whatever --site was given as."""
+        os.unlink(self.site)
+        self.tool("init", "--yes", "--set", "NODES=login01", "--set", "ROOT_ON_NODES=no",
+                  "--set", "ROOT_ON_DASHBOARD=no", "--set", "DASH_SSH=alice@dash",
+                  "--set", "DASH_ROOT=/data/rc")
+        e = dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"], STUB_LOG=self.log,
+                 INSTALL_ENV=self.install_env, RC_DEPLOY_AS_ROOT="1", RC_DEPLOY_ECHO="1",
+                 RC_DEPLOY_HISTORY=os.path.join(self.tmp, "history"), USER="alice")
+        p = subprocess.run([sys.executable, TOOL, "--site", os.path.basename(self.site),
+                            "add-node", "login02"], cwd=os.path.dirname(self.site), env=e,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           universal_newlines=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("RUN SITE_ENV=%s " % self.site, p.stdout)
+
     def test_hpc_nodes_go_into_site_env(self):
         os.unlink(self.site)
         self.tool("init", "--yes", "--set", "NODES=login01", "--set", "ROOT_ON_NODES=no",
