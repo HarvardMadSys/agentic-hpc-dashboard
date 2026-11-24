@@ -39,6 +39,9 @@ done
 # the default file's settings in place of the one asked for.
 site=${SITE_ENV:-$here/site.env}
 [ -f "$site" ] || { echo "deploy.sh: no $site: copy site.env.example there and fill it in (or deploy/rc-deploy init)" >&2; exit 2; }
+# Its full path: this script changes to the checkout below, and render.py and the scripts
+# after it read the file from there.
+site=$(cd "$(dirname "$site")" && pwd)/$(basename "$site")
 # shellcheck source=/dev/null
 . "$site"
 # render.py checks the keys it renders; these two are this script's own, and SSH_KEY is

@@ -291,6 +291,20 @@ class TestDeployPlan(Rig):
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         self.assertEqual(p.returncode, 0, "the kit needs no site.env of its own: " + p.stdout)
 
+    def test_plan_reads_a_settings_file_named_relative_to_where_it_ran(self):
+        """deploy.sh changes to the checkout after reading SITE_ENV: a relative path, read
+        once, then missed by render.py and every script after it."""
+        repo = self.checkout()
+        os.unlink(os.path.join(repo, "hpc", "deploy", "site.env"))
+        p = subprocess.run(["bash", os.path.join(repo, "hpc", "deploy", "deploy.sh"), "--plan"],
+                           cwd=os.path.dirname(self.site),
+                           env=dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"],
+                                    HOME=self.home, STUB_LOG=self.log,
+                                    SITE_ENV=os.path.basename(self.site)),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("site.env renders: 2 node(s)", p.stdout)
+
     def test_plan_refuses_the_examples_values(self):
         repo = self.checkout()
         shutil.copy(os.path.join(KIT, "site.env.example"), os.path.join(repo, "hpc", "deploy", "site.env"))
