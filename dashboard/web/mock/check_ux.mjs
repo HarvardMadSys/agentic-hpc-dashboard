@@ -110,6 +110,17 @@ test('no feed holds a record: the setup screen, which names every folder it look
   assert.match(app, /live\.transport === 'ws' && !empty \? '' : ' off'/);
 });
 
+test('the popped-out tree reads times in the service’s zone, as the dashboard does', async () => {
+  // main.tsx renders TreePopout in place of App for a pop-out URL: the zone is set by a
+  // hook both call, and each draws again once it is known
+  const src = (f) => readFileSync(fileURLToPath(new URL('../src/' + f, import.meta.url)), 'utf8');
+  for (const f of ['App.tsx', 'tabs/TreePopout.tsx']) {
+    assert.match(src(f), /const tzKey = useServiceZone\(config\.data/, f);
+  }
+  assert.match(src('tabs/TreePopout.tsx'), /<div className="tp" key=\{tzKey\}>/);
+  assert.match(src('main.tsx'), /<TreePopout \/>/);
+});
+
 test('a password in a hash file is a password: the rail offers to sign out', async () => {
   const A = await ui.load('lib/auth.ts');
   const auth = (hash, file) => ({ server: { auth: { password_hash: { _value: hash }, password_hash_file: { _value: file } } } });

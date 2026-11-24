@@ -51,11 +51,11 @@ import { TabBoundary, lazyTab, preloadTabs } from './lib/lazyTab';
 import { NodeNounCtx, nodeWords } from './lib/nodes';
 import { feedLabel } from './lib/feeds';
 import { table } from './lib/lookup';
-import { setZone, zoneLabel } from './lib/zone';
+import { zoneLabel } from './lib/zone';
+import { useServiceZone } from './lib/useZone';
 import { SetupScreen, noData } from './components/SetupScreen';
 import { asksPassword } from './lib/auth';
 import { AskDrawer } from './components/AskDrawer';
-import type { ZoneInfo } from './lib/zone';
 
 /* Live is the first paint, with the shell; every other tab loads its code
  * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). The sessions
@@ -420,9 +420,7 @@ export default function App() {
   // Every time on the page is in the service's zone (lib/zone.ts), which the
   // config names; set before the tabs draw, and they are drawn again once it is
   // known (their key), since what they drew before was in the browser's zone.
-  const tzInfo = (meta?.tz?._value ?? null) as ZoneInfo | null;
-  const tzKey = tzInfo ? `${tzInfo.name ?? ''}|${tzInfo.utc_offset_s ?? ''}` : '';
-  useMemo(() => setZone(tzInfo), [tzKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const tzKey = useServiceZone(config.data as Record<string, unknown> | null | undefined);
   const zl = zoneLabel();
   useEffect(() => {
     document.title = siteName ? `${siteName} · Agent Observatory` : 'Agent Observatory';
