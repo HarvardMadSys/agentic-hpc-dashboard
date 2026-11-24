@@ -67,7 +67,8 @@ sudo deploy/rc-deploy remove-node node09                              # its copy
 ```
 
 `add-node` checks the line with `pull.py` first (a line it would refuse leaves `fleet.env`
-as it was), adds `FLEET_HOSTS+=" ..."` to `fleet.env`, and reloads `rc-pull`
+as it was), adds `FLEET_HOSTS+=" ..."` to `fleet.env` (a node named at `init`, a bare name
+with the default folders, is completed by its line instead), and reloads `rc-pull`
 (`systemctl reload rc-pull`: SIGHUP). The new node is copied within a minute, and the
 dashboard, which reads the copy through a glob (`RC_DASH_EBPF_ROOTS=.../mirror/ebpf/*`,
 expanded again at every rescan), shows it with no restart, so nothing refills its history.

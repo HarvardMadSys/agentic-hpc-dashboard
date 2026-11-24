@@ -438,26 +438,40 @@ def cmd_add_node(args):
     if not os.path.exists(fleet_env):
         raise Refused("no %s: run `rc-deploy apply` first" % fleet_env)
     current = read_env(fleet_env).get("FLEET_HOSTS", "").split()
-    if name in [_entry_name(e) for e in current]:
-        raise Refused("%s is in FLEET_HOSTS already" % name)
+    mine = [e for e in current if _entry_name(e) == name]
+    # A bare name -- as init's NODES puts it, with the default folders -- is completed
+    # by the line the node's install prints, which apply says to add; an entry with its
+    # own target or folders stays as it is.
+    completing = mine == [name] and entry != name
+    if mine and not completing:
+        raise Refused("%s is in FLEET_HOSTS already%s" % (
+            name, "" if mine == [entry] else
+            ", as %s: remove-node it first to change it" % " ".join(mine)))
     # The line, checked before it goes in: pull.py reads a copy with it.
-    with open(fleet_env) as fh:
-        text = fh.read()
+    if completing:
+        text = _drop_entry(fleet_env, name)
+    else:
+        with open(fleet_env) as fh:
+            text = fh.read()
     line = 'FLEET_HOSTS+=" %s"\n' % entry
+    text = text.rstrip("\n") + "\n" + line
     fd, tmp = tempfile.mkstemp(prefix="fleet.env.")
     with os.fdopen(fd, "w") as fh:
-        fh.write(text.rstrip("\n") + "\n" + line)
+        fh.write(text)
     try:
         if _pull(tmp, opt, "check") != 0:
             raise Refused("pull.py refuses %r (above): fleet.env is as it was" % entry)
     finally:
         os.unlink(tmp)
     if os.environ.get("RC_DEPLOY_ECHO"):
-        sys.stdout.write("RUN append %s" % line)
+        sys.stdout.write("RUN rewrite %s\n%s" % (fleet_env, text) if completing
+                         else "RUN append %s" % line)
+    elif completing:
+        write(fleet_env, text)
     else:
         with open(fleet_env, "a") as fh:
             fh.write(line)
-    say("%s added to %s" % (name, fleet_env))
+    say("%s %s %s" % (name, "completed in" if completing else "added to", fleet_env))
     if run(["systemctl", "is-active", "--quiet", "rc-pull.service"], check=False) == 0:
         run(["systemctl", "reload", "rc-pull.service"])
     else:

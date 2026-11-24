@@ -178,6 +178,24 @@ class TestNodes(Rig):
         self.assertNotIn("restart", calls)
         self.assertIn("no restart", out)
 
+    def test_a_node_named_at_init_is_completed_by_its_installed_line(self):
+        """init's NODES puts bare names in FLEET_HOSTS (the default folders), and apply says
+        to add-node the line each node's install prints: refused, as a name already there,
+        so a node with other folders could not be set up. A bare entry is completed by it;
+        an entry with its own target or folders stays as it is."""
+        full = "n1=n1.example.org:ebpfm:ebpfm-login"
+        out = self.tool("add-node", full, echo=False)
+        self.assertIn("completed", out)
+        text = self.read()
+        self.assertIn('FLEET_HOSTS+=" %s"\n' % full, text)
+        self.assertNotRegex(text, r'FLEET_HOSTS="[^"]*\bn1\b', "the bare entry is gone")
+        self.assertIn("# the nodes\n", text)
+        with open(self.log) as fh:
+            self.assertIn("systemctl reload rc-pull.service", fh.read())
+        out = self.tool("add-node", "n1=other.example.org:ebpfm:", code=1, echo=False)
+        self.assertIn("as %s" % full, out)
+        self.assertIn('FLEET_HOSTS+=" %s"\n' % full, self.read())
+
     def test_a_line_pull_refuses_leaves_the_file_as_it_was(self):
         before = self.read()
         self.tool("add-node", "n2=host:-x", code=1, echo=False)
