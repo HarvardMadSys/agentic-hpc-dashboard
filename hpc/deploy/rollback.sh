@@ -7,10 +7,11 @@
 # into the venv, and the session restarts (the dashboard refills its history). Each
 # install-remote.sh notes its release in DASH_ROOT/releases/.history, which says which one
 # came before. The settings stay as the last deploy rendered them, but for a release that
-# reads no pattern root: its settings name each node's folder in place of the copy's
-# pattern. The nodes keep their sender: a sender newer than the receiver is the order
-# deploy.sh keeps anyway. To go back for good, check out the older commit and run
-# deploy.sh --restart.
+# reads no pattern root, whose settings name each node's folder in place of the copy's
+# pattern, and for one from before the password's hash file, whose etc/auth.env holds the
+# hash in etc/password.hash again. The nodes keep their sender: a sender newer than the
+# receiver is the order deploy.sh keeps anyway. To go back for good, check out the older
+# commit and run deploy.sh --restart.
 # --plan prints the release it would go back to, and changes nothing.
 set -euo pipefail
 umask 077
@@ -88,6 +89,29 @@ if out != roots:
     print("that release reads no pattern root: the settings name each node's folder (%d) "
           "until the next deploy.sh" % len(out))
 PY
+fi
+# A release from before the hash file reads the password from etc/auth.env alone (its
+# keep-running.sh, and its start check: RC_DASH_PASSWORD_HASH there), where password.sh
+# has commented it out for etc/password.hash: it would not start. auth.env gets the hash
+# in that file again, on a line of its own; a later release reads the file first.
+if [ -s "$R/etc/password.hash" ] && \
+   ! grep -qs 'password\.hash' "$R/releases/$want/hpc/deploy/keep-running.sh" && \
+   ! grep -qs '^RC_DASH_PASSWORD_HASH=..' "$R/etc/auth.env"; then
+  h=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "$R/etc/password.hash" \
+      | grep -v -e '^#' -e '^$' | head -n 1 | tr -d "\"'")
+  case $h in
+    scrypt\$*)
+      {
+        if [ -s "$R/etc/auth.env" ]; then
+          cat "$R/etc/auth.env"
+          [ -z "$(tail -c 1 "$R/etc/auth.env")" ] || echo
+        fi
+        printf 'RC_DASH_PASSWORD_HASH=%s\n' "$h"
+      } > "$R/etc/.auth.env.new"
+      chmod 600 "$R/etc/.auth.env.new"
+      mv -f "$R/etc/.auth.env.new" "$R/etc/auth.env"
+      echo "that release reads no password.hash: etc/auth.env holds its hash again" ;;
+  esac
 fi
 ln -sfn "releases/$want" "$R/current.new"
 mv -T "$R/current.new" "$R/current"

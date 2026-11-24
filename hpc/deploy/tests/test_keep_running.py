@@ -334,6 +334,19 @@ class TestSettings(Rig):
         r = self.report("stream")
         self.assertEqual((r["file"], r["transport"]), ("none", "none"))
 
+    def test_the_hash_file_wins_over_a_hash_left_in_auth_env(self):
+        """A rollback to a release from before the hash file puts the hash back in
+        auth.env (rollback.sh), beside etc/password.hash. A later release handed the
+        dashboard both, which it refuses, and every start failed: the file is the
+        password, as the start check reads it (check-local.sh)."""
+        with open(os.path.join(self.etc, "password.hash"), "w") as fh:
+            fh.write(HASH + "\n")
+        report = ('echo "cfg=x|file=${RC_DASH_PASSWORD_HASH_FILE:-none}'
+                  '|hash=${RC_DASH_PASSWORD_HASH:-none}"; exit 3')
+        self.run_loop("dashboard", report)       # auth.env holds RC_DASH_PASSWORD_HASH (Rig)
+        r = self.report("dashboard")
+        self.assertEqual((r["file"], r["hash"]), (os.path.join(self.etc, "password.hash"), "none"))
+
     def test_child_has_a_session_of_its_own(self):
         """Ctrl-C and the hang-up when tmux goes away reach the loop, never the process."""
         self.run_loop("stream", self.REPORT)

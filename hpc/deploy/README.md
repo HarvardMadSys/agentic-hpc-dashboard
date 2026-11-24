@@ -107,7 +107,7 @@ renders with `--strict`, which also refuses a value still the example's own
    again whenever it changes. Nothing to paste. A hash in `etc/auth.env`
    (`RC_DASH_PASSWORD_HASH=...`), as earlier versions of this page said, still works, quotes
    or none; `password.sh` comments it out when it puts the hash file in place, and restarts
-   the dashboard once to read the file.
+   the dashboard once to read the file. Where both are there, the hash file is the one read.
 5. Optional, to spare the nodes' network: if the nodes' sealed days are already in a
    folder the dashboard's host can read, as `<folder>/<node>/<day>/*.jsonl.gz`, seed the
    copy from it before the first start, from a checkout of this repository on the host:
@@ -278,7 +278,10 @@ dashboard's host to the release it ran before (`releases/.history`; or name one:
 restarts the session. The settings stay as the last deploy rendered them, except for a
 release from before the copy was one pattern root (`data/mirror/*`): that release would read
 the pattern as a folder of that name and find no feed, so its settings name each node's
-folder, as the pattern matches them then, until the next `deploy.sh`. The nodes keep their
+folder, as the pattern matches them then, until the next `deploy.sh`; and a release from
+before the password's hash file, which reads the password from `etc/auth.env` alone, finds
+the hash in `etc/password.hash` there again (a later release reads the file first, and
+leaves that line be). The nodes keep their
 sender, which is newer than the receiver: the order deploy.sh keeps anyway. For good, check
 out the older commit and `deploy.sh --restart`.
 

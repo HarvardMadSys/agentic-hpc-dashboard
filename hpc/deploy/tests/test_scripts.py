@@ -4,6 +4,7 @@ temporary deployment folder, and uv, systemctl, crontab and the venv's Python st
 that log their calls."""
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -221,6 +222,48 @@ class TestRollback(Rig):
         p, mirror = self.globbed_config()
         for sha in ("aaaaaaaaaaaa", "bbbbbbbbbbbb"):
             self.expands_patterns(sha)
+        before = self.read(p)
+        self.run_script("rollback.sh")
+        self.assertEqual(self.read(p), before)
+
+    HASH = "scrypt$16384$8$1$c2FsdHNhbHQ=$aGFzaGhhc2g="
+
+    def moved_hash(self):
+        """The password as password.sh leaves it: the hash in etc/password.hash, the line
+        that held it in auth.env commented out."""
+        etc = os.path.join(self.root, "etc")
+        with open(os.path.join(etc, "password.hash"), "w") as fh:
+            fh.write(self.HASH + "\n")
+        p = os.path.join(etc, "auth.env")
+        with open(p, "w") as fh:          # no newline at its end
+            fh.write("# replaced by password.hash: RC_DASH_PASSWORD_HASH=scrypt$old\n"
+                     "RC_DASH_ASK=0")
+        os.chmod(p, 0o600)
+        return p
+
+    def reads_the_hash_file(self, sha):
+        d = os.path.join(self.root, "releases", sha, "hpc", "deploy")
+        os.makedirs(d)
+        with open(os.path.join(d, "keep-running.sh"), "w") as fh:
+            fh.write('[ -s "$ETC/password.hash" ] && export RC_DASH_PASSWORD_HASH_FILE\n')
+
+    def test_back_to_a_release_before_the_hash_file_puts_the_hash_back(self):
+        """A release from before the hash file reads the password from auth.env alone, and
+        its start check wants RC_DASH_PASSWORD_HASH there (exit 15): after password.sh had
+        moved the hash into password.hash, it would not start at all."""
+        p = self.moved_hash()
+        self.reads_the_hash_file("bbbbbbbbbbbb")
+        out = self.run_script("rollback.sh")
+        text = self.read(p)
+        self.assertIn("RC_DASH_ASK=0\nRC_DASH_PASSWORD_HASH=%s\n" % self.HASH, text)
+        self.assertEqual(len(re.findall(r"(?m)^RC_DASH_PASSWORD_HASH=..", text)), 1)  # its check
+        self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
+        self.assertIn("auth.env holds its hash again", out)
+
+    def test_back_to_a_release_that_reads_the_hash_file_leaves_auth_env(self):
+        p = self.moved_hash()
+        for sha in ("aaaaaaaaaaaa", "bbbbbbbbbbbb"):
+            self.reads_the_hash_file(sha)
         before = self.read(p)
         self.run_script("rollback.sh")
         self.assertEqual(self.read(p), before)

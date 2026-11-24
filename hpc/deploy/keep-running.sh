@@ -140,6 +140,10 @@ load_auth() {
   # again when it changes, so a new password needs no restart.
   if [ -z "${RC_DASH_PASSWORD_HASH_FILE:-}" ] && [ -s "$ETC/password.hash" ]; then
     export RC_DASH_PASSWORD_HASH_FILE="$ETC/password.hash"
+    # The file is the password, as the start check reads it (check-local.sh): a hash
+    # left in auth.env beside it (rollback.sh puts one back for a release from before
+    # the hash file) is not handed on too, which the dashboard refuses.
+    unset RC_DASH_PASSWORD_HASH
   fi
 }
 
