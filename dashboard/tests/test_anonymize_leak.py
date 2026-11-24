@@ -137,6 +137,12 @@ class Served(unittest.TestCase):
         with open(os.path.join(root, DAY, "h1.exits.jsonl"), "wb") as fh:
             for r in cls.records(now):
                 fh.write(line(r))
+        # A host whose name holds a user's: every route that names hosts masks it --
+        # /metrics once formatted the raw status document, and showed it.
+        with open(os.path.join(root, DAY, "alice-ws.snapshot.jsonl"), "wb") as fh:
+            for ev, t in (("meta", now - 600), ("residency_totals", now - 60)):
+                fh.write(line({"schema_version": 8, "event": ev, "ts": stamp(t), "ts_epoch": t,
+                               "host": "alice-ws", "collector_pid": 7, "interval_s": 60.0}))
         tree = configmod.defaults()
         tree["feeds"]["ebpf"]["roots"] = [root]
         tree["feeds"]["ebpf_node"]["roots"] = [os.path.join(cls.tmp, "node")]
@@ -258,7 +264,8 @@ class LeakTest(Served):
             seen.append(path)
         for must in ("/api/panels", "/api/live", "/api/trajectories", "/api/trajectory",
                      "/api/live/users", "/api/live/user", "/api/users", "/api/user",
-                     "/api/config", "/api/feeds", "/api/health", "/api/windows"):
+                     "/api/config", "/api/feeds", "/api/health", "/api/windows",
+                     "/api/status", "/metrics"):
             self.assertIn(must, seen)
 
     def test_a_portrait_takes_an_alias_and_a_real_name_finds_nobody(self):

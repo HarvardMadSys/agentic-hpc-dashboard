@@ -7,6 +7,7 @@ receiver.
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -329,12 +330,15 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class Service(Feed):
-    """The real app over the feed, behind a password in a hash file: /api/status,
-    /metrics, /api/collectors' transport, /api/config's _meta, /api/feeds'
-    candidates, and a new hash taken up with no restart."""
+class ServiceRig(Feed):
+    """The real app over the feed, behind a password in a hash file. `EXTRA` adds to
+    its settings, and `before_app` writes to the feed before it is read."""
 
     PASSWORD = "Status-pw:1"
+    EXTRA = {}
+
+    def before_app(self):
+        pass
 
     def setUp(self):
         super().setUp()
@@ -356,10 +360,13 @@ class Service(Feed):
         with open(os.path.join(mirror, "h-ok.json"), "w") as fh:
             json.dump({"host": "h-ok", "ok": False, "ok_epoch": self.now - 60,
                        "attempt_epoch": self.now - 5, "error": "rsync: connection unexpectedly closed"}, fh)
-        cfg = self.cfg(**{"server.auth.password_hash_file": self.hash_file,
-                          "server.port": self.port, "server.static_dir": os.path.join(self.tmp, "ui"),
-                          "panels.prewarm_min": [], "site.name": "",
-                          "status.transport_files": [os.path.join(mirror, "*.json")]})
+        self.before_app()
+        cfg = self.cfg(**dict({"server.auth.password_hash_file": self.hash_file,
+                               "server.port": self.port,
+                               "server.static_dir": os.path.join(self.tmp, "ui"),
+                               "panels.prewarm_min": [], "site.name": "",
+                               "status.transport_files": [os.path.join(mirror, "*.json")]},
+                              **self.EXTRA))
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             self.app = appmod.create_app(cfg)
@@ -392,6 +399,12 @@ class Service(Feed):
             return r.status, {k.lower(): v for k, v in r.getheaders()}, r.read()
         finally:
             c.close()
+
+
+
+class Service(ServiceRig):
+    """/api/status, /metrics, /api/collectors' transport, /api/config's _meta,
+    /api/feeds' candidates, and a new hash taken up with no restart."""
 
     def test_status_and_metrics_want_the_password(self):
         for path in ("/api/status", "/metrics"):
@@ -463,3 +476,29 @@ class Service(Feed):
         with redirect_stderr(err):
             self.assertEqual(sign_in("New-pw:2")[0], 303)
         self.assertIn("stays as it was", err.getvalue())
+
+
+class AnonymizedService(ServiceRig):
+    """Names masked (anonymize.enabled): /metrics carries the aliases /api/status does.
+    It formatted the raw status document, so a host holding a user's name showed it."""
+
+    EXTRA = {"anonymize.enabled": True}
+
+    def before_app(self):
+        # a user whose name is in a host's: `silent`, in h-silent
+        write(os.path.join(self.ebpf, self.day, "h-ok.exits.jsonl"),
+              [rec("exit", self.now - 30, "h-ok", user="silent", uid=4321)])
+
+    def test_metrics_mask_names_as_the_status_does(self):
+        status, _, body = self.req("/api/status", self.basic)
+        self.assertEqual(status, 200, body)
+        hosts = {h["host"] for h in json.loads(body)["hosts"]}
+        self.assertNotIn("h-silent", hosts, "the status masks the name in the host")
+        status, _, body = self.req("/metrics", self.basic)
+        self.assertEqual(status, 200)
+        text = body.decode()
+        self.assertNotIn("silent", text.replace('verdict="silent"', ""))
+        labels = set(re.findall(r'host="([^"]+)"', text))
+        self.assertTrue(labels)
+        self.assertLessEqual(labels, hosts)
+

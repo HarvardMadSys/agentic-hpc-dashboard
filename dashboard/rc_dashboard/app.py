@@ -688,7 +688,11 @@ def create_app(cfg):
         """The same numbers in Prometheus' text format, behind the same sign-in
         (a scraper sends the password as HTTP Basic auth)."""
         from . import about
-        body = statusmod.metrics(status_doc(stale), version=about.version())
+        doc = status_doc(stale)
+        if anon is not None:
+            # masked as /api/status masks it (respond()): a host's name may hold a user's
+            doc = anon.payload(doc)
+        body = statusmod.metrics(doc, version=about.version())
         return Response(body, media_type="text/plain; version=0.0.4; charset=utf-8",
                         headers={"cache-control": "no-store"})
 
