@@ -71,7 +71,8 @@ checks every value first, naming the key of a bad number, and `deploy.sh` its ow
 so a bad `site.env` stops a deploy before anything is shipped. bash reads the file too
 (`deploy.sh`, `ship-sender.sh`, `check.sh` source it), so render.py refuses a line the two
 would read differently: a value with blanks and no quotes (`SOURCE_NODES=a b`: bash runs
-`b`), or one with `$( )` or backquotes. A key it does not know is named, with the one it is
+`b`), or one with `$( )` or backquotes outside single quotes, which bash takes as they are
+(`rc-deploy init` writes a value with `"`, `$`, `` ` `` or `\` in them so). A key it does not know is named, with the one it is
 nearest to (`HISTORY_DAY` is not a setting: did you mean `HISTORY_DAYS`?). `deploy.sh`
 renders with `--strict`, which also refuses a value still the example's own
 (`your-account`, `*.example.org`).

@@ -74,15 +74,16 @@ def parse_env(path, overrides, warn=None):
             continue
         v = v.strip()
         quoted = len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'"
+        single = quoted and v[0] == "'"      # bash takes it as it is: nothing runs, nothing expands
         if quoted:
             v = v[1:-1]
         elif re.search(r"\s", v):
             raise ValueError("%s:%d: %s's value has blanks and no quotes, so bash runs its second "
                              "word as a command: write %s=\"%s\"" % (path, n, k, k, v))
-        if "$(" in v or "`" in v:
+        if not single and ("$(" in v or "`" in v):
             raise ValueError("%s:%d: %s: no $( ) or backquotes: bash runs them when it reads "
                              "site.env, and this kit does not" % (path, n, k))
-        vals[k] = expand(v) if not (quoted and line.split("=", 1)[1].strip()[0] == "'") else v
+        vals[k] = v if single else expand(v)
     for k, v in overrides.items():
         vals.setdefault(k, v)
     for alias, key in ALIASES.items():

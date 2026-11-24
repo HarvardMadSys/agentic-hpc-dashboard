@@ -87,8 +87,25 @@ def read_env(path):
     return vals
 
 
-def quote(v):
-    return '"%s"' % v if re.search(r"\s", v) else v
+# What a value may be written bare as: bash (`. site.env`), render.py's parse_env and
+# read_env all read these characters as themselves.
+BARE = re.compile(r"[A-Za-z0-9_./:@%+,=-]*\Z")
+
+
+def quote(v, key="a value"):
+    """`v` as a settings file holds it, read back as it is by bash, render.py's
+    parse_env and read_env alike: bare when plain, in double quotes when it holds none
+    of " $ ` \\, else in single quotes. One holding both a ' and one of those has no
+    quoting all three read alike, and is refused. Written bare, O'Reilly was an
+    unmatched quote that stopped the next apply, and a ` or $( ran when bash read it."""
+    if BARE.match(v):
+        return v
+    if not re.search(r'["$`\\]', v):
+        return '"%s"' % v
+    if "'" not in v:
+        return "'%s'" % v
+    raise Refused("%s=%s holds both a ' and one of \" $ ` \\, which no quoting keeps as it is "
+                  "for every reader of the settings file: leave one of them out" % (key, v))
 
 
 def set_line(path, key, value, head=None):
@@ -104,12 +121,12 @@ def set_line(path, key, value, head=None):
     for line in lines:
         if line.startswith(key + "=") or line.startswith(key + "+="):
             if not done:
-                out.append("%s=%s" % (key, quote(value)))
+                out.append("%s=%s" % (key, quote(value, key)))
                 done = True
             continue
         out.append(line)
     if not done:
-        out.append("%s=%s" % (key, quote(value)))
+        out.append("%s=%s" % (key, quote(value, key)))
     write(path, "\n".join(out) + "\n")
 
 
@@ -340,6 +357,8 @@ def cmd_init(args):
         if not os.path.exists(path):
             with open(HPC_EXAMPLE) as fh:
                 head = fh.read()
+    for k, v in settings:
+        quote(v, k)                      # a value no quoting keeps: refused before any write
     if os.path.exists(path) and not args.force:
         say("%s exists: the answers are set in it, and its other lines stay" % path)
     for k, v in settings:

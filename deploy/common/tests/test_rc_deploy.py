@@ -2,6 +2,7 @@
 each command handed to its kit's scripts. RC_DEPLOY_ECHO=1 shows the kit's command
 instead of running it; the settings files, install.env and fleet.env are temporary, and
 systemctl is a stand-in that logs its calls."""
+import json
 import os
 import re
 import shutil
@@ -100,6 +101,41 @@ class TestInit(Rig):
                             "--strict", os.path.join(REPO, "hpc", "deploy", "stream.json.in"), self.site],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_a_site_name_reads_back_as_given_by_every_reader(self):
+        """init wrote SITE_NAME=O'Reilly, an unmatched quote: the next apply, which sources
+        site.env under set -e, failed, and a name with " or $ in it came back changed.
+        Each value is written so bash, render.py and rc-deploy itself read it back as it
+        was given; one no quoting keeps for all three is refused, naming it."""
+        given = {"SITE_NAME": "O'Reilly's cluster",
+                 "SITE_DESCRIPTION": 'the "big" $HOME one, `x` \\ $(y)'}
+        sets = []
+        for k, v in sorted(given.items()):
+            sets += ["--set", "%s=%s" % (k, v)]
+        self.tool("init", "--set", "NODES=login01", "--set", "ROOT_ON_NODES=no",
+                  "--set", "ROOT_ON_DASHBOARD=no", "--set", "DASH_SSH=alice@dash",
+                  "--set", "DASH_ROOT=/data/rc", "--yes", *sets)
+        p = subprocess.run(["bash", "-c", 'set -e; . "$1"; printf "%s\\n%s" "$SITE_NAME" '
+                            '"$SITE_DESCRIPTION"', "-", self.site],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout, "%s\n%s" % (given["SITE_NAME"], given["SITE_DESCRIPTION"]))
+        code = ("import importlib.machinery, json, sys\n"
+                "sys.path.insert(0, sys.argv[2])\n"
+                "import render\n"
+                "rc = importlib.machinery.SourceFileLoader('rc', sys.argv[1]).load_module()\n"
+                "a, b = render.parse_env(sys.argv[3], {}), rc.read_env(sys.argv[3])\n"
+                "print(json.dumps([{k: d[k] for k in ('SITE_NAME', 'SITE_DESCRIPTION')}"
+                " for d in (a, b)]))\n")
+        p = subprocess.run([sys.executable, "-c", code, TOOL,
+                            os.path.join(REPO, "hpc", "deploy"), self.site],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(json.loads(p.stdout), [given, given])
+        os.unlink(self.site)
+        out = self.tool("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes",
+                        "--set", "SITE_NAME=it's $5", code=1)
+        self.assertIn("SITE_NAME", out)
 
     def test_questions_on_stdin(self):
         out = self.tool("init", stdin="maybe\nyes\nn1 n2\nyes\nyes\n\n")
