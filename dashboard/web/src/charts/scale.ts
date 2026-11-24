@@ -79,7 +79,10 @@ export function timeTicks(x0: number, x1: number, target = 7): number[] {
   else d.setUTCHours(0, Math.ceil((d.getUTCHours() * 60 + d.getUTCMinutes()) / step) * step);
   const out: number[] = [];
   for (let e = zinstant(d) / 1000; e <= x1; e = zinstant(d) / 1000) {
-    if (e >= x0) out.push(e);
+    // A wall time the zone springs over is no tick: it reads as the time past the
+    // change (`zinstant`), which the stepping reaches as itself, so each tick is
+    // later than the one before.
+    if (e >= x0 && zdate(e * 1000).getTime() === d.getTime()) out.push(e);
     if (step >= 1440) d.setUTCDate(d.getUTCDate() + step / 1440);
     else d.setUTCMinutes(d.getUTCMinutes() + step);
   }

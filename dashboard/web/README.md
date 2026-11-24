@@ -271,7 +271,9 @@ Below 900px the top bar names the tab, so the head shows the pills alone.
 formats some times itself, in its local zone, and the page formats the rest from epochs through
 `src/lib/zone.ts`, so the two agree on one screen; drawn in the browser's zone they disagreed as
 soon as reader and cluster were in different zones. A service that does not say leaves the
-browser's zone, and the pill says that instead.
+browser's zone, and the pill says that instead. A time axis ticks that zone's round wall-clock
+times: across daylight saving it has no tick in the hour the clock springs over, and one per time
+in the hour it falls back over (`mock/check_charts.mjs`).
 
 **Go to** (`src/components/CommandPalette.tsx`), opened with Ctrl+K or Cmd+K anywhere, or `/`
 outside a field: type to reach a tab, a section of the open tab, a window preset, or an

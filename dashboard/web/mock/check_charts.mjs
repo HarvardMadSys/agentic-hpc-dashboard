@@ -14,7 +14,8 @@
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { axisFmt, niceTicks, tickTarget, timeTicks } from '../src/charts/scale.ts';
+import { axisFmt, clockLabel, niceTicks, tickTarget, timeTicks } from '../src/charts/scale.ts';
+import { setZone, zdate, zinstant } from '../src/lib/zone.ts';
 import { rateBucketS, rateSeries, rateWords } from '../src/lib/rate.ts';
 
 /** an axis's labels, as the charts write them when no formatter is given */
@@ -98,6 +99,55 @@ test('a 24h window keeps its 6 h step from the natural width down to a phone', (
 
 test("the rate chart's 24h window keeps its 3 h step at its natural width", () => {
   assert.equal(step(timeTicks(x0, day, tickTarget(1060, 10))), 3);
+});
+
+/* Daylight saving, in the service's zone (lib/zone.ts). The ticks step its wall clock;
+ * a wall time it springs over is read past the change, as a Date reads one, and is no
+ * tick of its own. Read back an hour early instead, 02:00 and 02:30 ticked 01:00 and
+ * 01:30 a second time, out of order. */
+const ticksIn = (zone, a, b, n) => {
+  setZone({ name: zone, abbrev: null, utc_offset_s: null });
+  try {
+    return timeTicks(Date.UTC(...a) / 1000, Date.UTC(...b) / 1000, n);
+  } finally {
+    setZone(null);
+  }
+};
+const rising = (t) => t.every((e, i) => i === 0 || e > t[i - 1]);
+
+test('a time axis over the hour daylight saving springs over ticks each instant once, in order', () => {
+  // New York, 2026-03-08: 01:59 EST is followed by 03:00 EDT
+  const t = ticksIn('America/New_York', [2026, 2, 8, 6], [2026, 2, 8, 8], 7);
+  setZone({ name: 'America/New_York', abbrev: null, utc_offset_s: null });
+  try {
+    assert.deepEqual(t.map(clockLabel), ['01:00', '01:30', '03:00', '03:30', '04:00']);
+  } finally {
+    setZone(null);
+  }
+  assert.ok(rising(t), 'every tick later than the one before');
+  // and the hour it falls back over: each tick later than the one before, an hour apart at most
+  const f = ticksIn('America/New_York', [2026, 10, 1, 4], [2026, 10, 1, 8], 8);
+  assert.ok(rising(f));
+  assert.ok(f.every((e, i) => i === 0 || e - f[i - 1] <= 5400));
+});
+
+test('a wall time the zone springs over is read past the change, as a Date reads it', () => {
+  setZone({ name: 'America/New_York', abbrev: null, utc_offset_s: null });
+  try {
+    // 02:30 on 2026-03-08 never shows in New York: it is 03:30 EDT, 07:30 UTC
+    assert.equal(zinstant(Date.UTC(2026, 2, 8, 2, 30)), Date.UTC(2026, 2, 8, 7, 30));
+    // a time either side is its own
+    assert.equal(zinstant(Date.UTC(2026, 2, 8, 1, 59)), Date.UTC(2026, 2, 8, 6, 59));
+    assert.equal(zinstant(Date.UTC(2026, 2, 8, 3, 0)), Date.UTC(2026, 2, 8, 7, 0));
+    // Havana springs over midnight: 2026-03-08 begins at 01:00, which the Trend tab's day
+    // ticks start the day at, not at 23:00 the day before
+    setZone({ name: 'America/Havana', abbrev: null, utc_offset_s: null });
+    const midnight = zinstant(Date.UTC(2026, 2, 8));
+    assert.equal(midnight, Date.UTC(2026, 2, 8, 5));
+    assert.equal(zdate(midnight).getUTCDate(), 8);
+  } finally {
+    setZone(null);
+  }
 });
 
 /* ------------------------------------------------------------------ the rate chart's buckets */

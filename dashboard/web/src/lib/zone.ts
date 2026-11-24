@@ -94,11 +94,18 @@ export function zdate(ms: number): Date {
 
 /** The instant (ms) whose wall clock in the page's zone is the UTC fields of
  *  `w` (a Date from `zdate`, stepped with setUTC*). Two passes settle a step
- *  across a change of offset (daylight saving). */
+ *  across a change of offset (daylight saving). A wall time the zone springs
+ *  over, which no instant shows, is read with the offset before the change, as
+ *  a Date reads one: 02:30 is 03:30, a midnight skipped is the day's first
+ *  instant. Read with the offset after it, it landed an hour back, in the day
+ *  before, and a time axis stepped through it ticked an hour twice. */
 export function zinstant(w: Date | number): number {
   const wall = typeof w === 'number' ? w : w.getTime();
-  const guess = wall - offsetAt(wall) * 1000;
-  return wall - offsetAt(guess) * 1000;
+  const o1 = offsetAt(wall - offsetAt(wall) * 1000);
+  const t = wall - o1 * 1000;
+  const o2 = offsetAt(t);
+  if (o2 === o1) return t; // `t` shows `wall`
+  return wall - Math.min(o1, o2) * 1000; // the clock moved forward: the offset before it
 }
 
 const p2 = (n: number) => String(n).padStart(2, '0');
