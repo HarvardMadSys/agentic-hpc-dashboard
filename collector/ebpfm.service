@@ -43,7 +43,8 @@ ExecStart=/usr/bin/env python3 @EBPFM_DIR@/ebpf_trace.py
 # order (systemd.exec(5)), so an EBPFM_OUTPUT_DIR set there takes the place of
 # the package-substituted one below; `ebpfm status` and `tail` read the same
 # file (and this unit's process), but RequiresMountsFor= above does not follow
-# it. The leading '-' makes a missing file non-fatal.
+# it. The leading '-' makes a missing file non-fatal. install-unit names the file
+# EBPFM_DEFAULT_FILE moves it to in its place, and tells ebpfm.sh the same.
 EnvironmentFile=-/etc/default/ebpfm
 Environment=EBPFM_OUTPUT_DIR=@EBPFM_OUTPUT_DIR@
 

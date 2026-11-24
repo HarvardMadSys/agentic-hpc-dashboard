@@ -28,7 +28,8 @@ After=local-fs.target
 Type=simple
 # The output folder the unit was installed with; /etc/default/ebpfm may name
 # another (systemd lets an EnvironmentFile= override an Environment=), along
-# with the interval, the mode/group policy, and SNAPSHOT_MODE.
+# with the interval, the mode/group policy, and SNAPSHOT_MODE. install-unit names the
+# file EBPFM_DEFAULT_FILE moves it to in its place, and tells the loop the same.
 Environment=EBPFM_NODE_OUTPUT_DIR=@EBPFM_NODE_OUTPUT_DIR@
 EnvironmentFile=-/etc/default/ebpfm
 ExecStart=/bin/bash @EBPFM_DIR@/ebpfm.sh _node_daemon

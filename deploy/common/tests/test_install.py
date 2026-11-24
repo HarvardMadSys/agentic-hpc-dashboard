@@ -193,10 +193,16 @@ class TestSingle(Rig):
         # the folders, for every later run and for `ebpfm status`
         self.assertEqual(defaults["EBPFM_OUTPUT_DIR"], self.ebpf)
         self.assertEqual(defaults["EBPFM_NODE_OUTPUT_DIR"], self.node)
+        # each unit reads the settings file the installer wrote (moved here, as the rig
+        # moves it), and tells ebpfm.sh the same
         ebpfm = self.unit("ebpfm.service")
-        self.assertEqual(ebpfm["Environment"], ["EBPFM_OUTPUT_DIR=" + self.ebpf])
+        self.assertEqual(ebpfm["EnvironmentFile"], ["-" + self.default])
+        self.assertEqual(ebpfm["Environment"], ["EBPFM_DEFAULT_FILE=" + self.default,
+                                                "EBPFM_OUTPUT_DIR=" + self.ebpf])
         node = self.unit("ebpfm-node.service")
-        self.assertEqual(node["Environment"], ["EBPFM_NODE_OUTPUT_DIR=" + self.node])
+        self.assertEqual(node["EnvironmentFile"], ["-" + self.default])
+        self.assertEqual(node["Environment"], ["EBPFM_NODE_OUTPUT_DIR=" + self.node,
+                                               "EBPFM_DEFAULT_FILE=" + self.default])
         self.assertIn("systemctl enable --now ebpfm.service ebpfm-node.service", calls)
         self.assertIn("chgrp -R ebpfm " + self.ebpf, calls)
         # the dashboard: its account, the venv, the bundle, its unit
@@ -337,9 +343,10 @@ class TestSingle(Rig):
         self.assertEqual(paths["RC_DASH_NODE_ROOTS"], node)
         self.assertIn("chgrp -R ebpfm " + data, self.calls())
         self.assertIn("chgrp -R ebpfm " + node, self.calls())
-        self.assertEqual(self.unit("ebpfm.service")["Environment"], ["EBPFM_OUTPUT_DIR=" + data])
+        self.assertEqual(self.unit("ebpfm.service")["Environment"],
+                         ["EBPFM_DEFAULT_FILE=" + self.default, "EBPFM_OUTPUT_DIR=" + data])
         self.assertEqual(self.unit("ebpfm-node.service")["Environment"],
-                         ["EBPFM_NODE_OUTPUT_DIR=" + node])
+                         ["EBPFM_NODE_OUTPUT_DIR=" + node, "EBPFM_DEFAULT_FILE=" + self.default])
 
     def test_a_folder_named_two_ways_is_refused(self):
         with open(self.default, "w") as fh:
@@ -447,9 +454,10 @@ class TestAnswersStay(Rig):
         node = os.path.join(self.tmp, "data", "ebpfm-login")
         self.install(EBPF_DIR=data, NODE_DIR=node, MEMORY_MAX="16G")
         self.install("--no-build", EBPF_DIR="", NODE_DIR="")
-        self.assertEqual(self.unit("ebpfm.service")["Environment"], ["EBPFM_OUTPUT_DIR=" + data])
+        self.assertEqual(self.unit("ebpfm.service")["Environment"],
+                         ["EBPFM_DEFAULT_FILE=" + self.default, "EBPFM_OUTPUT_DIR=" + data])
         self.assertEqual(self.unit("ebpfm-node.service")["Environment"],
-                         ["EBPFM_NODE_OUTPUT_DIR=" + node])
+                         ["EBPFM_NODE_OUTPUT_DIR=" + node, "EBPFM_DEFAULT_FILE=" + self.default])
         paths = self.keys(os.path.join(self.etc, "paths.env"))
         self.assertEqual((paths["RC_DASH_EBPF_ROOTS"], paths["RC_DASH_NODE_ROOTS"]), (data, node))
         self.assertEqual(self.memory(), "16G")

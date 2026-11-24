@@ -93,6 +93,26 @@ class TestInstall(Rig):
         self.assertNotIn("enable", self.calls())
         self.assertIn("systemctl enable --now ebpfm-node", p.stdout)
 
+    def test_the_units_read_the_settings_file_this_install_read(self):
+        """EBPFM_DEFAULT_FILE moves the settings file: install read and wrote it there,
+        and units reading /etc/default/ebpfm ran on other settings, or none."""
+        def directives(name):
+            return [l for l in self.unit(name).splitlines() if l and not l.startswith("#")]
+        f = os.path.join(self.tmp, "default-ebpfm")
+        p = self.run_sh("install-unit")
+        self.assertEqual(p.returncode, 0, p.stdout)
+        for name in ("ebpfm.service", "ebpfm-node.service"):
+            d = directives(name)
+            self.assertIn("EnvironmentFile=-%s" % f, d)
+            self.assertIn("Environment=EBPFM_DEFAULT_FILE=%s" % f, d, "the node daemon reads it too")
+            self.assertNotIn("EnvironmentFile=-/etc/default/ebpfm", d)
+        p = self.run_sh("install-unit", EBPFM_DEFAULT_FILE="")      # none: neither reads one
+        self.assertEqual(p.returncode, 0, p.stdout)
+        for name in ("ebpfm.service", "ebpfm-node.service"):
+            d = directives(name)
+            self.assertFalse([l for l in d if l.startswith("EnvironmentFile=")], d)
+            self.assertIn("Environment=EBPFM_DEFAULT_FILE=", d)
+
     def test_a_copy_without_the_node_template_installs_the_one(self):
         """A bundle or package from before the node tier had a unit."""
         old = os.path.join(self.tmp, "old", "collector")

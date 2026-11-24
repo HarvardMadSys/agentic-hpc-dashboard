@@ -1769,7 +1769,18 @@ _write_units() {
         die "a node tier '$HINT start' began is running (pid $(_node_running_pid)); '$HINT stop' first"
     fi
     mkdir -p "$OUTPUT_DIR" "$UNIT_DIR"
-    sed -e "s#@EBPFM_DIR@#$DIR#g" -e "s#@EBPFM_OUTPUT_DIR@#$OUTPUT_DIR#g" \
+    # The settings file the units read is the one this command read, and `install`
+    # wrote: EBPFM_DEFAULT_FILE's, where it moves it off the templates' default. The
+    # node daemon reads the file itself, so it is told the same; empty, neither reads one.
+    local envf=() f
+    if [ -z "$DEFAULT_FILE" ]; then
+        envf=(-e 's#^EnvironmentFile=-/etc/default/ebpfm$#Environment=EBPFM_DEFAULT_FILE=#')
+    elif [ "$DEFAULT_FILE" != /etc/default/ebpfm ]; then
+        f="$DEFAULT_FILE"
+        case "$f" in /*) ;; *) f="$(pwd -P)/$f" ;; esac     # a unit takes a full path only
+        envf=(-e "s#^EnvironmentFile=-/etc/default/ebpfm\$#EnvironmentFile=-$f\nEnvironment=EBPFM_DEFAULT_FILE=$f#")
+    fi
+    sed -e "s#@EBPFM_DIR@#$DIR#g" -e "s#@EBPFM_OUTPUT_DIR@#$OUTPUT_DIR#g" ${envf[@]+"${envf[@]}"} \
         "$UNIT_SRC" > "$UNIT_DST" || die "cannot write $UNIT_DST"
     chmod 0644 "$UNIT_DST"
     # The node tier's unit, where this copy of the collector has its template: a
@@ -1777,7 +1788,8 @@ _write_units() {
     local node_unit=0
     if [ -f "$NODE_UNIT_SRC" ]; then
         sed -e "s#@EBPFM_DIR@#$DIR#g" -e "s#@EBPFM_NODE_OUTPUT_DIR@#$NODE_OUTPUT_DIR#g" \
-            "$NODE_UNIT_SRC" > "$NODE_UNIT_DST" || die "cannot write $NODE_UNIT_DST"
+            ${envf[@]+"${envf[@]}"} "$NODE_UNIT_SRC" > "$NODE_UNIT_DST" \
+            || die "cannot write $NODE_UNIT_DST"
         chmod 0644 "$NODE_UNIT_DST"
         node_unit=1
     fi
