@@ -974,10 +974,26 @@ class Mirror:
 
     # ---- the verified ledger
     def _load_ledger(self):
+        """The verified keys, of the files the copy still holds. One whose file is gone
+        is not verified: the copy was removed (remove-node --purge-copy, or by hand) and
+        the node added again, or a frame its retired link had in hand wrote the ledger
+        back after the purge. Kept, it refused every frame that sent the file again,
+        and the node was never copied again."""
         try:
-            return set(json.loads(self.base.read_all(self.ledger).decode("utf-8")))
+            keys = set(json.loads(self.base.read_all(self.ledger).decode("utf-8")))
         except (FileNotFoundError, ValueError):
             return set()
+        names = {}
+        held = set()
+        for key in keys:
+            day, _, name = key.partition("/")
+            if day not in names:
+                names[day] = set(self.base.listdir("mirror/%s/%s" % (self.host, day)))
+            if name in names[day] or name + GZ in names[day]:
+                held.add(key)
+        if held != keys:
+            self.base.write_atomic(self.ledger, json.dumps(sorted(held)).encode("utf-8"))
+        return held
 
     def _save_ledger(self):
         self.base.write_atomic(self.ledger, json.dumps(sorted(self.verified)).encode("utf-8"))

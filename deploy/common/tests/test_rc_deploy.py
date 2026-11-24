@@ -307,9 +307,12 @@ class TestNodes(Rig):
         with open(self.site, "a") as fh:
             fh.write("SSH_KEY=$HOME/.ssh/id_test\n")
         out = self.tool("remove-node", "login01", "--purge-copy", HOME="/home/tester")
+        # its copy, its half-done fetches and its verified ledger, which, left behind,
+        # refused the node's files when it was added again
         self.assertIn("RUN ssh -i /home/tester/.ssh/id_test -o IdentitiesOnly=yes -o BatchMode=yes "
                       "-o ConnectTimeout=20 -o LogLevel=ERROR alice@dash "
-                      "'rm -rf /data/rc/data/mirror/login01'", out)
+                      "'rm -rf /data/rc/data/mirror/login01 /data/rc/data/staging/login01 "
+                      "/data/rc/data/state/login01.verified.json'", out)
 
     def test_a_relative_site_file_reaches_the_kit_whole(self):
         """The kit's scripts change directory: rc-deploy hands them the settings file's

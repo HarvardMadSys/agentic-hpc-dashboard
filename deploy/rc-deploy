@@ -527,14 +527,21 @@ def cmd_remove_node(args):
         say("%s taken out of SOURCE_NODES in %s" % (name, path))
         run([kit_script(kit, "deploy.sh")], env={"SITE_ENV": path})
         if args.purge_copy:
-            copy = "%s/data/mirror/%s" % (vals["DASH_ROOT"], name)
-            rc = run(_hpc_ssh(vals) + [vals["DASH_SSH"], "rm -rf %s" % shlex.quote(copy)],
+            # Its copy, the fetches it had half done, and its verified ledger, which named
+            # files the copy no longer held: added again, the node's frames for them were
+            # refused. (The receiver also forgets a ledger's keys whose files are gone,
+            # for a ledger its retiring link wrote back after this.)
+            data = "%s/data" % vals["DASH_ROOT"]
+            gone = ["%s/mirror/%s" % (data, name), "%s/staging/%s" % (data, name),
+                    "%s/state/%s.verified.json" % (data, name)]
+            rc = run(_hpc_ssh(vals) + [vals["DASH_SSH"],
+                                       "rm -rf " + " ".join(shlex.quote(p) for p in gone)],
                      check=False)
             if rc != 0:
                 # A retry would be refused, the node being no longer listed: say the rest.
                 raise Refused("%s is out of SOURCE_NODES and deployed without it, but its copy "
                               "could not be removed (ssh ended with exit %d): remove %s on %s "
-                              "by hand" % (name, rc, copy, vals["DASH_SSH"]))
+                              "by hand" % (name, rc, " ".join(gone), vals["DASH_SSH"]))
         say("on %s, take the stream key's line out of %s's ~/.ssh/authorized_keys if its home is "
             "its own" % (name, vals.get("SOURCE_USER")))
         return 0
