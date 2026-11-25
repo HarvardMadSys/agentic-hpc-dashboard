@@ -350,12 +350,14 @@ section.panel {
   cursor: help;
   white-space: nowrap;
 }
-/* Sign out, above the fold button while the service asks for a password: the
-   same quiet row, and the same 40px icon when the rail is folded */
+/* Sign out, above the fold button where there is a way out (lib/auth.ts): the
+   password's form, or a link to the single sign-on's sign-out; the same quiet
+   row, and the same 40px icon when the rail is folded */
 .rail-signout {
   margin: 4px 12px 0;
 }
-.rail-signout button {
+.rail-signout button,
+.rail-signout a {
   all: unset;
   box-sizing: border-box;
   cursor: pointer;
@@ -368,7 +370,8 @@ section.panel {
   color: var(--muted);
   font-size: 13.5px;
 }
-.rail-signout button:hover {
+.rail-signout button:hover,
+.rail-signout a:hover {
   background: var(--surface-2);
   color: var(--crimson-ink);
 }
@@ -519,7 +522,8 @@ section.panel {
   .app.mini .rail-signout {
     margin: 6px auto 0;
   }
-  .app.mini .rail-signout button {
+  .app.mini .rail-signout button,
+  .app.mini .rail-signout a {
     width: 40px;
     justify-content: center;
     padding: 8px 0;
@@ -3085,6 +3089,7 @@ td.ep-name {
 .linkbtn:focus-visible,
 .rail-search:focus-visible,
 .rail-signout button:focus-visible,
+.rail-signout a:focus-visible,
 .iconbtn:focus-visible,
 .subtabs button:focus-visible,
 .rail nav button:focus-visible {
@@ -3448,6 +3453,17 @@ th.sortable:focus-visible {
 /* the zone every time on the page is in, beside the status pill */
 .pill.zone {
   font-variant-numeric: tabular-nums;
+}
+/* who the site's single sign-on signed in: the name as the proxy gave it, in its
+   own case, cut short with an ellipsis (its tip says it whole) */
+.pill.who {
+  text-transform: none;
+  letter-spacing: normal;
+}
+.pill.who .who-n {
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* "How to read this panel" (components/About.tsx): a panel's explanations, out

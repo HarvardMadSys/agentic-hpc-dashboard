@@ -263,7 +263,8 @@ and one pill saying how current the data is (`live`, or what is wrong: `data del
 `no data yet`, `no data`, …; `frozen capture · as of …` on a pinned clock). What the pill
 stands on is its hover: the newest record's age, each feed past its own limit and by how much,
 and the login nodes that reported. `anonymized` and `fake data` sit beside it when they apply,
-then Ask (where it is on), the **time zone** every time on the page is in, and the refresh.
+then Ask (where it is on), the **time zone** every time on the page is in, the reader the site's
+single sign-on signed in (where it did: `_meta.auth`, `src/lib/auth.ts`), and the refresh.
 Below 900px the top bar names the tab, so the head shows the pills alone.
 
 **One time zone.** Every time on the page is in the dashboard service's zone, which
