@@ -132,7 +132,16 @@ Every other setting is **internal**: it tunes the reducers, caches and workers, 
 the answer. It still loads from the file, a variable or a flag, and `print-config` shows one that
 is set; `print-config --reference --all` (or `print-config --all`, resolved) lists every one, and
 the sections below name those each mechanism reads. A new setting is internal unless every site
-must choose it (`config.PUBLIC`, which a test holds to this table).
+must choose it (`config.PUBLIC`, which a test holds to this table). Two internal settings a site
+may still meet:
+
+- `filters.drop_agent` (`RC_DASH_DROP_AGENT_USERS`, comma-separated) drops only the records classed
+  agent of the accounts it names, such as a site's monitoring account's, where `filters.drop_global`
+  drops every record of theirs. Neither names anyone by default (`run-dev.sh` and `run-fasrc.sh` set
+  both for their site); `/api/feeds` counts what was dropped (`excluded.users`).
+- `ui.show_internal` (`RC_DASH_SHOW_INTERNAL=1`, off by default) lists the Internal tab, the figures
+  whose reading is not settled yet, in the page's rail. Like the rest of `ui`, it changes no number
+  and no saved build.
 
 - **The file is TOML or JSON**, the same settings in the same shape: TOML when its name ends in
   `.toml` (read with `tomllib`), JSON otherwise (`//`-prefixed keys are comments). A TOML date
@@ -143,7 +152,9 @@ must choose it (`config.PUBLIC`, which a test holds to this table).
 - **A relative path in the file is under the repository's root** (`cache.dir = "dashboard/.cache"`,
   `server.static_dir = "dashboard/web/dist"`), wherever the service is started from, and `~` is a
   home; installed without a checkout, a relative path is beside the file. The settings this applies
-  to are `config.PATH_KEYS`. `risk.profile` stays under `dashboard/`, as it always was. A path given
+  to are `config.PATH_KEYS`: the feed roots, `cache.dir`, `history.dir`, `rollup.dir`,
+  `server.static_dir`, `server.auth.password_hash_file`, `ask.system_prompt_file` and
+  `status.transport_files`. `risk.profile` stays under `dashboard/`, as it always was. A path given
   by a flag or a variable is the shell's, under the working directory.
 - Path defaults are **candidate lists**, and every candidate that exists is read: `print-config`
   lists those (`_existing`, a glob pattern's matches included), and `check-feeds` prints every

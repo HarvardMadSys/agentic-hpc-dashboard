@@ -107,7 +107,7 @@ class CLI(argparse.ArgumentParser):
         return False
 
 
-def _settings(p, serve=True):
+def _settings(p, serve=True, all_flag=True):
     """The flags of a command that reads the config: --config, and each setting
     that has a flag of its own, each also a config key and an RC_DASH_* variable."""
     g = p.add_argument_group("settings", textwrap.fill(
@@ -155,6 +155,8 @@ def _settings(p, serve=True):
     # (config.RETIRED_CLI: taken, named in a warning and ignored, so a unit or a
     # wrapper that still passes one starts).
     p.add_argument("--print-config", action="store_true", help=H)
+    if all_flag:     # print-config's own --all is its listed flag
+        p.add_argument("--all", action="store_true", dest="all_settings", help=H)
     p.add_argument("--check-feeds", action="store_true", help=H)
     p.add_argument("--sacct-dir", default=None, help=H)
     p.add_argument("--jobs-csv", default=None, help=H)
@@ -280,14 +282,14 @@ def build_parser():
              "--reference prints the settings a site chooses with their built-in defaults "
              "and a line of help each, as TOML, instead.",
              "  rc-dashboard print-config\n"
-             "  rc-dashboard print-config --reference > dashboard.toml\n"
-             "  rc-dashboard print-config --reference --all")
+             "  rc-dashboard print-config --reference\n"
+             "  rc-dashboard print-config --reference --all > dashboard.reference.toml")
     p.add_argument("--reference", action="store_true",
                    help="the settings a site chooses with their built-in defaults, as a TOML "
                         "config file, with a line of help and the RC_DASH_* variable of each")
     p.add_argument("--all", action="store_true", dest="all_settings",
                    help="every setting, the internal ones too")
-    _settings(p)
+    _settings(p, all_flag=False)
 
     p = _cmd(sub, "new-password", "a password for the page, and its hash",
              "Make a 16-character password, write it and a netrc for curl to --dir (both "
@@ -508,7 +510,7 @@ def main(argv=None):
             tree, left = configmod.public_view(tree)
             if left:
                 sys.stderr.write("print-config: %d internal settings at their defaults are left "
-                                 "out; `rc-dashboard print-config --all` prints them\n" % left)
+                                 "out; --all prints them\n" % left)
         print(json.dumps(tree, indent=1, default=str))
         return 0
     if args.check_feeds or cmd == "check-feeds":

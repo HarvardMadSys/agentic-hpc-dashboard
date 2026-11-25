@@ -555,8 +555,12 @@ class Public(Case):
 
     def test_print_config_shows_them_and_any_internal_one_changed(self):
         path = self.write({"site": {"name": "c"}, "panels": {"max_windows": 3}})
+        # and the hidden --print-config of another command, with its own --all: serve's
+        # resolution, which `print-config --all` would not apply for every command
         for argv, everything in ((["print-config", "--config", path], False),
-                                 (["print-config", "--config", path, "--all"], True)):
+                                 (["print-config", "--config", path, "--all"], True),
+                                 (["serve", "--print-config", "--config", path], False),
+                                 (["serve", "--print-config", "--all", "--config", path], True)):
             out, err = io.StringIO(), io.StringIO()
             with clean_env(), redirect_stdout(out), redirect_stderr(err):
                 self.assertEqual(cli.main(argv), 0)
