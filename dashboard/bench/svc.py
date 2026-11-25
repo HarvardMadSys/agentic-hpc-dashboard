@@ -48,7 +48,6 @@ class Service:
             "RC_DASH_HOST": "127.0.0.1",
             "RC_DASH_PORT": str(self.port),
             "RC_DASH_STATIC_DIR": os.path.join(DASH, "web", "dist"),
-            "RC_DASH_ASK": "0",
             "RC_DASH_RDNS": "0",
             # no password: a bench service on 127.0.0.1, over a feed of its own
             "RC_DASH_OPEN": "1",

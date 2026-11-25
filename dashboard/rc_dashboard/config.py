@@ -18,10 +18,9 @@ feed reports what it looked for as well as what it found, which is what the UI's
 empty states name. A root may be a glob pattern (`expand_root`).
 
 Nothing here falls back to a default quietly where that would leave names
-unmasked, the page open, or the agent on: a config file named by `--config` or
-RC_DASH_CONFIG must exist, a yes/no setting must read as yes or no (`_flag`),
-and an unknown key under `server`, `anonymize` or `ask` stops the service
-(`check_file`).
+unmasked or the page open: a config file named by `--config` or RC_DASH_CONFIG
+must exist, a yes/no setting must read as yes or no (`_flag`), and an unknown
+key under `server` or `anonymize` stops the service (`check_file`).
 """
 import datetime
 import difflib
@@ -55,9 +54,6 @@ HISTORY = {"enabled": True, "dir": "", "workers": 0, "days": 0}
 INGEST_WORKERS = 1
 # `ingest.reducer_groups`: processes per node's hour, one per reducer group (1 or 2).
 INGEST_REDUCER_GROUPS = 2
-# An entry of `ask.env_passthrough`: a variable's name, or a family's prefix,
-# three characters or more and then `_*`.
-PASSTHROUGH = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[A-Za-z][A-Za-z0-9_]{2,}_\*")
 
 # `reducers.own_io.max_parents`: the parents each own-I/O join holds
 # (reducers/own_io.py, whose REAPED_MAX a test holds equal).
@@ -80,8 +76,8 @@ def _csv(v):
 def _flag(v):
     """A yes/no setting written as text -- an env var, or a string in the
     config file: 1/0, true/false, yes/no or on/off, in any case, with spaces
-    around. Anything else is refused rather than read as yes: `RC_DASH_ASK=False`
-    once left Ask on."""
+    around. Anything else is refused rather than read as yes: `False`, read as
+    yes, once left a feature on that was meant to be off."""
     s = v.strip().lower()
     if s in ("1", "true", "yes", "on"):
         return True
@@ -305,58 +301,11 @@ def defaults():
         # nothing else depends on it (the tool mix keeps its two scheduler
         # kinds, which simply stay empty there).
         "slurm": {"enabled": True},
-        # Chat with an LLM about the window on screen (ask.py). Each question
-        # runs the agent CLI on this host as the service's user -- the preset
-        # `codex` uses that user's own Codex login -- with a compact, masked
-        # snapshot of the window's panels. That snapshot leaves the host.
-        # Off unless turned on, and refused while the service has no password.
-        # The agent can read whatever the service's account can read (its
-        # sandbox is read-only, not confined): the collector's files, the
-        # cache, that account's home. Run the service as a dedicated account,
-        # not a person's.
-        "ask": {
-            "enabled": False,
-            "agent": "codex",          # a preset (ask.PRESETS), or set `command`
-            # argv, or one shell-style string; {workdir} {answer_file} {model}
-            # are filled in, the prompt arrives on stdin, and with no
-            # {answer_file} the command's stdout is the answer
-            "command": None,
-            "model": "",               # empty: the agent's own default
-            # The agent gets only what a program needs of the service's
-            # environment (ask.AGENT_ENV) and these besides: variable names, or
-            # a family's prefix -- three characters or more, then _* -- for a
-            # provider reached through a cloud: ["AWS_*",
-            # "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION"]. Never an
-            # RC_DASH_* one.
-            "env_passthrough": [],
-            "timeout_s": 240,
-            "max_concurrent": 1,       # a second question waits, not a second agent
-            "context_kb": 120,         # the snapshot's size budget
-            "include_commands": False,  # command lines stay out unless set
-            # The answerer's instructions. Empty: the built-in (ask.DEFAULT_SYSTEM).
-            # A file is re-read on every question, so it can be tuned live and
-            # wins over the inline text. {deployment} {site} {window} are filled in.
-            "system_prompt": "",
-            "system_prompt_file": "",
-            # the short map of where things are in the snapshot, sent after the
-            # system prompt; turn off only if your prompt describes the data itself
-            "snapshot_guide": True,
-            # every row the model is given carries a ref it cites after each
-            # figure, and the page links each to its row (ask.CITE_GUIDE)
-            "citations": True,
-            # With anonymize.enabled, Ask -- and the suggestions it keeps marked
-            # done -- is refused unless this is set: an answer is shown as the
-            # agent writes it (rewritten, a name typed into a question came back
-            # as its alias), and the agent can read what the service's account
-            # can, the raw feeds included.
-            "unmasked_answers": False,
-        },
         # Which deployment this is, on every page: two dashboards side by side
         # -- a frozen capture from one cluster, the live feed of another -- must
         # not be mistaken for each other.
         # `description`: what this deployment watches, in a few words ("FASRC
-        # login nodes", "a GPU workstation"). The chat agent is told it rather
-        # than assuming any kind of machine; empty says nothing.
+        # login nodes", "a GPU workstation"); empty says nothing.
         "site": {"name": "", "description": ""},
         "panels": {
             # Historical reducers hold no time index, so a window change rebuilds
@@ -649,13 +598,7 @@ ENV_MAP = {
     "filters.drop_self_observation": ("RC_DASH_DROP_SELF_OBS", _flag),
     "risk.profile": ("RC_DASH_RISK_PROFILE", str),
     "slurm.enabled": ("RC_DASH_SLURM", _flag),
-    "ask.enabled": ("RC_DASH_ASK", _flag),
     "anonymize.enabled": ("RC_DASH_ANONYMIZE", _flag),
-    "ask.agent": ("RC_DASH_ASK_AGENT", str),
-    "ask.model": ("RC_DASH_ASK_MODEL", str),
-    "ask.command": ("RC_DASH_ASK_CMD", str),
-    "ask.env_passthrough": ("RC_DASH_ASK_ENV_PASSTHROUGH", _csv),
-    "ask.system_prompt_file": ("RC_DASH_ASK_PROMPT_FILE", str),
     "site.name": ("RC_DASH_SITE_NAME", str),
     "ui.node_noun": ("RC_DASH_NODE_NOUN", str),
     "site.description": ("RC_DASH_SITE_DESC", str),
@@ -677,9 +620,7 @@ ENV_MAP = {
 }
 
 # Secrets: /api/config and --print-config say whether each is set, never what it is.
-# An agent's command and its instructions can carry a provider's key
-# (`env ANTHROPIC_API_KEY=... claude -p`, the shape tests/test_ask.py pins).
-HIDDEN = ("anonymize.salt", "server.auth.password_hash", "ask.command", "ask.system_prompt")
+HIDDEN = ("anonymize.salt", "server.auth.password_hash")
 
 # The feeds removed once nothing read them -- the scheduler's accounting (sacct,
 # sacctmgr) and the domain and user CSVs -- and every way there was to set one.
@@ -695,10 +636,12 @@ RETIRED_WHY = "is retired, with the feed it set, which nothing read; it is ignor
 # variable there was to set one. Each is named in a warning and dropped, never
 # refused, as a retired feed is: a unit, a wrapper or a config file written for
 # one still starts, and nothing of it reaches /api/config -- where a key under
-# `annotate` was hidden -- or a saved build's fingerprint (`load`).
+# `annotate` or `ask` (an agent's command, its instructions) was hidden -- or a
+# saved build's fingerprint (`load`).
 RETIRED_SECTIONS = {
     "annotate": "is retired, with the tool-call purposes a model wrote; it is ignored",
     "export": "is retired, with the Search & export tab and its download; it is ignored",
+    "ask": "is retired: Ask LLM was removed in this version, and the setting is ignored",
 }
 RETIRED_SECTION_ENV = {
     "RC_DASH_ANNOTATE": "annotate", "RC_DASH_ANNOTATE_PROVIDER": "annotate",
@@ -706,6 +649,9 @@ RETIRED_SECTION_ENV = {
     "RC_DASH_ANNOTATE_KEY_ENV": "annotate", "RC_DASH_ANNOTATE_KEY_FILE": "annotate",
     "RC_DASH_ANNOTATE_CMD": "annotate",
     "RC_DASH_EXPORT_MAX_ROWS": "export",
+    "RC_DASH_ASK": "ask", "RC_DASH_ASK_AGENT": "ask", "RC_DASH_ASK_MODEL": "ask",
+    "RC_DASH_ASK_CMD": "ask", "RC_DASH_ASK_ENV_PASSTHROUGH": "ask",
+    "RC_DASH_ASK_PROMPT_FILE": "ask",
 }
 
 # CLI dest -> leaf path
@@ -760,8 +706,8 @@ def _deep_merge(base, over):
 
 
 # Sections where an unknown key stops the service instead of being ignored: a
-# misspelt key there would leave names unmasked, the page open, or the agent on.
-STRICT = ("server", "anonymize", "ask")
+# misspelt key there would leave names unmasked or the page open.
+STRICT = ("server", "anonymize")
 # Keys the code reads with a default of its own, so not in defaults(): known,
 # never warned about. Shell patterns over dotted paths; a key that matches is
 # known with everything under it.
@@ -778,11 +724,11 @@ def check_file(filetree, where):
     a yes/no setting written as a string is read by `_flag` (`"false"` was
     true), or as 0 or 1.
 
-    An unknown key under `server`, `anonymize` or `ask` -- or a top-level key
-    one slip away from one of them, `anonymise` -- stops the service, naming
-    the nearest key there is, as does a section there given as a single value
-    (`"anonymize": true`): each would leave names unmasked, the page open or
-    the agent on, without a word. Elsewhere an unknown key is a warning, since
+    An unknown key under `server` or `anonymize` -- or a top-level key one slip
+    away from one of them, `anonymise` -- stops the service, naming the nearest
+    key there is, as does a section there given as a single value
+    (`"anonymize": true`): each would leave names unmasked or the page open,
+    without a word. Elsewhere an unknown key is a warning, since
     an old file may carry the keys of a feature since removed. Returns the
     warnings; raises SystemExit with every error."""
     errors, warnings = [], []
@@ -877,8 +823,7 @@ class Config:
             entry = {"_value": val, "_origin": self.origin(path)}
             if path in HIDDEN and val:
                 # With the salt, a list of candidate names turns every alias
-                # back. The password hash is no use to a reader either, and the
-                # agent's command or prompt may hold a key.
+                # back. The password hash is no use to a reader either.
                 entry["_value"] = "(hidden)"
             if path.endswith(".roots") or path.endswith(".dir") or path.endswith(".path") \
                     or path == "status.transport_files":
@@ -981,7 +926,7 @@ def read_file(path):
 # `risk.profile`, which has always been under dashboard/ (`load`).
 PATH_KEYS = ("feeds.ebpf.roots", "feeds.ebpf_node.roots", "cache.dir", "history.dir",
              "rollup.dir", "server.static_dir", "server.auth.password_hash_file",
-             "ask.system_prompt_file", "status.transport_files")
+             "status.transport_files")
 
 
 def path_base(config_file):
@@ -1125,17 +1070,6 @@ def load(args=None, config_path=None):
         if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
             raise SystemExit("%s: %r is not a list of names (set by %s)" % (
                 key, val, origins.get(key, "default")))
-    # What of the service's environment the agents get besides ask.AGENT_ENV:
-    # variable names, or a family's prefix -- three characters or more, then
-    # `_*` (AWS_*). A shorter one, or one with no `_` (S*), takes in whatever
-    # else begins so; such a variable is named whole instead.
-    val = _get(tree, "ask.env_passthrough", [])
-    if not isinstance(val, list) or not all(
-            isinstance(x, str) and PASSTHROUGH.fullmatch(x) for x in val):
-        raise SystemExit("ask.env_passthrough: %r is not a list of variable names, or of a "
-                         "family's prefix written NAME_* with three characters or more before "
-                         "the _* (AWS_*) (set by %s)" % (
-                             val, origins.get("ask.env_passthrough", "default")))
     # The parents each own-I/O join holds (reducers/own_io.py): a count of one
     # or more, or the service refuses to start rather than guess -- 0 is neither
     # "unbounded" nor "no join". Null is the default.

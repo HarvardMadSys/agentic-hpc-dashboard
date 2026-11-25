@@ -17,9 +17,9 @@ store. So this:
    before the newest as `.gz`, as the collector does at rollover;
 2. starts two `serve` processes, identical but for `history.enabled` (off, on):
    each with its own cache dir (the store is under it) and port, the clock pinned
-   to the stamp's `written_to`, Ask, reverse DNS and the Slurm/user/domain inputs
-   off, retention and backfill sized to the feed, and the same hash seed (set
-   order is per process);
+   to the stamp's `written_to`, reverse DNS and the Slurm/user/domain inputs off,
+   retention and backfill sized to the feed, and the same hash seed (set order is
+   per process);
 3. waits for each one's backfill, for the on service's store to hold a current
    replica of every sealed file, and for every window to be built: 60 min, 24 h,
    the whole feed, and two filtered views of the 24 h window (the busiest user;
@@ -904,7 +904,6 @@ def run(a, tmp, days, hosts, services):
         "RC_DASH_PREWARM": "60,%d" % full,
         "RC_DASH_MAX_WINDOWS": "8",
         "RC_DASH_MERGE_REDUCE": "0" if a.scan else "1",
-        "RC_DASH_ASK": "0",
         # no password: two services on 127.0.0.1 over a demo feed
         "RC_DASH_OPEN": "1",
         # names come from the records' own host names, as in a demo: a lookup's
