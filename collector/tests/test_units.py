@@ -93,6 +93,22 @@ class TestInstall(Rig):
         self.assertNotIn("enable", self.calls())
         self.assertIn("systemctl enable --now ebpfm-node", p.stdout)
 
+    def test_one_name_drives_both_tiers(self):
+        """`systemctl start|stop|restart ebpfm` drives the whole collector: ebpfm.service
+        wants the node tier's unit, which is PartOf it. Not bound to it: where the eBPF
+        tier cannot run, or gives up, the node tier runs on alone."""
+        p = self.run_sh("install-unit")
+        self.assertEqual(p.returncode, 0, p.stdout)
+        def directives(name):
+            return [l for l in self.unit(name).splitlines() if l and not l.startswith("#")]
+        self.assertIn("Wants=ebpfm-node.service", directives("ebpfm.service"))
+        node = directives("ebpfm-node.service")
+        self.assertIn("PartOf=ebpfm.service", node)
+        for d in ("BindsTo=", "Requires=", "Requisite="):
+            self.assertFalse([l for l in node if l.startswith(d)], d)
+        self.assertIn("WantedBy=multi-user.target", node, "enabled on its own, it starts at boot alone")
+        self.assertIn("drives both tiers", p.stdout)
+
     def test_the_units_read_the_settings_file_this_install_read(self):
         """EBPFM_DEFAULT_FILE moves the settings file: install read and wrote it there,
         and units reading /etc/default/ebpfm ran on other settings, or none."""

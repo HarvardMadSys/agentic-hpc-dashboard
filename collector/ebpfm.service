@@ -18,6 +18,13 @@
 Description=ebpfm login-node eBPF collector (root tier)
 Documentation=file://@EBPFM_DIR@/README.md
 After=network.target local-fs.target
+# The whole collector under one name: starting this unit starts the node tier's
+# (ebpfm-node.service), which is PartOf this one, so stopping or restarting this
+# unit stops or restarts both: `systemctl start|stop|restart ebpfm`. Where the
+# node tier's unit is not installed (the RPM ships this unit alone), Wants= asks
+# for nothing. The node tier still runs alone, and restarts on its own, where
+# this tier cannot run.
+Wants=ebpfm-node.service
 # Output defaults to /scratch (large, root-writable; the root disk on these
 # login nodes is small). If /scratch is a separate mount, do not start until it
 # is available -- otherwise the collector would write day-files into the mount

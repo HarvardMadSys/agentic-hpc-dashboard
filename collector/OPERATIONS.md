@@ -16,7 +16,7 @@ Every command below is `ebpfm.sh` in this folder: `ebpfm` once the RPM is instal
 | runs as | root | any user (root under its unit) |
 | records | every process's exit, with its command line, working directory, I/O, network and how it ended; a census every 60 s; each Slurm submission | node health every 300 s: load, memory, filesystems, NFS, interfaces, D-state processes, per-user cgroups |
 | day-files | `EBPFM_OUTPUT_DIR/<date>/<host>.{snapshot,exits}.jsonl` | `EBPFM_NODE_OUTPUT_DIR/<date>/<host>.jsonl` |
-| as a unit | `ebpfm.service` | `ebpfm-node.service` |
+| as a unit | `ebpfm.service`, which starts, stops and restarts both tiers | `ebpfm-node.service`, part of `ebpfm.service`; alone where the eBPF tier cannot run |
 | log | `journalctl -u ebpfm`; under `start`, `EBPFM_OUTPUT_DIR/ebpfm_<host>.log` | `journalctl -u ebpfm-node`; under `start`, `EBPFM_NODE_OUTPUT_DIR/ebpfm-node_<host>.log` |
 
 As root the folders are `/scratch/ebpfm` and `/scratch/ebpfm-login` where `/scratch` is
@@ -96,7 +96,8 @@ With the units (`install`), systemd starts both tiers at boot:
 
 ```bash
 sudo systemctl status ebpfm ebpfm-node
-sudo systemctl restart ebpfm ebpfm-node     # after a settings change or an upgrade
+sudo systemctl restart ebpfm                # both tiers: after a settings change or an upgrade
+sudo systemctl restart ebpfm-node           # the node tier alone, which loses no live process
 ```
 
 Without them, `start` runs each tier in the background until the next reboot: the eBPF
@@ -177,8 +178,8 @@ ebpfm config --defaults-file       # the commented defaults file
 - **A name that is no setting** is named, with the nearest one, and ignored:
   `EBPFM_RESIDENCY (set in /etc/default/ebpfm:4) is not a setting, so it is ignored (did you mean EBPFM_RESIDENCY_S?)`.
 - **Each tier reads its settings when it starts.** After an edit, restart it:
-  `sudo systemctl restart ebpfm ebpfm-node` (the eBPF tier writes `truncated` records as
-  it stops). Run directly by its unit, the eBPF tier says on stderr (its journal) when it
+  `sudo systemctl restart ebpfm`, which restarts both tiers (the eBPF tier writes
+  `truncated` records as it stops). Run directly by its unit, the eBPF tier says on stderr (its journal) when it
   falls back to a default for a value it cannot read.
 
 ### Every setting
@@ -276,7 +277,7 @@ tier's differs from the installed one.
 
 | installed from | upgrade with | then |
 |---|---|---|
-| a checkout | `git pull`, then `sudo ./collector/ebpfm.sh install` | `sudo systemctl restart ebpfm ebpfm-node` when you choose: the eBPF tier's stop writes `truncated` records |
+| a checkout | `git pull`, then `sudo ./collector/ebpfm.sh install` | `sudo systemctl restart ebpfm`, both tiers, when you choose: the eBPF tier's stop writes `truncated` records |
 | the RPM | `sudo dnf upgrade ebpfm-collector` | the package restarts `ebpfm.service` itself, with the same `truncated` records; `/etc/default/ebpfm` is kept |
 | a bundle | `sudo ./ebpfm-bundle.sh --extract /opt/ebpfm`, then `sudo /opt/ebpfm/ebpfm.sh install` | the restart, as for a checkout |
 | the container | pull the new tag and recreate the container | `docker stop` writes the `truncated` records |

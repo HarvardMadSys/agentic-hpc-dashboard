@@ -421,7 +421,9 @@ Usage: $PROG install-unit [--dry-run]                                       [roo
 
 Writes ebpfm.service (the eBPF tier) and ebpfm-node.service (the node tier) into
 EBPFM_UNIT_DIR ($UNIT_DIR), with this folder's paths and the output folders
-filled in, and reloads systemd. It enables and starts nothing:
+filled in, and reloads systemd. ebpfm.service starts the node tier's unit, which
+is part of it: \`systemctl start|stop|restart ebpfm\` drives both tiers, and
+ebpfm-node runs on alone where the eBPF tier cannot. It enables and starts nothing:
     systemctl enable --now ebpfm ebpfm-node
 It refuses while a tier \`start\` began is running, and from a temporary copy a
 bundle unpacked. \`install\` does this and the rest of a first install.
@@ -1744,7 +1746,9 @@ cmd_install_unit() {
     echo
     echo "  systemctl enable --now $NAME     # the eBPF tier: start it and survive reboots"
     [ -f "$NODE_UNIT_SRC" ] && \
-    echo "  systemctl enable --now $NAME-node   # the node tier, the same way"
+    echo "  systemctl enable --now $NAME-node   # the node tier, the same way (it alone, where the eBPF tier cannot run)"
+    [ -f "$NODE_UNIT_SRC" ] && \
+    echo "  then systemctl start|stop|restart $NAME drives both tiers"
     echo "  systemctl status $NAME"
 }
 
@@ -1967,6 +1971,13 @@ cmd_install() {
     CK_NO_VERDICT=0
     ck_node="${#CK_FAILS_NODE[@]}"; ck_ebpf="${#CK_FAILS_EBPF[@]}"
     echo "== 5. start"
+    # Whether the node tier ran before this install: ebpfm.service, started below,
+    # starts it too (Wants=), and one it starts is new, not an upgrade's.
+    # Its day-file as it is now, too: started with ebpfm.service, its first snapshot
+    # may land before its own turn below, and would not be seen as new.
+    local node_ran=0 nf0 ns0 nt0
+    systemctl is-active --quiet "${NAME}-node.service" 2>/dev/null && node_ran=1
+    nf0="$NODE_OUTPUT_DIR/$(date +%F)/$HOST.jsonl"; ns0="$(_size "$nf0")"; nt0="$(date +%s)"
     if [ "$ck_node" = 0 ] && [ "$ck_ebpf" = 0 ]; then
         if _unmark_full "$DEFAULT_FILE"; then
             echo "settings: took out SNAPSHOT_MODE=full, which an install set while the eBPF tier was not ready"
@@ -1981,7 +1992,7 @@ cmd_install() {
             started_e=1
             systemctl enable "${NAME}.service" >/dev/null 2>&1
             echo "ebpf tier: ebpfm.service already runs; it runs the installed code once restarted"
-            echo "  (systemctl restart ebpfm, when you choose: it writes its live processes as \`truncated\`)"
+            echo "  (systemctl restart ebpfm, when you choose, restarts both tiers: the eBPF tier writes its live processes as \`truncated\`)"
         elif systemctl enable --now "${NAME}.service"; then
             started_e=1
             echo "ebpf tier: ebpfm.service enabled and started"
@@ -2002,13 +2013,15 @@ cmd_install() {
         fi
     fi
     if [ "$ck_node" = 0 ]; then
-        f0="$NODE_OUTPUT_DIR/$(date +%F)/$HOST.jsonl"; s0="$(_size "$f0")"; t0="$(date +%s)"
-        if systemctl is-active --quiet "${NAME}-node.service" 2>/dev/null; then
+        f0="$nf0"; s0="$ns0"; t0="$nt0"
+        if [ "$node_ran" = 1 ]; then
             started_n=1
             systemctl enable "${NAME}-node.service" >/dev/null 2>&1
             echo "node tier: ebpfm-node.service already runs; it runs the installed code once restarted"
             echo "  (systemctl restart ebpfm-node: it loses at most the snapshot it is taking)"
         elif systemctl enable --now "${NAME}-node.service"; then
+            # enabled too, so it starts at boot where ebpfm.service is not; already
+            # started, when ebpfm.service just started it
             started_n=1
             echo "node tier: ebpfm-node.service enabled and started"
             pid="$(systemctl show -p MainPID --value "${NAME}-node.service" 2>/dev/null)"
