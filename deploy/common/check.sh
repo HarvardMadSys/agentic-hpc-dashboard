@@ -70,7 +70,9 @@ status() {      # ARGS...: the dashboard's status command
   if [ -n "${RC_STATUS_CMD:-}" ]; then
     bash -c "$RC_STATUS_CMD" -- "$@"
   else
-    (cd "$repo/dashboard" && "$VENV/bin/python" -m rc_dashboard status "$@")
+    # a checkout's code runs from its folder; a release's wheel is in the venv itself
+    (if [ -d "$repo/dashboard/rc_dashboard" ]; then cd "$repo/dashboard"; fi
+     "$VENV/bin/python" -m rc_dashboard status "$@")
   fi
 }
 

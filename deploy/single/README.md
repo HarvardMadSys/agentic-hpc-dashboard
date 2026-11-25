@@ -9,8 +9,8 @@ This page is the install; [`../README.md`](../README.md) has the rest.
 On the server, as root:
 
 ```bash
-git clone <this repository> /opt/agentic-hpc-dashboard     # where any account can read it
-cd /opt/agentic-hpc-dashboard
+tar -C /opt -xzf agentic-hpc-dashboard-1.0.0.tar.gz        # a release's kit, where any account can read it
+cd /opt/agentic-hpc-dashboard-1.0.0                         # (or a clone of the repository: it builds its own code)
 deploy/rc-deploy init                  # asks whether it runs Slurm, and picks this kit
 sudo deploy/rc-deploy plan             # what it would do; nothing done
 sudo deploy/rc-deploy apply            # deploy/single/install.sh, with the settings init wrote
@@ -28,9 +28,9 @@ sudo deploy/common/password.sh
 installs the collector's dependencies and sysctls (`ebpfm.sh bootstrap`), checks the kernel
 (`ebpfm.sh check`, which must report no `FAIL`) and runs both tiers as units, then
 [`common/install-dashboard.sh single`](../common/install-dashboard.sh), which makes the
-dashboard's account (in the collector's group), venv, page bundle, settings, unit and its
-hourly check ([What each piece is](../README.md#what-each-piece-is)). Each says what it does
-as it goes.
+dashboard's account (in the collector's group), venv (the release's wheel, or the
+checkout's dependencies and page bundle), settings, unit and its hourly check
+([What each piece is](../README.md#what-each-piece-is)). Each says what it does as it goes.
 
 Options: `--no-bootstrap` when the collector's dependencies are already in place,
 `--no-check` to go on even though the check reports a `FAIL`, `--restart` to restart a

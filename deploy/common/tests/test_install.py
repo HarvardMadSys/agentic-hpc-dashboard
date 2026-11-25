@@ -1,6 +1,7 @@
 """The installers, run for real against a copy of the repository and folders here in place
 of /etc, /var/lib, /opt and the units' folder. `id` says root; systemctl, the account tools,
 chown, uv, npm and ssh-keygen are stand-ins that log their calls."""
+import hashlib
 import json
 import os
 import re
@@ -59,9 +60,25 @@ case "$1" in
 esac
 exit 0
 ''',
+    # uv sync (a checkout's venv), uv venv PATH (a release's), uv pip install (logged)
     "uv": STUB + r'''
-mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"
-ln -sf "$STUB_PYTHON" "$UV_PROJECT_ENVIRONMENT/bin/python"
+case "$1" in
+  venv) for last in "$@"; do :; done
+        mkdir -p "$last/bin"; ln -sf "$STUB_PYTHON" "$last/bin/python" ;;
+  pip) exit 0 ;;
+  *) mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"
+     ln -sf "$STUB_PYTHON" "$UV_PROJECT_ENVIRONMENT/bin/python" ;;
+esac
+''',
+    # a release's files, from STUB_RELEASE: curl ... -o OUT URL
+    "curl": STUB + r'''
+out= url=
+while [ $# -gt 0 ]; do
+  case $1 in -o) out=$2; shift 2 ;; -*) shift ;; *) url=$1; shift ;; esac
+done
+f="$STUB_RELEASE/$(basename "$url")"
+[ -n "${STUB_RELEASE:-}" ] && [ -f "$f" ] || exit 22
+cp "$f" "$out"
 ''',
     "npm": STUB + r'''
 [ "$1" = run ] && mkdir -p dist && echo "<html>" > dist/index.html
@@ -366,6 +383,95 @@ class TestSingle(Rig):
         self.assertIn("run install-collector.sh first", out)
         out = self.run_script("deploy/common/install-dashboard.sh", "both", code=2)
         self.assertIn("usage", out)
+
+
+class TestRelease(Rig):
+    """--release vX.Y.Z: the dashboard as that release published it. Its wheel and pinned
+    requirements are each checked against the release's checksums before anything is
+    installed; no Node, npm or build runs here; and the service reads nothing from the
+    folder the kit was unpacked in, since the scripts its units run are copied to
+    OPT/kit."""
+
+    VER = "1.2.3"
+
+    def setUp(self):
+        super().setUp()
+        # a release's kit holds no dashboard code for the service to read
+        shutil.rmtree(os.path.join(self.repo, "dashboard"))
+        self.rel = os.path.join(self.tmp, "release")
+        os.makedirs(self.rel)
+        self.wheel = "rc_dashboard-%s-py3-none-any.whl" % self.VER
+        self.reqs = "rc_dashboard-%s-requirements.txt" % self.VER
+        for name, body in ((self.wheel, b"a wheel"), (self.reqs, b"fastapi==1 --hash=sha256:00\n")):
+            with open(os.path.join(self.rel, name), "wb") as fh:
+                fh.write(body)
+        self.sums()
+
+    def sums(self, leave_out=None, **wrong):
+        lines = []
+        for name in (self.wheel, self.reqs):
+            if name == leave_out:
+                continue
+            with open(os.path.join(self.rel, name), "rb") as fh:
+                digest = hashlib.sha256(fh.read()).hexdigest()
+            lines.append("%s  %s\n" % (wrong.get(name, digest), name))
+        with open(os.path.join(self.rel, "rc_dashboard-%s.sha256" % self.VER), "w") as fh:
+            fh.writelines(lines)
+
+    def install(self, *args, code=0, **env):
+        return self.run_script("deploy/fleet/install-dashboard.sh", *args, code=code,
+                               STUB_RELEASE=self.rel, **env)
+
+    def test_the_release_is_installed_and_no_unit_points_into_the_kit(self):
+        self.install("--release", "v" + self.VER)
+        calls = self.calls()
+        url = "https://github.com/HarvardMadSys/agentic-hpc-dashboard/releases/download/v1.2.3/"
+        for name in (self.wheel, self.reqs, "rc_dashboard-1.2.3.sha256"):
+            self.assertIn(url + name, calls)
+        self.assertIn("uv venv --allow-existing", calls)
+        self.assertRegex(calls, r"uv pip install .*--require-hashes -r \S+/%s" % re.escape(self.reqs))
+        self.assertRegex(calls, r"uv pip install .*--no-deps --reinstall \S+/%s" % re.escape(self.wheel))
+        self.assertNotIn("npm", calls)
+        self.assertNotIn("uv sync", calls)
+        kit = os.path.join(self.opt, "kit")
+        for f in ("deploy/common/check.sh", "deploy/common/lib.sh", "deploy/fleet/pull.py"):
+            self.assertTrue(os.path.isfile(os.path.join(kit, f)), f)
+        for unit in ("rc-dashboard.service", "rc-dashboard-check.service",
+                     "rc-dashboard-check.timer", "rc-pull.service"):
+            self.assertNotIn(self.repo, self.read(os.path.join(self.units, unit)), unit)
+        self.assertEqual(self.unit("rc-pull.service")["ExecStart"],
+                         ["%s/venv/bin/python %s/deploy/fleet/pull.py --config %s/fleet.env loop"
+                          % (self.opt, kit, self.etc)])
+        self.assertEqual(self.unit("rc-dashboard-check.service")["ExecStart"],
+                         ["%s/deploy/common/check.sh" % kit])
+        self.assertEqual(self.unit("rc-dashboard.service")["WorkingDirectory"], [self.state])
+        self.assertIn("https://github.com/HarvardMadSys/agentic-hpc-dashboard/blob/v1.2.3/"
+                      "deploy/README.md", self.read(os.path.join(self.units, "rc-dashboard.service")))
+        # the wheel carries the page: the service finds it in the package
+        self.assertNotIn("RC_DASH_STATIC_DIR", self.keys(os.path.join(self.etc, "paths.env")))
+        self.assertEqual(self.keys(self.install_env)["RELEASE"], "v1.2.3")
+
+    def test_a_file_the_release_did_not_publish_installs_nothing(self):
+        self.sums(**{self.wheel: "0" * 64})
+        out = self.install("--release", "1.2.3", code=1)
+        self.assertIn("is not the one it published", out)
+        self.assertNotIn("uv pip install", self.calls())
+        self.sums(leave_out=self.reqs)
+        out = self.install("--release", "1.2.3", code=1)
+        self.assertIn("names no %s" % self.reqs, out)
+        self.assertNotIn("uv pip install", self.calls())
+
+    def test_the_release_kept_in_install_env_is_installed_again(self):
+        self.install("--release", "v" + self.VER)
+        with open(self.log, "w"):
+            pass
+        self.install()                      # an upgrade, told nothing
+        self.assertIn("/v1.2.3/%s" % self.wheel, self.calls())
+        self.assertNotIn("npm", self.calls())
+
+    def test_a_name_that_is_no_release_is_refused(self):
+        out = self.install("--release", "latest", code=1)
+        self.assertIn("is not a release", out)
 
 
 class TestFleet(Rig):

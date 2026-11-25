@@ -379,6 +379,68 @@ class TestNodes(Rig):
         self.assertEqual(self.keys()["SOURCE_NODES"], "login02")
 
 
+class TestRelease(Rig):
+    """A release's kit (deploy/VERSION) installs that release: init records it, apply hands
+    it to the installers (install-dashboard.sh --release), upgrade needs no git, and
+    rollback takes the dashboard back to an earlier release's wheel. A checkout builds its
+    own code, as before."""
+
+    def setUp(self):
+        super().setUp()
+        self.version = os.path.join(self.tmp, "VERSION")
+
+    def release(self, v):
+        with open(self.version, "w") as fh:
+            fh.write(v + "\n")
+
+    def tool(self, *args, **env):
+        return super().tool(*args, RC_DEPLOY_VERSION_FILE=self.version, **env)
+
+    def init_fleet(self):
+        self.tool("init", "--yes", "--set", "NODES=n1", "--set", "ROOT_ON_NODES=yes",
+                  "--set", "ROOT_ON_DASHBOARD=yes")
+
+    def test_a_release_kit_installs_its_release(self):
+        self.release("v1.2.3")
+        self.init_fleet()
+        self.assertEqual(self.keys()["RELEASE"], "v1.2.3")
+        out = self.tool("apply")
+        self.assertRegex(out, r"RUN .*RELEASE=v1\.2\.3 .*deploy/fleet/install-dashboard\.sh\n")
+
+    def test_a_checkout_builds_its_own_code(self):
+        self.init_fleet()
+        self.assertNotIn("RELEASE", self.keys())
+        self.assertNotIn("RELEASE=", self.tool("apply"))
+
+    def test_upgrade_from_a_release_kit_runs_no_git(self):
+        self.release("v1.2.3")
+        self.init_fleet()
+        self.release("v1.3.0")              # the newer release's kit, unpacked
+        out = self.tool("upgrade")
+        self.assertNotIn("RUN git", out)
+        self.assertIn("release v1.2.3 -> v1.3.0", out)
+        self.assertEqual(self.keys()["RELEASE"], "v1.3.0")
+        self.assertRegex(out, r"RUN .*RELEASE=v1\.3\.0 .*install-dashboard\.sh\n")
+        out = self.tool("upgrade", "--to", "v1.4.0", code=1)
+        self.assertIn("unpack the kit of v1.4.0", out)
+
+    def test_rollback_from_a_release_kit_takes_an_earlier_wheel(self):
+        self.release("v1.2.3")
+        self.init_fleet()
+        self.release("v1.3.0")
+        self.tool("upgrade")
+        out = self.tool("rollback")         # the release before the last upgrade
+        self.assertNotIn("RUN git", out)
+        self.assertEqual(self.keys()["RELEASE"], "v1.2.3")
+        self.assertRegex(out, r"RUN .*RELEASE=v1\.2\.3 .*install-dashboard\.sh\n")
+        self.assertIn("vX.Y.Z", self.tool("rollback", "abc1234", code=1))
+
+    def test_a_release_that_is_no_release_is_refused(self):
+        out = self.tool("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes",
+                        "--set", "RELEASE=latest", code=1)
+        self.assertIn("is not a release", out)
+
+
 class TestHelp(unittest.TestCase):
     def test_help(self):
         p = subprocess.run([sys.executable, TOOL, "--help"], stdout=subprocess.PIPE,

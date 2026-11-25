@@ -6,9 +6,12 @@ name: dashboard-image
 #     that changes what goes into them
 #   * develop                                 -> the image pushed as `edge`
 #   * semver git tag  v1.2.3                  -> the image pushed as 1.2.3, 1.2 and latest,
-#                                                and the wheel attached to the tag's GitHub
-#                                                Release (made if there is none), as
-#                                                rpm-release.yml attaches the RPM
+#                                                and attached to the tag's GitHub Release
+#                                                (made if there is none), as rpm-release.yml
+#                                                attaches the RPM: the wheel, its pinned
+#                                                requirements, their checksums, and the
+#                                                kit (agentic-hpc-dashboard-1.2.3.tar.gz),
+#                                                which installs that release with no checkout
 # A tag runs whatever it changes (GitHub evaluates no path filter for a tag), and its
 # version is stamped into the wheel and the image (pyproject.toml, __version__), so
 # `rc-dashboard --version` says what the tag says. Every build stamps its commit
@@ -110,6 +113,9 @@ jobs:
           "$RUNNER_TEMP/uv/bin/python" -m pip install --quiet --disable-pip-version-check uv==0.11.32
           echo "$RUNNER_TEMP/uv/bin" >> "$GITHUB_PATH"
 
+      # Beside the wheel: the requirements it runs with, pinned and hashed from uv.lock, and
+      # the checksums of both, which deploy/common/install-dashboard.sh --release checks
+      # each file against before it installs anything.
       - name: Build the wheel
         id: build
         working-directory: dashboard
@@ -117,8 +123,34 @@ jobs:
           set -euo pipefail
           uv build --wheel --out-dir dist
           whl="$(ls dist/*.whl)"
-          echo "path=dashboard/${whl}" >> "$GITHUB_OUTPUT"
-          echo "name=$(basename "$whl")" >> "$GITHUB_OUTPUT"
+          name="$(basename "$whl")"
+          ver="$(printf '%s' "$name" | sed -E 's/^rc_dashboard-([^-]+)-.*/\1/')"
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt --quiet \
+            > "dist/rc_dashboard-$ver-requirements.txt"
+          (cd dist && sha256sum "$name" "rc_dashboard-$ver-requirements.txt" > "rc_dashboard-$ver.sha256")
+          {
+            echo "name=$name"
+            echo "version=$ver"
+            echo "files<<EOF"
+            echo "dashboard/dist/$name"
+            echo "dashboard/dist/rc_dashboard-$ver-requirements.txt"
+            echo "dashboard/dist/rc_dashboard-$ver.sha256"
+            echo "dist/agentic-hpc-dashboard-$ver.tar.gz"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # The release's kit: the repository at this commit, with deploy/VERSION saying which
+      # release it is, so deploy/rc-deploy installs that release's wheel. A release is
+      # installed from it, with no git checkout on any host.
+      - name: Make the kit
+        env:
+          VER: ${{ steps.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist "$RUNNER_TEMP/kit"
+          git archive --prefix="agentic-hpc-dashboard-$VER/" HEAD | tar -x -C "$RUNNER_TEMP/kit"
+          echo "v$VER" > "$RUNNER_TEMP/kit/agentic-hpc-dashboard-$VER/deploy/VERSION"
+          tar -C "$RUNNER_TEMP/kit" -czf "dist/agentic-hpc-dashboard-$VER.tar.gz" "agentic-hpc-dashboard-$VER"
 
       # The wheel serves the page without a checkout: the page, the risk profiles and
       # the stamp are inside the package, and the installed command answers.
@@ -126,6 +158,7 @@ jobs:
         working-directory: dashboard
         env:
           WHEEL: ${{ steps.build.outputs.name }}
+          VER: ${{ steps.build.outputs.version }}
         run: |
           set -euo pipefail
           python3 - "dist/$WHEEL" <<'PYEOF'
@@ -140,19 +173,27 @@ jobs:
           uv venv "$RUNNER_TEMP/try"
           VIRTUAL_ENV="$RUNNER_TEMP/try" uv pip install --quiet "dist/$WHEEL"
           (cd "$RUNNER_TEMP" && "$RUNNER_TEMP/try/bin/rc-dashboard" --version)
+          # and as install-dashboard.sh --release installs it: the files against their
+          # checksums, the requirements by their hashes, then the wheel alone
+          (cd dist && sha256sum --check --strict "rc_dashboard-$VER.sha256")
+          uv venv "$RUNNER_TEMP/release"
+          VIRTUAL_ENV="$RUNNER_TEMP/release" uv pip install --quiet --require-hashes \
+            -r "dist/rc_dashboard-$VER-requirements.txt"
+          VIRTUAL_ENV="$RUNNER_TEMP/release" uv pip install --quiet --no-deps "dist/$WHEEL"
+          (cd "$RUNNER_TEMP" && "$RUNNER_TEMP/release/bin/rc-dashboard" --version)
 
-      - name: Upload the wheel as a workflow artifact
+      - name: Upload the release files as a workflow artifact
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: ${{ steps.build.outputs.name }}
-          path: ${{ steps.build.outputs.path }}
+          path: ${{ steps.build.outputs.files }}
           if-no-files-found: error
 
-      - name: Attach the wheel to the GitHub Release
+      - name: Attach the wheel, its requirements and checksums, and the kit to the GitHub Release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          files: ${{ steps.build.outputs.path }}
+          files: ${{ steps.build.outputs.files }}
           fail_on_unmatched_files: true
 
   image:
