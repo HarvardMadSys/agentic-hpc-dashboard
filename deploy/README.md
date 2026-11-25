@@ -95,7 +95,9 @@ The cookie, proxies and scripts: [Password](../dashboard/README.md#password).
   proxy names the user in, such as `X-Forwarded-User`) in `/etc/rc-dashboard/dashboard.env`
   and run the installer again. It makes `/etc/rc-dashboard/proxy.secret`, which the proxy
   must send in `X-RC-Proxy-Secret` on every request, and starts the dashboard with no
-  password. A password set too stays a way in. The proxy's side, groups and sign-out:
+  password. Keep the proxy's copy of the secret in a file only root can read, not in its
+  world-readable config. A password set too stays a way in, for anyone the groups leave out
+  as well. The proxy's side, groups and sign-out:
   [Single sign-on through a proxy](../dashboard/README.md#single-sign-on-through-a-proxy).
 
 ## Opening the page

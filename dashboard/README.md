@@ -943,7 +943,7 @@ that as the reader, with no password of its own (`auth.Proxy`):
 | `server.auth.proxy_header` | `RC_DASH_PROXY_HEADER` | the header the proxy names the user in (`X-Forwarded-User`); empty, the default, is off |
 | `server.auth.proxy_secret_file` | `RC_DASH_PROXY_SECRET_FILE` | a file holding the secret the proxy sends on every request, in `X-RC-Proxy-Secret` |
 | `server.auth.proxy_trusted` | `RC_DASH_PROXY_TRUSTED` | the addresses or networks the proxy connects from (127.0.0.1 and ::1) |
-| `server.auth.proxy_groups_header`, `server.auth.proxy_groups` | `RC_DASH_PROXY_GROUPS_HEADER`, `RC_DASH_PROXY_GROUPS` | with groups named, the user must be in one, as the proxy lists theirs in that header |
+| `server.auth.proxy_groups_header`, `server.auth.proxy_groups` | `RC_DASH_PROXY_GROUPS_HEADER`, `RC_DASH_PROXY_GROUPS` | with groups named, the proxy signs in only a user in one, as it lists theirs in that header (the password, if there is one, is still a way in: below) |
 | `server.auth.proxy_logout_url` | `RC_DASH_PROXY_LOGOUT_URL` | where *Sign out* goes (the proxy's own sign-out, `/oauth2/sign_out`); with none, no *Sign out* |
 
 - **The secret, not the address, is what a request proves itself with.** Every account on the
@@ -974,12 +974,33 @@ that as the reader, with no password of its own (`auth.Proxy`):
   With Apache, `RequestHeader set X-Forwarded-User "expr=%{REMOTE_USER}"` and
   `RequestHeader set X-RC-Proxy-Secret "<the secret>"`. A proxy that passes its public name in the
   Host, as this one does, needs that name in `server.allowed_hosts`.
+- **The proxy's copy of the secret needs the same care as the service's.** Any account that can
+  read it can send it from 127.0.0.1 and name any user, and a stock `/etc/nginx/conf.d/*.conf` or
+  `/etc/httpd/conf.d/*.conf` is readable by everyone. Keep the secret's line out of those, in a
+  file of its own that the proxy includes and that is readable by root alone (0600: nginx's and
+  httpd's master process reads its config as root), or by root and the proxy's group (0640
+  `root:nginx`, `root:apache`) for a proxy whose master runs as that group:
+
+  ```nginx
+  # /etc/nginx/rc-dashboard-secret.conf, made with: install -m 600 -o root /dev/null FILE
+  proxy_set_header X-RC-Proxy-Secret "<the secret>";
+  ```
+
+  and `include /etc/nginx/rc-dashboard-secret.conf;` in the `location` above, in place of the
+  line; with Apache, an `Include` of such a file holding the `RequestHeader set` line. Open
+  OnDemand writes its Apache config from `ood_portal.yml`, and both are usually readable by
+  everyone: include the file from there (its custom location directives) rather than writing the
+  secret in them.
 - **One user, once.** A name is taken when the header comes once, in at most 256 characters, none a
   control character. With groups, the groups header too must come once. A user in none of the groups
   gets a 403 in plain text; a request the proxy did not sign in gets a 401 saying the page is behind
   the site's sign-on, and a websocket is refused.
-- **The password stays a way in.** With a password set too, a request the proxy did not sign in may
-  still sign in with it: the form, the cookie and Basic auth, as above.
+- **The password stays a way in, groups or not.** With a password set too, a request the proxy did
+  not sign in may still sign in with it (the form, the cookie and Basic auth, as above), and so may
+  a user the proxy named who is in none of the groups: `proxy_groups` limits who the site's
+  sign-on lets in, not who gets in. To make the sign-on the only way, set no password
+  (`server.auth.password_hash_file` empty) once it works: the service starts without one when the
+  proxy's sign-in is set, and refuses what the proxy did not sign in.
 - **The page names the reader.** `/api/config`'s `_meta.auth` says how this reader got in (`proxy`,
   `password` or `open`) and the user the proxy named; the page's head shows it, and *Sign out* goes
   to `proxy_logout_url`.
