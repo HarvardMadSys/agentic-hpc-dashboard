@@ -64,6 +64,77 @@ class Rig(unittest.TestCase):
         return out
 
 
+class TestWhere(Rig):
+    """single and fleet keep their settings with the install (ROOT_SITE), so a newer
+    release's kit, another folder, reads them; a deploy/site.env from before moves there."""
+
+    def setUp(self):
+        super().setUp()
+        self.root_site = os.path.join(self.tmp, "etc-rc", "site.env")
+        self.old_site = os.path.join(self.tmp, "kit", "deploy", "site.env")
+        os.makedirs(os.path.dirname(self.old_site))
+        self.where = dict(RC_DEPLOY_ROOT_SITE=self.root_site, RC_DEPLOY_OLD_SITE=self.old_site,
+                          RC_DEPLOY_HPC_SITE=os.path.join(self.tmp, "hpc-site.env"),
+                          RC_DEPLOY_HISTORY="")
+
+    def bare(self, *args, code=0, root=True):
+        """rc-deploy with no --site: it finds the settings file itself."""
+        e = dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"], STUB_LOG=self.log,
+                 INSTALL_ENV=self.install_env, RC_DEPLOY_ECHO="1", USER="alice", **self.where)
+        e["RC_DEPLOY_AS_ROOT"] = "1" if root else "0"
+        p = subprocess.run([sys.executable, TOOL] + list(args), env=e, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, universal_newlines=True, timeout=60)
+        self.assertEqual(p.returncode, code, p.stdout)
+        return p.stdout
+
+    def test_init_writes_them_with_the_install(self):
+        out = self.bare("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes")
+        self.assertIn("settings in %s" % self.root_site, out)
+        with open(self.root_site) as fh:
+            self.assertIn("KIT=single", fh.read())
+        self.assertIn("kit single, settings %s" % self.root_site, self.bare("which"))
+
+    def test_init_without_root_says_the_command_with_the_answers(self):
+        out = self.bare("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes",
+                        "--set", "SITE_NAME=c 1", code=1, root=False)
+        self.assertIn("which only root writes", out)
+        self.assertIn("init --set NODES= --set ROOT_ON_DASHBOARD=yes --set 'SITE_NAME=c 1'", out)
+        self.assertFalse(os.path.exists(self.root_site))
+
+    def test_a_settings_file_from_before_moves_once_root_runs(self):
+        with open(self.old_site, "w") as fh:
+            fh.write("KIT=single\nSLURM=no\n")
+        out = self.bare("which", root=False)
+        self.assertIn("the next command run as root moves them", out)
+        self.assertIn("settings %s" % self.old_site, out)
+        out = self.bare("which")
+        self.assertIn("settings moved from %s to %s" % (self.old_site, self.root_site), out)
+        self.assertFalse(os.path.exists(self.old_site))
+        with open(self.root_site) as fh:
+            self.assertEqual(fh.read(), "KIT=single\nSLURM=no\n")
+        self.assertNotIn("moved", self.bare("which"))
+
+    def test_the_history_is_beside_them_and_the_kits_own_still_read(self):
+        os.makedirs(os.path.dirname(self.root_site))
+        with open(self.root_site, "w") as fh:
+            fh.write("KIT=single\n")
+        self.bare("upgrade", "--to", "v1")
+        hist = os.path.join(os.path.dirname(self.root_site), "rc-deploy-history")
+        with open(hist) as fh:
+            self.assertEqual(len(fh.read().splitlines()), 1)
+        os.unlink(hist)
+        # from before: the kit's own .rc-deploy-history, which rollback still reads
+        old = os.path.join(REPO, "deploy", ".rc-deploy-history")
+        if os.path.exists(old):
+            self.skipTest("this checkout has a history of its own")
+        try:
+            with open(old, "w") as fh:
+                fh.write("abc123 def456 2026-11-01 10:00:00\n")
+            self.assertIn("checkout --detach abc123", self.bare("rollback"))
+        finally:
+            os.unlink(old)
+
+
 class TestInit(Rig):
     def test_one_server_with_root(self):
         out = self.tool("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes")

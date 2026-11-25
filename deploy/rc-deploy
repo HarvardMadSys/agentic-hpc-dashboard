@@ -2,7 +2,7 @@
 """rc-deploy: one front door to the three ways of running the collector and the dashboard.
 
     rc-deploy init [--kit single|fleet|hpc] [--set KEY=VALUE ...] [--yes]
-    rc-deploy which                         the kit this checkout runs, and its settings file
+    rc-deploy which                         the kit this install runs, and its settings file
     rc-deploy apply [--plan]                install, or bring the install in line with the settings
     rc-deploy plan                          apply --plan: what apply would do, nothing done
     rc-deploy add-node ENTRY                a node, with no restart of the dashboard
@@ -20,11 +20,14 @@
 guessed from root), which nodes, whether you have root on the nodes and on the dashboard's
 host. It writes one settings file and records the kit in it (KIT=):
 
-    single  one server with root runs both (deploy/single)   settings: deploy/site.env
+    single  one server with root runs both (deploy/single)   settings: /etc/rc-dashboard/site.env
     fleet   root on the nodes and the dashboard's host; the dashboard copies each node
-            with rsync (deploy/fleet)                         settings: deploy/site.env
+            with rsync (deploy/fleet)                         settings: /etc/rc-dashboard/site.env
     hpc     no root needed: each node's files stream over ssh to a host of your own
             (hpc/deploy)                                      settings: hpc/deploy/site.env
+
+single and fleet keep their settings with the install, so init runs as root for them
+(sudo), and a newer release's kit finds them with nothing to copy.
 
 Every other command runs that kit's own scripts, which say what they do; `--help` of
 each says more. The same names mean the same setting in every kit: SITE_NAME,
@@ -45,11 +48,18 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-DEPLOY_SITE = os.path.join(HERE, "site.env")
-HPC_SITE = os.path.join(REPO, "hpc", "deploy", "site.env")
+# single and fleet keep their settings with the install, where root's other answers are,
+# so a newer release's kit (another folder) reads them with nothing to copy; the hpc kit
+# keeps its own beside its scripts. A deploy/site.env from before is moved to ROOT_SITE
+# by the first command run as root.
+ROOT_SITE = os.environ.get("RC_DEPLOY_ROOT_SITE", "/etc/rc-dashboard/site.env")
+DEPLOY_SITE = os.environ.get("RC_DEPLOY_OLD_SITE", os.path.join(HERE, "site.env"))
+HPC_SITE = os.environ.get("RC_DEPLOY_HPC_SITE", os.path.join(REPO, "hpc", "deploy", "site.env"))
 HPC_EXAMPLE = os.path.join(REPO, "hpc", "deploy", "site.env.example")
 INSTALL_ENV = os.environ.get("INSTALL_ENV", "/etc/rc-dashboard/install.env")
-HISTORY = os.environ.get("RC_DEPLOY_HISTORY", os.path.join(HERE, ".rc-deploy-history"))
+# What each upgrade replaced, for rollback: beside the settings file, so a newer kit's
+# upgrade and an older one's rollback read the same rows (the kit's own, from before, too).
+OLD_HISTORY = os.path.join(HERE, ".rc-deploy-history")
 KITS = ("single", "fleet", "hpc")
 YES, NO = ("1", "true", "yes", "on", "y"), ("0", "false", "no", "off", "n")
 # The settings the deploy/ installers take from their environment, under the names every
@@ -142,6 +152,8 @@ def write(path, text, mode=0o644):
     in its place (0640 root:root) was one rc-pull, which runs as the dashboard's
     account, could no longer read -- on reload or at its next start."""
     d = os.path.dirname(path) or "."
+    if not os.path.isdir(d):
+        os.makedirs(d, 0o755)           # /etc/rc-dashboard, before the first install
     fd, tmp = tempfile.mkstemp(dir=d, prefix="." + os.path.basename(path))
     try:
         with os.fdopen(fd, "w") as fh:
@@ -169,14 +181,20 @@ def yesno(key, value):
     raise Refused("%s=%r is not one of 1/0, true/false, yes/no, on/off" % (key, value))
 
 
+def _is_root():
+    """Root on this host; RC_DEPLOY_AS_ROOT=1 or 0 says so instead (the tests)."""
+    said = os.environ.get("RC_DEPLOY_AS_ROOT", "")
+    return said == "1" if said in ("0", "1") else os.geteuid() == 0
+
+
 def site_file(args):
-    """(kit, path, settings) of this checkout, from --site, else the one settings file."""
+    """(kit, path, settings) of this install, from --site, else the one settings file."""
     if args.site:
         path = args.site
         if not os.path.exists(path):
             raise Refused("no %s yet: run `rc-deploy init` first (with --site %s)" % (path, path))
     else:
-        there = [p for p in (DEPLOY_SITE, HPC_SITE) if os.path.exists(p)]
+        there = [p for p in (ROOT_SITE, DEPLOY_SITE, HPC_SITE) if os.path.exists(p)]
         if len(there) > 1:
             kits = [read_env(p).get("KIT", "?") for p in there]
             raise Refused("two settings files, %s (%s): rc-deploy runs one kit; remove the other"
@@ -184,6 +202,8 @@ def site_file(args):
         if not there:
             raise Refused("no settings yet: run `rc-deploy init` first (it asks four questions)")
         path = there[0]
+        if path == DEPLOY_SITE:
+            path = _move_old_settings(path)
     path = os.path.abspath(path)            # the kits' scripts change directory
     vals = read_env(path)
     kit = vals.get("KIT") or ("hpc" if path == HPC_SITE else "")
@@ -192,6 +212,45 @@ def site_file(args):
     if kit == "hpc":
         vals = _hpc_values(path)
     return kit, path, vals
+
+
+def _move_old_settings(path):
+    """A deploy/site.env from before settings moved to ROOT_SITE: moved there when run as
+    root (it is one file, its lines as they were), else read where it is."""
+    if not _is_root():
+        say("settings in %s: the next command run as root moves them to %s" % (path, ROOT_SITE))
+        return path
+    d = os.path.dirname(ROOT_SITE)
+    if not os.path.isdir(d):
+        os.makedirs(d, 0o755)
+    with open(path) as fh:
+        text = fh.read()
+    with open(ROOT_SITE + ".tmp", "w") as fh:
+        fh.write(text)
+    os.chmod(ROOT_SITE + ".tmp", 0o644)
+    os.rename(ROOT_SITE + ".tmp", ROOT_SITE)
+    os.unlink(path)
+    say("settings moved from %s to %s, where a newer release's kit finds them" % (path, ROOT_SITE))
+    return ROOT_SITE
+
+
+def history_file(path):
+    """The upgrade history beside the settings file `path` (RC_DEPLOY_HISTORY names
+    another)."""
+    return os.environ.get("RC_DEPLOY_HISTORY") or \
+        os.path.join(os.path.dirname(os.path.abspath(path)), "rc-deploy-history")
+
+
+def history_rows(path):
+    """Each upgrade's (before, after, when) row, oldest first: this install's, else the
+    kit's own from before the history moved."""
+    for f in (history_file(path), OLD_HISTORY):
+        try:
+            with open(f) as fh:
+                return [l.split() for l in fh if l.strip()]
+        except OSError:
+            continue
+    return []
 
 
 def _hpc_values(path):
@@ -239,7 +298,7 @@ def run(cmd, env=None, check=True):
 
 
 def need_root(what):
-    if os.geteuid() != 0 and not os.environ.get("RC_DEPLOY_AS_ROOT"):
+    if not _is_root():
         raise Refused("%s runs as root on this host: sudo %s" % (what, " ".join(sys.argv)))
 
 
@@ -335,9 +394,17 @@ def cmd_init(args):
         if answers.get(k):
             common.append((k, answers[k]))
     if kit in ("single", "fleet"):
-        path = args.site or DEPLOY_SITE
-        if os.path.exists(HPC_SITE) and not args.site:
-            raise Refused("%s exists (the hpc kit): remove it first, or give --site" % HPC_SITE)
+        path = args.site or ROOT_SITE
+        for other in (HPC_SITE, DEPLOY_SITE):
+            if os.path.exists(other) and not args.site:
+                raise Refused("%s exists (%s): remove it first, or give --site"
+                              % (other, "the hpc kit" if other == HPC_SITE else "from before"))
+        if not args.site and not _is_root():
+            given = " ".join("--set %s" % shlex.quote("%s=%s" % (k, v))
+                             for k, v in sorted(answers.items()) if not k.startswith("__"))
+            raise Refused("%s keeps its settings with the install, in %s, which only root "
+                          "writes: run `sudo %s init%s`" % (kit, ROOT_SITE, sys.argv[0],
+                                                            (" " + given) if given else ""))
         settings = list(common)
         # A release's kit installs that release (its wheel; install-dashboard.sh
         # --release); a checkout builds its own code, unless RELEASE names one.
@@ -353,11 +420,13 @@ def cmd_init(args):
             if addr:
                 settings.append(("DASH_ADDRESS", addr))
         head = ("# Written by deploy/rc-deploy init: the settings of this %s deployment. Edit,\n"
-                "# then `sudo deploy/rc-deploy apply`. Names: deploy/README.md, \"Settings\".\n" % kit)
+                "# then `sudo deploy/rc-deploy apply` from any kit. Names: deploy/README.md,\n"
+                "# \"Settings\".\n" % kit)
     else:
         path = args.site or HPC_SITE
-        if os.path.exists(DEPLOY_SITE) and not args.site:
-            raise Refused("%s exists (a deploy/ kit): remove it first, or give --site" % DEPLOY_SITE)
+        for other in (ROOT_SITE, DEPLOY_SITE):
+            if os.path.exists(other) and not args.site:
+                raise Refused("%s exists (a deploy/ kit): remove it first, or give --site" % other)
         user = os.environ.get("USER") or "you"
         settings = list(common) + [
             ("SOURCE_USER", ask("Your account on the nodes", user, False, answers, "SOURCE_USER")),
@@ -673,7 +742,7 @@ def cmd_upgrade(args):
         if before != mine:
             set_line(path, "RELEASE", mine)
             vals["RELEASE"] = mine
-        with open(HISTORY, "a") as fh:
+        with open(history_file(path), "a") as fh:
             fh.write("%s %s %s\n" % (before, mine, time.strftime("%Y-%m-%d %H:%M:%S")))
         say("release %s -> %s" % (before, mine))
         rc = cmd_apply(args, plan=False)
@@ -689,7 +758,7 @@ def cmd_upgrade(args):
     after = _head() if not os.environ.get("RC_DEPLOY_ECHO") else "(new)"
     if after == before:
         say("already at %s" % before[:12])
-    with open(HISTORY, "a") as fh:
+    with open(history_file(path), "a") as fh:
         fh.write("%s %s %s\n" % (before, after, time.strftime("%Y-%m-%d %H:%M:%S")))
     if kit == "hpc":
         return run([kit_script(kit, "deploy.sh"), "--restart"], env={"SITE_ENV": path})
@@ -711,11 +780,7 @@ def cmd_rollback(args):
         # and this kit's scripts stay as they are).
         target = args.sha
         if not target:
-            try:
-                with open(HISTORY) as fh:
-                    rows = [l.split() for l in fh if l.strip()]
-            except OSError:
-                rows = []
+            rows = history_rows(path)
             target = next((r[0] for r in reversed(rows) if RELEASE_RE.match(r[0])), None)
         if not target or not RELEASE_RE.match(target):
             raise Refused("give the release to go back to (vX.Y.Z): a release's kit rolls the "
@@ -726,13 +791,10 @@ def cmd_rollback(args):
     if args.sha:
         target = args.sha
     else:
-        try:
-            with open(HISTORY) as fh:
-                rows = [l.split() for l in fh if l.strip()]
-        except OSError:
-            rows = []
+        rows = history_rows(path)
         if not rows:
-            raise Refused("no upgrade recorded in %s: give the commit to go back to" % HISTORY)
+            raise Refused("no upgrade recorded in %s: give the commit to go back to"
+                          % history_file(path))
         target = rows[-1][0]
     run(["git", "-C", REPO, "checkout", "--detach", target])
     return cmd_apply(args, plan=False)
