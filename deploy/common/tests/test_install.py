@@ -125,8 +125,10 @@ class Rig(unittest.TestCase):
             EBPFM_PACKAGED_UNIT=os.path.join(t, "no-package"), EBPF_DIR=self.ebpf,
             NODE_DIR=self.node, EBPFM_PID_DIR=os.path.join(t, "run"), HOME=t,
             INSTALL_ENV=os.path.join(t, "etc", "rc-dashboard-install", "install.env"),
-            EBPFM_SYSCTL_CONF=os.path.join(t, "etc", "sysctl.d", "99-ebpfm.conf"))
+            EBPFM_SYSCTL_CONF=os.path.join(t, "etc", "sysctl.d", "99-ebpfm.conf"),
+            RC_MEMINFO=os.path.join(t, "meminfo"))
         self.install_env = self.env["INSTALL_ENV"]
+        self.host_memory(16)        # half of it, 8G, is the dashboard's cap unless told
         for k in ("SLURM", "SITE_NAME", "SITE_DESCRIPTION", "NODE_NOUN", "ANONYMIZE", "MEMORY_MAX",
                   "DASH_MEMORY_MAX", "NODES", "FREE_MIN_GB", "SERVICE_USER", "PULL_USER",
                   "COLLECTOR_GROUP", "SUDO_USER", "PLAN"):
@@ -162,6 +164,11 @@ class Rig(unittest.TestCase):
             if m:
                 out[m.group(1)] = m.group(2)
         return out
+
+    def host_memory(self, gib):
+        """The memory this host has, as /proc/meminfo says it."""
+        with open(self.env["RC_MEMINFO"], "w") as fh:
+            fh.write("MemTotal:       %d kB\nMemFree:         1024 kB\n" % (gib * 1048576))
 
     def memory(self):
         """The dashboard's cap, from its drop-in."""
@@ -500,6 +507,30 @@ class TestAnswersStay(Rig):
         self.install("--no-build")
         self.assertEqual(self.memory(), "20G")
         self.assertEqual(self.keys(self.install_env)["MEMORY_MAX"], "20G")
+
+    def test_the_cap_follows_the_host_unless_given(self):
+        """Untold, the cap is half the host's memory, from 2G to 32G, said as it is chosen;
+        a host whose memory cannot be read gets 8G. Once chosen it is saved, so the next
+        run keeps it even on a host given more memory since."""
+        for gib, cap in ((3, "2G"), (24, "12G"), (512, "32G")):
+            with self.subTest(gib=gib):
+                for p in (self.install_env, os.path.join(self.units, "rc-dashboard.service.d",
+                                                         "50-memory.conf")):
+                    if os.path.exists(p):
+                        os.remove(p)
+                self.host_memory(gib)
+                out = self.install()
+                self.assertIn("MEMORY_MAX=%s: half this host's %dG" % (cap, gib), out)
+                self.assertEqual(self.memory(), cap)
+        self.host_memory(8)
+        out = self.install("--no-build")
+        self.assertNotIn("half this host's", out)
+        self.assertEqual(self.memory(), "32G")                   # saved, not chosen again
+        os.remove(self.install_env)
+        os.remove(os.path.join(self.units, "rc-dashboard.service.d", "50-memory.conf"))
+        os.remove(self.env["RC_MEMINFO"])
+        self.install("--no-build")
+        self.assertEqual(self.memory(), "8G")
 
     def test_a_folder_moved_by_hand_is_refused_not_followed(self):
         """Told another folder than the one the collector writes, a run stops: following
