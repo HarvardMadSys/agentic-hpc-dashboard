@@ -1,10 +1,13 @@
 """Sign-in for the whole service: the page, its assets, every /api route, and /ws.
 
-One password, shared by everyone who reads this deployment. There are no
-accounts. The service keeps only a salted scrypt hash of it: in a file of its
-own, `server.auth.password_hash_file` (RC_DASH_PASSWORD_HASH_FILE), or given
+Two ways in, either or both: the site's single sign-on, through a proxy in
+front of the service (`Proxy`, the last item below), and one password, shared
+by everyone who reads this deployment. There are no accounts. The service
+keeps only a salted scrypt hash of the password: in a file of its own,
+`server.auth.password_hash_file` (RC_DASH_PASSWORD_HASH_FILE), or given
 outright as `server.auth.password_hash` (RC_DASH_PASSWORD_HASH); never both.
-With neither, `serve` refuses to start unless told to serve open.
+With no password and no proxy sign-in, `serve` refuses to start unless told
+to serve open.
 
 * **The hash file** holds the hash on one line (quotes around it, blank lines
   and `#` lines are passed over). It is read again when it changes -- checked
@@ -37,6 +40,24 @@ With neither, `serve` refuses to start unless told to serve open.
   at a time, off the event loop, and a wrong password waits a second more. A
   Basic header that passed once is remembered, so a script's later requests
   cost an HMAC, not a scrypt.
+* **Single sign-on** (`server.auth.proxy_header`, RC_DASH_PROXY_HEADER): a
+  reverse proxy -- oauth2-proxy, Apache's mod_auth_openidc, Open OnDemand --
+  signs the reader in with the site's own sign-on and names them in that
+  header. It is believed only when the request also carries the proxy's
+  secret, once, in X-RC-Proxy-Secret (SECRET_HEADER), the one in
+  `server.auth.proxy_secret_file`: an address alone is no proof, since every
+  account on the dashboard's host connects from 127.0.0.1 and could name any
+  user. And only when the connection's own address is in
+  `server.auth.proxy_trusted` (127.0.0.1 and ::1 unless set), never an address
+  a header gives (`Peer`), and only when it names one user, once, in at most
+  MAX_PROXY_USER characters, none of them a control character; with
+  `server.auth.proxy_groups`, the header `server.auth.proxy_groups_header`
+  names must list one of those groups. From any other address the header is
+  as if it were not there. A request the proxy does not sign in falls back to
+  the password, if there is one: the cookie, the Basic header and the form,
+  as above. With none it gets a 401 saying the page is behind the site's
+  sign-on, or a 403 for a user in none of the groups, in plain text; a
+  websocket is refused, as above.
 
 `rc-dashboard new-password` makes a password, writes it and a netrc to files only
 their owner can read, and writes the hash to a hash file (`--install`) or prints
@@ -48,15 +69,19 @@ import binascii
 import hashlib
 import hmac
 import html
+import ipaddress
 import os
+import re
 import secrets
 import string
 import sys
 import tempfile
 import time
+import unicodedata
 import urllib.parse
+from collections import namedtuple
 
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
 # string.punctuation without what breaks a shell line, a netrc, or a copy out
 # of a terminal: quotes, backslash, #, $, !, &, |, ;, <, >, and parentheses.
@@ -505,6 +530,366 @@ def from_config(cfg):
                 hash_file=path or None)
 
 
+# --------------------------------------------------------- single sign-on
+MAX_PROXY_USER = 256            # characters: longer is not a name a proxy sets
+MAX_PROXY_GROUPS = 1 << 16      # bytes of the groups header
+# An HTTP header's name: RFC 9110's token.
+HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+SECRET_HEADER_NAME = "x-rc-proxy-secret"   # the proxy's secret's header (`Proxy.signs_in`)
+# Headers that say something other than who signed in, set by the client or the
+# HTTP layer, or by uvicorn's and a proxy's own forwarding: none is the proxy's
+# sign-in header.
+NOT_PROXY_HEADERS = frozenset((
+    "host", "cookie", "authorization", "origin", "referer", "user-agent", "content-type",
+    "content-length", "forwarded", "x-forwarded-for", "x-forwarded-host",
+    "x-forwarded-proto", "x-real-ip", SECRET_HEADER_NAME))
+# What parts one group from the next, in the groups header and in RC_DASH_PROXY_GROUPS.
+GROUP_SEP = re.compile(r"[\s,]+")
+# What no name holds: a control or format character (a bidi override among them),
+# or a line or paragraph separator.
+NOT_IN_NAMES = ("Cc", "Cf", "Zl", "Zp")
+_ASCII_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+PEER = "rc_dashboard.peer"      # the scope's key for the connection's own address (`Peer`)
+# The header the proxy puts its secret in, on every request it passes on, and the
+# shortest secret taken: one a guess cannot reach.
+SECRET_HEADER = SECRET_HEADER_NAME.encode("latin-1")
+MIN_SECRET = 32
+MAX_SECRET_FILE = 4096
+# What a secret is made of: visible ASCII, which every proxy writes into a header as is.
+SECRET_CHARS = re.compile(r"[\x21-\x7e]+")
+READER = "rc_dashboard.reader"  # and for how the reader got in (`AuthMiddleware`)
+SAY_EVERY_S = 60.0              # how often a header from an address not trusted is said
+
+# What the proxy said of a request (`Proxy.signs_in`): `why` is None when it
+# signed `user` in.
+Signed = namedtuple("Signed", "user why")
+
+
+def _odd(text):
+    """Whether `text` holds a character no name holds (NOT_IN_NAMES)."""
+    if text.isascii():
+        return _ASCII_CONTROL.search(text) is not None
+    return any(unicodedata.category(c) in NOT_IN_NAMES for c in text)
+
+
+def _header_text(raw):
+    """A header's value as text, UTF-8 or else Latin-1 (HTTP's own), without the
+    spaces and tabs around it."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    return text.strip(" \t")
+
+
+def shown(name):
+    """A name as the service sends it out: with what reads as a credential
+    masked (redact.py), as everything else it sends is."""
+    from . import redact
+    return redact.redact(name) if name else name
+
+
+class Proxy:
+    """The site's single sign-on, through a reverse proxy in front of the
+    service (the module's docstring). `trusted` holds ip_network objects."""
+
+    def __init__(self, header, trusted, groups_header="", groups=(), logout_url="",
+                 secret=b""):
+        if len(secret) < MIN_SECRET:
+            raise ValueError("the proxy's secret is under %d characters" % MIN_SECRET)
+        self.header = header
+        self.secret = secret
+        self.trusted = tuple(trusted)
+        self.groups_header = groups_header
+        self.groups = frozenset(groups)
+        self.logout_url = logout_url
+        self._user = header.lower().encode("latin-1")
+        self._groups = groups_header.lower().encode("latin-1") if groups_header else None
+        self._said = None               # when a header from an untrusted address was said
+        self._said_secret = None        # when a user named without the secret was said
+
+    def trusts(self, addr):
+        """Whether `addr`, the address a connection came from, is in `trusted`.
+        An IPv4 address an IPv6 socket reports (::ffff:a.b.c.d) is that IPv4
+        address; anything that is not an address is not trusted."""
+        if not isinstance(addr, str):
+            return False
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False
+        if ip.version == 6 and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        return any(ip in net for net in self.trusted)
+
+    def signs_in(self, scope):
+        """`Signed(user, why)`: `why` is None when the proxy signed this request
+        in as `user`. Else why not: "peer", the connection is not from a trusted
+        address, so its headers are as if absent; "missing", no user named;
+        "bad", a name not taken -- empty, longer than MAX_PROXY_USER, holding a
+        control character, or the header twice, since one may be the client's;
+        "group", `user` is in none of `groups`; "secret", the request does not
+        carry the proxy's secret once (SECRET_HEADER), so its headers are as if
+        absent. The connection's address is the one `Peer` kept: never a
+        header's. Header names match in any case."""
+        peer = scope.get(PEER)
+        addr = peer[0] if peer else None
+        users, groups, secrets_ = [], [], []
+        for k, v in scope.get("headers") or ():
+            k = k.lower()
+            if k == self._user:
+                users.append(v)
+            elif k == self._groups:
+                groups.append(v)
+            elif k == SECRET_HEADER:
+                secrets_.append(v)
+        if not self.trusts(addr):
+            if users:
+                self._untrusted(addr)
+            return Signed(None, "peer")
+        # compare_digest in full either way: how long a wrong secret took says nothing
+        if len(secrets_) != 1 or not hmac.compare_digest(secrets_[0].strip(b" \t"),
+                                                          self.secret):
+            if users:
+                self._no_secret(addr)
+            return Signed(None, "secret")
+        if not users:
+            return Signed(None, "missing")
+        user = ""
+        if len(users) == 1 and len(users[0]) <= 4 * MAX_PROXY_USER:
+            user = _header_text(users[0])
+        if not user or len(user) > MAX_PROXY_USER or _odd(user):
+            return Signed(None, "bad")
+        if self.groups and not self.in_group(groups):
+            return Signed(user, "group")
+        return Signed(user, None)
+
+    def in_group(self, values):
+        """Whether the groups header -- `values`, each copy of it -- lists one of
+        `groups`, exactly as written. It must come once, since a second copy may
+        be the client's, and hold no control character."""
+        if len(values) != 1 or len(values[0]) > MAX_PROXY_GROUPS:
+            return False
+        names = [g for g in GROUP_SEP.split(_header_text(values[0])) if g]
+        if _odd("".join(names)):
+            return False
+        return not self.groups.isdisjoint(names)
+
+    def _untrusted(self, addr):
+        """Say, at most once a minute, that a request from an address not in
+        `trusted` named a user, which was passed over: what a proxy connecting
+        from an address no one listed looks like from here."""
+        now = time.monotonic()
+        if self._said is not None and now - self._said < SAY_EVERY_S:
+            return
+        self._said = now
+        _say("a request from %s named a user in %s, which was passed over: that address is "
+             "not in server.auth.proxy_trusted (said at most once a minute)"
+             % (addr or "an unknown address", self.header))
+
+    def _no_secret(self, addr):
+        """Say, at most once a minute, that a request named a user without the
+        proxy's secret, which was passed over: another account on this host, or
+        a proxy not set to send it."""
+        now = time.monotonic()
+        if self._said_secret is not None and now - self._said_secret < SAY_EVERY_S:
+            return
+        self._said_secret = now
+        _say("a request from %s named a user in %s without the proxy's secret in "
+             "X-RC-Proxy-Secret, so it was passed over: the proxy must send it on every "
+             "request (said at most once a minute)" % (addr or "an unknown address", self.header))
+
+    def describe(self):
+        """Who is believed, and of what, for the start-up log."""
+        who = ", ".join(str(n.network_address) if n.num_addresses == 1 else str(n)
+                        for n in self.trusted)
+        groups = ("a user in %s, by %s" % (", ".join(sorted(self.groups)), self.groups_header)
+                  if self.groups else "any user it names")
+        return "the user %s names, sent from %s with the proxy's secret; %s; %s" % (
+            self.header, who, groups,
+            "Sign out goes to %s" % self.logout_url if self.logout_url else "no Sign out")
+
+
+def has_proxy(cfg):
+    """Whether the config turns proxy sign-in on (`server.auth.proxy_header`)."""
+    return bool(str(cfg.get("server.auth.proxy_header") or "").strip())
+
+
+def _logout_ok(url):
+    """A path on this site (not `//host`, nor a backslash, which a browser reads
+    as a slash), or an http(s) URL with a host; never a space or a control
+    character."""
+    if "\\" in url or any(c.isspace() for c in url) or _odd(url):
+        return False
+    if url.startswith("/"):
+        return not url.startswith("//")
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
+def proxy_from_config(cfg):
+    """The proxy sign-in, or None when `server.auth.proxy_header` is empty. A
+    setting it could not work with stops the service, saying why: a header name
+    that is not one, or says something else (NOT_PROXY_HEADERS); no trusted
+    address, or one that is not an address or a network (no name, since a name
+    is only as good as DNS); a group with a space or a comma in it, or groups
+    and no header to read them from; a sign-out URL that is neither a path here
+    nor an http(s) URL, or that holds what reads as a credential (redact.py):
+    every reader is sent it. Each of its other settings, given while it is off,
+    is named in a warning."""
+    key = "server.auth."
+    origin = getattr(cfg, "origin", lambda k: "?")
+    header = str(cfg.get(key + "proxy_header") or "").strip()
+    gheader = str(cfg.get(key + "proxy_groups_header") or "").strip()
+    groups = [str(g) for g in cfg.get(key + "proxy_groups") or ()]
+    logout = str(cfg.get(key + "proxy_logout_url") or "").strip()
+    if not header:
+        for name, val in (("proxy_groups_header", gheader), ("proxy_groups", groups),
+                          ("proxy_logout_url", logout)):
+            if val:
+                _say("%s%s is set (by %s), but %sproxy_header is not, so proxy sign-in is off "
+                     "and it is ignored" % (key, name, origin(key + name), key))
+        return None
+    for name, val in (("proxy_header", header), ("proxy_groups_header", gheader)):
+        if val and not HEADER_NAME.fullmatch(val):
+            raise SystemExit("%s%s: %r is not the name of a header (set by %s)" % (
+                key, name, val, origin(key + name)))
+        if val.lower() in NOT_PROXY_HEADERS:
+            raise SystemExit(
+                "%s%s: %s says something other than who signed in, which a client or the "
+                "HTTP layer sets, so the proxy's sign-in cannot ride in it (set by %s). Name "
+                "the header the proxy sets for it, such as X-Forwarded-User or "
+                "X-Forwarded-Groups." % (key, name, val, origin(key + name)))
+    if gheader.lower() == header.lower():
+        raise SystemExit("%sproxy_groups_header and %sproxy_header both name %s: the groups "
+                         "are a header of their own" % (key, key, header))
+    for g in groups:
+        if not g or GROUP_SEP.search(g) or _odd(g):
+            raise SystemExit("%sproxy_groups: %r is not the name of a group: no space, comma "
+                             "or control character, which part one group from the next "
+                             "(set by %s)" % (key, g, origin(key + "proxy_groups")))
+    if groups and not gheader:
+        raise SystemExit(
+            "%sproxy_groups is set (by %s), but %sproxy_groups_header is not, so no one could "
+            "be found in a group: name the header the proxy lists the user's groups in "
+            "(RC_DASH_PROXY_GROUPS_HEADER), or leave proxy_groups empty to take any user it "
+            "names" % (key, origin(key + "proxy_groups"), key))
+    trusted = []
+    for entry in cfg.get(key + "proxy_trusted") or ():
+        e = str(entry).strip()
+        try:
+            trusted.append(ipaddress.ip_network(e))
+        except ValueError:
+            why = "is not an address or a network (10.0.0.0/8): name the proxy's own address"
+            if e == "*":
+                why = "would believe the user any connection names: name the proxy's own address"
+            else:
+                try:
+                    why = "has bits set past its prefix: the network is %s" % (
+                        ipaddress.ip_network(e, strict=False))
+                except ValueError:
+                    pass
+            raise SystemExit("%sproxy_trusted: %r %s (set by %s)" % (
+                key, e, why, origin(key + "proxy_trusted")))
+    if not trusted:
+        raise SystemExit(
+            "%sproxy_trusted is empty (set by %s), so the proxy could sign no one in: name the "
+            "address the proxy connects from (127.0.0.1 when it runs on this host)"
+            % (key, origin(key + "proxy_trusted")))
+    if logout and not _logout_ok(logout):
+        raise SystemExit("%sproxy_logout_url: %r is neither a path on this site (/oauth2/sign_out) "
+                         "nor an http(s) URL (set by %s)" % (
+                             key, logout, origin(key + "proxy_logout_url")))
+    if logout and shown(logout) != logout:
+        raise SystemExit(
+            "%sproxy_logout_url holds what reads as a credential, and every reader is sent it "
+            "(set by %s): give the proxy's sign-out URL without one" % (
+                key, origin(key + "proxy_logout_url")))
+    secret = read_proxy_secret(cfg.get(key + "proxy_secret_file") or "",
+                               origin(key + "proxy_secret_file"))
+    return Proxy(header, trusted, gheader, groups, logout, secret)
+
+
+MAKE_SECRET = ("python3 -c 'import secrets; print(secrets.token_urlsafe(48))' > FILE, "
+               "with umask 077, readable by the service's account alone")
+
+
+def read_proxy_secret(path, origin="?"):
+    """The proxy's secret, from `server.auth.proxy_secret_file`: its one line, as
+    bytes. Stops the service, saying why and how to make one, when it is not set,
+    cannot be read, is readable by every account on this host (which could then
+    name any user), or is too short or holds a character a header would not
+    carry as it is."""
+    key = "server.auth.proxy_secret_file"
+    if not path:
+        raise SystemExit(
+            "%s is not set: proxy sign-in believes the user a request names only with the "
+            "secret the proxy adds to it in X-RC-Proxy-Secret, since every account that can "
+            "reach the port -- on this host, all of them, through 127.0.0.1 -- could send any "
+            "header. Make one: %s; name it here (RC_DASH_PROXY_SECRET_FILE); and have the "
+            "proxy send it on every request (dashboard/README.md, \"Single sign-on through a "
+            "proxy\")" % (key, MAKE_SECRET))
+    try:
+        st = os.stat(path)
+        with open(path, "rb") as fh:
+            raw = fh.read(MAX_SECRET_FILE + 1)
+    except OSError as e:
+        raise SystemExit("%s: %s: %s (set by %s)" % (key, path, e.strerror or e, origin))
+    if st.st_mode & 0o004:
+        raise SystemExit("%s: %s is readable by every account on this host, any of which "
+                         "could then name any user: chmod o-r it (set by %s)" % (key, path, origin))
+    lines = [ln.strip() for ln in raw[:MAX_SECRET_FILE].splitlines()]
+    lines = [ln for ln in lines if ln and not ln.startswith(b"#")]
+    if len(raw) > MAX_SECRET_FILE or len(lines) != 1:
+        raise SystemExit("%s: %s must hold the secret on one line (set by %s)" % (key, path, origin))
+    secret = lines[0]
+    if len(secret) < MIN_SECRET or not SECRET_CHARS.fullmatch(secret.decode("latin-1")):
+        raise SystemExit(
+            "%s: the secret in %s must be %d characters or more, letters, digits and "
+            "punctuation, no space: make one with %s (set by %s)"
+            % (key, path, MIN_SECRET, MAKE_SECRET, origin))
+    return secret
+
+
+def forwarded_allow_ips():
+    """The addresses uvicorn takes X-Forwarded-Proto and X-Forwarded-For from:
+    FORWARDED_ALLOW_IPS, as uvicorn reads it, else 127.0.0.1 and ::1."""
+    return os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1,::1")
+
+
+class Peer:
+    """ASGI, outside everything else: the address the connection came from, kept
+    in the scope under PEER before anything reads a forwarded header, and then
+    the forwarded headers read as uvicorn reads them -- X-Forwarded-Proto into
+    the scheme, so a cookie is Secure behind cloudflared, and X-Forwarded-For
+    into `client`, which the access log names -- from the addresses
+    `forwarded_allow_ips` names. `serve` runs uvicorn with its own reading off
+    (app.SERVER_OPTIONS): it rewrote `client` before the app saw the request, so
+    the address the proxy sign-in trusts would have been a header's."""
+
+    def __init__(self, app, trusted_hosts=None):
+        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+        self.app = app
+        self.forwarded = ProxyHeadersMiddleware(app, trusted_hosts=trusted_hosts
+                                                or forwarded_allow_ips())
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            scope.setdefault(PEER, scope.get("client"))
+        await self.forwarded(scope, receive, send)
+
+
+def reader(scope, proxy=None):
+    """How the reader of this request got in, for /api/config's `_meta.auth`:
+    `method`, proxy, password or open; `user`, the name the proxy gave, else
+    null; `logout_url`, where Sign out goes when the proxy signed them in, else
+    null (with the password, Sign out is the form's own)."""
+    got = scope.get(READER) or {"method": "open", "user": None}
+    by_proxy = got["method"] == "proxy"
+    return {"method": got["method"], "user": shown(got["user"]) if by_proxy else None,
+            "logout_url": (proxy.logout_url or None) if by_proxy and proxy else None}
+
+
 # --------------------------------------------------------------- the page
 # Light only and in the page's own palette (web/src/styles.css), with nothing
 # loaded from anywhere: the bundle's assets wait behind this form.
@@ -616,15 +1001,28 @@ def _is_api(path):
     return path == "/api" or path.startswith("/api/")
 
 
-class AuthMiddleware:
-    """ASGI: nothing reaches the app without the password (see the module's
-    docstring). Added outside every route and the static mount, so a route
-    added later is covered without anyone remembering to be."""
+# What a request the proxy did not sign in is told when there is no password to
+# fall back to (`AuthMiddleware.no_password`): plain text, never a list of groups.
+BEHIND_SSO = "This dashboard is behind the site's single sign-on: open it through the site's sign-in.\n"
+NOT_IN_GROUP = "Signed in as %s, who is not in a group allowed to read this dashboard.\n"
+TEXT_HEADERS = {"cache-control": "no-store", "x-content-type-options": "nosniff"}
 
-    def __init__(self, app, gate, site=""):
+
+class AuthMiddleware:
+    """ASGI: nothing reaches the app unless the proxy signed the reader in or
+    they gave the password (see the module's docstring). Added outside every
+    route and the static mount, so a route added later is covered without
+    anyone remembering to be. `gate` is the password's and `proxy` the single
+    sign-on's: either may be None, not both. What let a request in is kept in
+    its scope under READER, for /api/config (`reader`)."""
+
+    def __init__(self, app, gate=None, site="", proxy=None):
+        if gate is None and proxy is None:
+            raise ValueError("a sign-in needs a password, a proxy, or both")
         self.app = app
         self.gate = gate
         self.site = site
+        self.proxy = proxy
 
     def page(self, nxt, status=200, error=None):
         return HTMLResponse(login_page(self.site, nxt, error), status_code=status,
@@ -636,27 +1034,49 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path") or "/"
-        if kind == "http" and path == LOGIN:
-            await self.login(scope, receive, send)
-        elif kind == "http" and path == LOGOUT:
+        signed = self.proxy.signs_in(scope) if self.proxy is not None else None
+        if self.proxy is not None:
+            # The proxy's secret goes no further than here: nothing past the
+            # sign-in reads it, so nothing there can log it or send it back.
+            scope["headers"] = [(k, v) for k, v in scope.get("headers") or ()
+                                if k.lower() != SECRET_HEADER]
+        if self.gate is not None and kind == "http" and path == LOGIN:
+            await self.login(scope, receive, send, signed)
+        elif self.gate is not None and kind == "http" and path == LOGOUT:
             await self.logout(scope, receive, send)
-        elif await self.gate.allowed(scope):
+        elif signed is not None and signed.why is None:
+            scope[READER] = {"method": "proxy", "user": signed.user}
+            await self.app(scope, receive, send)
+        elif self.gate is not None and await self.gate.allowed(scope):
+            scope[READER] = {"method": "password", "user": None}
             await self.app(scope, receive, send)
         elif kind == "websocket":
             await receive()                              # websocket.connect
             await send({"type": "websocket.close", "code": 1008})
+        elif self.gate is None:
+            await self.no_password(signed)(scope, receive, send)
         elif scope.get("method") in ("GET", "HEAD") and not _is_api(path):
             await self.page(_here(scope), status=401)(scope, receive, send)
         else:
             await JSONResponse({"detail": "this dashboard needs its password: sign in at /login"},
                                status_code=401, headers=NO_STORE)(scope, receive, send)
 
-    async def login(self, scope, receive, send):
+    def no_password(self, signed):
+        """A request the proxy did not sign in, with no password to fall back to:
+        a 403 for a user in none of the groups, else a 401, either way saying
+        why in plain text, and never which groups would do."""
+        if signed is not None and signed.why == "group":
+            return PlainTextResponse(NOT_IN_GROUP % shown(signed.user), status_code=403,
+                                     headers=TEXT_HEADERS)
+        return PlainTextResponse(BEHIND_SSO, status_code=401, headers=TEXT_HEADERS)
+
+    async def login(self, scope, receive, send, signed=None):
         method = scope.get("method")
         if method in ("GET", "HEAD"):
             q = urllib.parse.parse_qs((scope.get("query_string") or b"").decode("latin-1"))
             nxt = safe_next((q.get("next") or ["/"])[0])
-            resp = _see_other(nxt) if await self.gate.allowed(scope) else self.page(nxt)
+            inside = (signed is not None and signed.why is None) or await self.gate.allowed(scope)
+            resp = _see_other(nxt) if inside else self.page(nxt)
         elif method == "POST":
             body = await _read_body(receive, MAX_FORM)
             if body is None:

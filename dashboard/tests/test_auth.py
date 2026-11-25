@@ -218,10 +218,14 @@ class ConfigKeys(unittest.TestCase):
     def test_no_password_and_not_open_by_default(self):
         # An app built with no hash has no gate; `serve` refuses to start so
         # unless `open` is set (test_serve.py).
+        # Nor single sign-on: no header named (tests/test_proxy_signin.py).
         self.assertEqual(configmod.defaults()["server"]["auth"],
                          {"password_hash": "", "password_hash_file": "", "session_days": 30,
-                          "open": False})
+                          "open": False, "proxy_header": "", "proxy_groups_header": "",
+                          "proxy_groups": [], "proxy_trusted": ["127.0.0.1", "::1"],
+                          "proxy_logout_url": "", "proxy_secret_file": ""})
         self.assertIsNone(auth.from_config(self.cfg()))
+        self.assertIsNone(auth.proxy_from_config(self.cfg()))
 
     def test_env_sets_the_hash(self):
         stored = auth.hash_password("pw", **FAST)

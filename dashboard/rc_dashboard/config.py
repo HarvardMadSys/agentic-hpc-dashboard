@@ -77,6 +77,11 @@ def _csv(v):
     return [p.strip() for p in (v or "").split(",") if p.strip()]
 
 
+def _words(v):
+    """Names separated by commas, spaces, or both."""
+    return [p for p in re.split(r"[\s,]+", v or "") if p]
+
+
 def _flag(v):
     """A yes/no setting written as text -- an env var, or a string in the
     config file: 1/0, true/false, yes/no or on/off, in any case, with spaces
@@ -578,8 +583,22 @@ def defaults():
                    # open page is read by anyone who reaches the port, which on
                    # a login node is every user of it. A demo serves made-up data
                    # and is open unless a hash is set.
+                   # Or the site's single sign-on (auth.Proxy): a reverse proxy in
+                   # front of the service signs the reader in and names them in
+                   # the header `proxy_header` names (X-Forwarded-User); empty, it
+                   # is off. The header is believed only with the secret in
+                   # `proxy_secret_file`, which the proxy sends on every request
+                   # (X-RC-Proxy-Secret), and only from a connection whose own
+                   # address is in `proxy_trusted` (addresses or networks).
+                   # With `proxy_groups`, the user must be in one of them, as
+                   # `proxy_groups_header` lists theirs. Under it Sign out goes to
+                   # `proxy_logout_url`, and with none is not offered. A request it
+                   # does not sign in falls back to the password, if there is one.
                    "auth": {"password_hash": "", "password_hash_file": "",
-                            "session_days": 30, "open": False},
+                            "session_days": 30, "open": False,
+                            "proxy_header": "", "proxy_groups_header": "",
+                            "proxy_groups": [], "proxy_trusted": ["127.0.0.1", "::1"],
+                            "proxy_logout_url": "", "proxy_secret_file": ""},
                    # Who may connect (guard.py). A websocket opened by a page on
                    # any origin but the dashboard's own -- another port of the
                    # same host included -- is refused, unless its origin is
@@ -593,7 +612,8 @@ def defaults():
                    # With no password, a request is answered only under a
                    # loopback name, `host` above, or a name listed here ("*": any):
                    # another site's page cannot read the dashboard by pointing its
-                   # own name at 127.0.0.1 (DNS rebinding). Unused with a password.
+                   # own name at 127.0.0.1 (DNS rebinding). Unused with a password,
+                   # unless proxy sign-in is on: such a page could send the header.
                    "allowed_hosts": [],
                    # Name the endpoints on the Network bytes panel by reverse
                    # DNS (endpoints.py): `workers` lookups at a time, from this
@@ -666,6 +686,12 @@ ENV_MAP = {
     "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
     "server.auth.password_hash_file": ("RC_DASH_PASSWORD_HASH_FILE", str),
     "server.auth.open": ("RC_DASH_OPEN", _flag),
+    "server.auth.proxy_header": ("RC_DASH_PROXY_HEADER", str),
+    "server.auth.proxy_groups_header": ("RC_DASH_PROXY_GROUPS_HEADER", str),
+    "server.auth.proxy_groups": ("RC_DASH_PROXY_GROUPS", _words),
+    "server.auth.proxy_trusted": ("RC_DASH_PROXY_TRUSTED", _words),
+    "server.auth.proxy_logout_url": ("RC_DASH_PROXY_LOGOUT_URL", str),
+    "server.auth.proxy_secret_file": ("RC_DASH_PROXY_SECRET_FILE", str),
     "ui.show_internal": ("RC_DASH_SHOW_INTERNAL", _flag),
     "status.transport_files": ("RC_DASH_TRANSPORT_FILES", _csv),
     "status.stale_s": ("RC_DASH_STATUS_STALE_S", int),
@@ -981,7 +1007,7 @@ def read_file(path):
 # `risk.profile`, which has always been under dashboard/ (`load`).
 PATH_KEYS = ("feeds.ebpf.roots", "feeds.ebpf_node.roots", "cache.dir", "history.dir",
              "rollup.dir", "server.static_dir", "server.auth.password_hash_file",
-             "ask.system_prompt_file", "status.transport_files")
+             "server.auth.proxy_secret_file", "ask.system_prompt_file", "status.transport_files")
 
 
 def path_base(config_file):
@@ -1118,12 +1144,20 @@ def load(args=None, config_path=None):
         raise SystemExit("ingest.reducer_groups: %r is not 1 or 2 (set by %s)" % (
             groups, origins.get("ingest.reducer_groups", "default")))
 
-    # Who may connect (guard.py): lists of names, or the service refuses to
-    # start rather than take a string for a list of its letters.
-    for key in ("server.allowed_origins", "server.dev_origins", "server.allowed_hosts"):
+    # Who may connect (guard.py), and whom the proxy sign-in believes (auth.Proxy):
+    # lists of names, or the service refuses to start rather than take a string
+    # for a list of its letters. What each name must be, auth.proxy_from_config says.
+    for key in ("server.allowed_origins", "server.dev_origins", "server.allowed_hosts",
+                "server.auth.proxy_groups", "server.auth.proxy_trusted"):
         val = _get(tree, key, [])
         if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
             raise SystemExit("%s: %r is not a list of names (set by %s)" % (
+                key, val, origins.get(key, "default")))
+    for key in ("server.auth.proxy_header", "server.auth.proxy_groups_header",
+                "server.auth.proxy_logout_url", "server.auth.proxy_secret_file"):
+        val = _get(tree, key, "")
+        if not isinstance(val, str):
+            raise SystemExit("%s: %r is not text (set by %s)" % (
                 key, val, origins.get(key, "default")))
     # What of the service's environment the agents get besides ask.AGENT_ENV:
     # variable names, or a family's prefix -- three characters or more, then

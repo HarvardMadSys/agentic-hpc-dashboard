@@ -185,8 +185,8 @@ def build_parser():
 
     p = _cmd(sub, "serve", "the service (the default command)",
              "Serve the page and its API over the collector's files. Refuses to start without "
-             "a password (server.auth.password_hash_file or server.auth.password_hash) unless "
-             "--open.",
+             "a password (server.auth.password_hash_file or server.auth.password_hash) or the "
+             "site's single sign-on through a proxy (server.auth.proxy_header) unless --open.",
              "  rc-dashboard serve\n"
              "  rc-dashboard serve --config /etc/rc-dashboard/dashboard.toml --port 8081\n"
              "  RC_DASH_EBPF_ROOTS=/var/log/ebpfm rc-dashboard serve\n"
@@ -348,8 +348,9 @@ def build_parser():
 # What `serve` says when it will not start open (`refusal`).
 NO_PASSWORD = """\
 refusing to serve: there is no password (neither server.auth.password_hash_file nor
-server.auth.password_hash is set), so anyone who reaches port %(port)s -- on a login
-node, every user of it -- would read every user's commands. Either:
+server.auth.password_hash is set) and no single sign-on (server.auth.proxy_header is
+not set), so anyone who reaches port %(port)s -- on a login node, every user of it --
+would read every user's commands. Either:
   - make one: `rc-dashboard new-password --install ~/.config/rc-dashboard/password.hash`
     writes it to a file only you can read and its hash to that hash file. Name the hash
     file in the config, "server": {"auth": {"password_hash_file": "<file>"}} (in TOML,
@@ -357,16 +358,21 @@ node, every user of it -- would read every user's commands. Either:
     start again: the service reads the file again when it changes, so a new password
     needs no restart. Or put the hash itself in the config as
     "server": {"auth": {"password_hash": "<hash>"}} (or in RC_DASH_PASSWORD_HASH); or
+  - let the site's single sign-on sign readers in, through a reverse proxy in front of
+    the service: name the header it sets in "server": {"auth": {"proxy_header":
+    "X-Forwarded-User"}} (or in RC_DASH_PROXY_HEADER), and see dashboard/README.md,
+    "Single sign-on through a proxy"; or
   - serve it open anyway, on a machine only you can reach: --open (RC_DASH_OPEN=1,
     or "server": {"auth": {"open": true}}).
 """
 
 
 def refusal(cfg):
-    """Why the service must not start, or None. With no password it starts only
-    when told to (`server.auth.open`); a demo is (demo.configure)."""
+    """Why the service must not start, or None. With no password and no proxy
+    sign-in it starts only when told to (`server.auth.open`); a demo is
+    (demo.configure)."""
     from . import auth
-    if auth.has_password(cfg) or cfg.get("server.auth.open"):
+    if auth.has_password(cfg) or auth.has_proxy(cfg) or cfg.get("server.auth.open"):
         return None
     return NO_PASSWORD % {"port": cfg.get("server.port")}
 
@@ -532,7 +538,7 @@ def main(argv=None):
 
     import uvicorn
     from . import clock
-    from .app import create_app
+    from .app import SERVER_OPTIONS, create_app
     # Before anything reads the time: the window registry starts building the
     # default window as the app is created.
     if cfg.get("clock.as_of"):
@@ -545,7 +551,13 @@ def main(argv=None):
         sys.stderr.write("demo: serving synthetic data on http://%s:%s\n"
                          % (cfg.get("server.host"), cfg.get("server.port")))
     app = create_app(cfg)
+    # Each way in that is on, a line each: the site's single sign-on, the password.
     gate = app.state.auth
+    proxy = getattr(app.state, "proxy", None)
+    if proxy is not None:
+        sys.stderr.write("sign-in on: single sign-on through a proxy, %s%s\n" % (
+            proxy.describe(), "" if gate is not None else
+            "; no password, so a request the proxy did not sign in is refused"))
     if gate is not None:
         sys.stderr.write("sign-in on: %s; a session lasts %g days\n" % (
             "the password's hash is read from %s, again when it changes and on SIGHUP"
@@ -555,14 +567,15 @@ def main(argv=None):
             # SIGHUP reads the hash file again (auth.Gate.reload). Only with a
             # hash file: otherwise SIGHUP still ends the service, as it did.
             signal.signal(signal.SIGHUP, lambda *_a: _hup(gate))
-    else:
+    elif proxy is None:
         sys.stderr.write("sign-in off (server.auth.open, set by %s): anyone who reaches port "
                          "%s reads the page\n" % (cfg.origin("server.auth.open"),
                                                   cfg.get("server.port")))
     # An open websocket (every page holds one) must not hold a restart hostage.
+    # SERVER_OPTIONS: `client` stays the connection's own address (auth.Peer).
     try:
         uvicorn.run(app, host=cfg.get("server.host"), port=int(cfg.get("server.port")),
-                    log_level="info", timeout_graceful_shutdown=3)
+                    log_level="info", timeout_graceful_shutdown=3, **SERVER_OPTIONS)
         code = 0
     except SystemExit as e:              # uvicorn's own exit, e.g. a failed bind
         code = e.code if isinstance(e.code, int) else 1

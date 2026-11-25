@@ -72,6 +72,12 @@ it does not. Older checkouts reported a tracer that had died at once as started.
 - **The service exits at start with `server.auth.password_hash: …`**: the hash is malformed, most
   often quoted or cut by a shell (`$` expands inside double quotes). Use the hash file
   (`RC_DASH_PASSWORD_HASH_FILE`), which needs no quoting.
+- **Behind single sign-on, everyone gets "This dashboard is behind the site's single sign-on"**:
+  the log says why each request was passed over. `without the proxy's secret`: the proxy does not
+  send `X-RC-Proxy-Secret`, or sends another value than the secret file's. `not in
+  server.auth.proxy_trusted`: the proxy connects from an address not listed. A 403 naming the user
+  means they are in none of `server.auth.proxy_groups`
+  ([Single sign-on](../dashboard/README.md#single-sign-on-through-a-proxy)).
 
 ## The service will not start
 

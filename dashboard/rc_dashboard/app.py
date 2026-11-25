@@ -33,7 +33,7 @@ from . import roles, tool_buckets
 from . import status as statusmod
 from . import windows as winmod
 from .aggregator import Aggregator
-from .anonymize import Verbatim
+from .anonymize import Verbatim, verbatim
 from .ask import unmasked_refusal
 from .export import parse_filters
 from .iocmds import PAGE_MAX as iocmd_page_max, IoCommands, agent_keys
@@ -278,9 +278,19 @@ class CachedStatic(StaticFiles):
         return n
 
 
+# How `serve` runs uvicorn (__main__.py), and how a test starts the app as it is
+# served: without uvicorn's own reading of X-Forwarded-For, which rewrote a
+# request's `client` from that header before the app saw the request. The app
+# reads the forwarded headers itself once it has kept the connection's own
+# address, which is all the proxy sign-in believes (auth.Peer, auth.Proxy).
+SERVER_OPTIONS = {"proxy_headers": False}
+
+
 def create_app(cfg):
-    # First, so a malformed password hash stops the service before it reads anything.
+    # First, so a malformed password hash, or a proxy sign-in that could not
+    # work, stops the service before it reads anything.
     gate = authmod.from_config(cfg)
+    proxy = authmod.proxy_from_config(cfg)
     # The commit this process runs, taken now: a checkout pulled later is not it
     # (/api/config's _meta.version).
     from . import about
@@ -355,7 +365,8 @@ def create_app(cfg):
                   default_response_class=AnonJSONResponse)
     app.state.cfg = cfg
     app.state.agg = agg
-    app.state.auth = gate
+    app.state.auth = gate                   # the password's (auth.Gate), or None
+    app.state.proxy = proxy                 # the single sign-on's (auth.Proxy), or None
     # ws -> its `Reader`, which says the window that reader is viewing: the live
     # frame is window-specific, one payload per DISTINCT window, not one per
     # client, so ten readers on the default window still cost one build.
@@ -585,7 +596,13 @@ def create_app(cfg):
     # ------------------------------------------------------------------- API
     @app.get("/api/config")
     def api_config(request: Request):
-        return respond(cfg.as_dict(with_origins=True), request=request)
+        tree = cfg.as_dict(with_origins=True)
+        # How this reader got in (auth.reader): the page's head names a user the
+        # proxy signed in, and its Sign out follows. Their own name, and the
+        # service's words, so kept as written when names are masked.
+        tree["_meta"]["auth"] = {"_value": verbatim(authmod.reader(request.scope, proxy)),
+                                 "_origin": "request"}
+        return respond(tree, request=request)
 
     @app.get("/api/feeds")
     def api_feeds(request: Request):
@@ -1002,17 +1019,23 @@ def create_app(cfg):
     # covered without anyone remembering to be (auth.py). Inside it, what may
     # change something takes a JSON body only (guard.JsonOnly).
     app.add_middleware(guardmod.JsonOnly)
-    if gate is not None:
-        app.add_middleware(authmod.AuthMiddleware, gate=gate, site=authmod.site_label(cfg))
+    if gate is not None or proxy is not None:
+        app.add_middleware(authmod.AuthMiddleware, gate=gate, proxy=proxy,
+                           site=authmod.site_label(cfg))
     # ------------------------------------------------------ who may connect
     # Outside the sign-in, so what it refuses costs no password check: a
-    # websocket from another site's page, and with no password, a request
-    # under a name that is not this host's (guard.py).
+    # websocket from another site's page, and with no password, or with proxy
+    # sign-in on, a request under a name that is not this host's (guard.py).
     origins = guardmod.allowed_origins(cfg)
-    app.add_middleware(guardmod.SiteGuard, check_host=gate is None,
+    app.add_middleware(guardmod.SiteGuard, check_host=gate is None or proxy is not None,
                        bind_host=str(cfg.get("server.host") or ""),
                        allowed_hosts=cfg.get("server.allowed_hosts") or (),
-                       allowed_origins=origins)
+                       allowed_origins=origins,
+                       host_why=("signs readers in through a proxy" if proxy is not None
+                                 else "has no password"))
+    # Outside everything: the connection's own address, kept before anything
+    # reads a forwarded header (auth.Peer, SERVER_OPTIONS).
+    app.add_middleware(authmod.Peer)
     # Said at start, beside the sign-in (__main__.py): run.sh, or the
     # environment, may have added a dev server's origins to the configured ones.
     named = list(dict.fromkeys(o.strip() for o in origins if o.strip()))

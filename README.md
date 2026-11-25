@@ -217,8 +217,9 @@ The records name real users and show what they ran, so both halves keep them clo
   `[REDACTED-PROMPT]` (`EBPFM_REDACT`). Its records go only to its output folders; its one use of the network is
   resolving host names that command lines mention, to name the endpoints a process talked to
   (`EBPFM_ARGV_HOSTS=0` turns that off).
-- **The dashboard** will not start without a password unless told to (`--open`), and masks
-  credentials again on every way out. `RC_DASH_ANONYMIZE=1` replaces every name with an alias.
+- **The dashboard** will not start without a password, or the site's single sign-on through a
+  proxy, unless told to (`--open`), and masks credentials again on every way out.
+  `RC_DASH_ANONYMIZE=1` replaces every name with an alias.
   It names network endpoints by reverse DNS from its own host (`RC_DASH_RDNS=0` turns that
   off). **Ask LLM**, off by default, sends masked data to a model's provider when a site turns
   it on.
