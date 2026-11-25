@@ -178,7 +178,7 @@ four questions (Slurm? which nodes? root on the nodes? root on the dashboard's h
 runs its scripts:
 
 ```bash
-sudo deploy/rc-deploy init      # writes the settings file, and records the layout in it (hpc: no sudo)
+deploy/rc-deploy init           # writes the settings file, and records the layout in it
 sudo deploy/rc-deploy plan      # what it would do; nothing done (hpc runs as you, no sudo)
 sudo deploy/rc-deploy apply
 sudo deploy/rc-deploy password  # makes the password; its hash goes where the dashboard reads it
@@ -208,8 +208,8 @@ resolve, and what each does: [`dashboard/README.md`](dashboard/README.md#configu
 
 The deployment kits take the same names for the same settings: `SITE_NAME`, `SITE_DESCRIPTION`,
 `SLURM`, `NODE_NOUN`, `ANONYMIZE` (1/0, true/false, yes/no, on/off), `MEMORY_MAX` and
-`FREE_MIN_GB`. They go in `/etc/rc-dashboard/site.env` (rc-deploy), the deploy/ installers'
-environment, or `hpc/deploy/site.env`; each sets the dashboard's own setting (`deploy/README.md`,
+`FREE_MIN_GB`. They go in `deploy/site.env` (rc-deploy), the deploy/ installers' environment,
+or `hpc/deploy/site.env`; each sets the dashboard's own setting (`deploy/README.md`,
 "Settings"). The collector reads `/etc/default/ebpfm` (`ebpfm config` shows every setting).
 
 ## Data and privacy
