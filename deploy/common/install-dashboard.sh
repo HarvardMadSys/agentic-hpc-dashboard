@@ -44,8 +44,8 @@
 # /etc/rc-dashboard/install.env, where every run saves them (and prints any that
 # changed), else the defaults: SERVICE_USER (rc-dashboard), PULL_USER (rc-pull: the account
 # on the nodes, whose processes the dashboard drops), ETC (/etc/rc-dashboard), STATE
-# (/var/lib/rc-dashboard), OPT (/opt/rc-dashboard), MEMORY_MAX (8G; DASH_MEMORY_MAX is the
-# same), RELEASE (none: the checkout's code), and for single EBPF_DIR, NODE_DIR, COLLECTOR_GROUP (the folders and group
+# (/var/lib/rc-dashboard), OPT (/opt/rc-dashboard), MEMORY_MAX (half this host's memory,
+# from 2G to 32G; DASH_MEMORY_MAX is the same), RELEASE (none: the checkout's code), and for single EBPF_DIR, NODE_DIR, COLLECTOR_GROUP (the folders and group
 # /etc/default/ebpfm names win: collector-paths.sh).
 #
 # Settings that go into dashboard.env (and fleet.env), under the names every kit uses:
@@ -132,7 +132,21 @@ inplace=$( (sed -n 's/^MemoryMax=//p' "$dropin" 2>/dev/null || true) | tail -n 1
 if [ -n "$inplace" ] && [ "$FROM_MEMORY_MAX" != env ]; then
   MEMORY_MAX=$inplace
 fi
-MEMORY_MAX=${MEMORY_MAX:-8G}
+# Unset, the cap is half this host's memory in whole gigabytes, from 2G to 32G: a host
+# kept for a fleet's dashboard gets room without being told, one that runs other work
+# keeps half for it, and past 32G it is a choice to make (MEMORY_MAX), not a default.
+if [ -z "${MEMORY_MAX:-}" ]; then
+  kb=$( (sed -n 's/^MemTotal:[[:space:]]*\([0-9][0-9]*\) kB$/\1/p' "${RC_MEMINFO:-/proc/meminfo}" 2>/dev/null || true) | head -n 1)
+  if [ -n "$kb" ]; then
+    g=$(( kb / 2097152 ))
+    [ "$g" -ge 2 ] || g=2
+    [ "$g" -le 32 ] || g=32
+    MEMORY_MAX=${g}G
+    say "MEMORY_MAX=$MEMORY_MAX: half this host's $(( kb / 1048576 ))G (from 2G to 32G; MEMORY_MAX sets it)"
+  else
+    MEMORY_MAX=8G
+  fi
+fi
 
 for v in SERVICE_USER PULL_USER; do
   [[ ${!v} =~ ^[a-z_][a-z0-9_-]*$ ]] || die "$v='${!v}' is not an account name"
