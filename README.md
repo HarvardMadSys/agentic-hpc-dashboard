@@ -196,7 +196,8 @@ Each setting resolves on its own: a command-line flag wins over an `RC_DASH_*` e
 variable, which wins over the config file (`dashboard/dashboard.toml` or
 `dashboard/dashboard.config.json`, TOML or JSON), which wins over the default.
 [`dashboard.example.toml`](dashboard/dashboard.example.toml) is a dozen lines to start from.
-`rc-dashboard print-config --reference` prints every setting with its default, and
+`rc-dashboard print-config --reference` prints the eighteen settings a site chooses, each
+with its default and a line of help (`--all`: every setting, the internal ones too), and
 `rc-dashboard print-config` prints each resolved setting and where it came from. How they
 resolve, and what each does: [`dashboard/README.md`](dashboard/README.md#configuration).
 

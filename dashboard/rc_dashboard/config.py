@@ -30,6 +30,7 @@ import glob
 import json
 import os
 import re
+import textwrap
 import tomllib
 
 PKG = os.path.dirname(os.path.abspath(__file__))
@@ -1278,21 +1279,100 @@ def _is_array_of_tables(v):
     return isinstance(v, list) and bool(v) and all(isinstance(x, dict) for x in v)
 
 
-def reference_toml():
-    """Every setting with its built-in default on this host, as a TOML config
-    file would set it, each with the RC_DASH_* variable that sets it too:
-    `rc-dashboard print-config --reference`. Made from `defaults()`, so it cannot
-    drift from the code (tests/test_config.py reads it back). A setting whose
-    default is unset (null, which TOML cannot write) is a comment."""
+# The settings a site chooses, each with its line of help: the ones the README's table,
+# `init`'s starter and `print-config --reference` name. Every other key is internal: it
+# loads from the file, a variable or a flag as it always did, but it tunes the reducers,
+# caches and workers, and its default is the answer; `print-config --reference --all`
+# lists every one. A new setting is internal unless every site must choose it.
+PUBLIC = (
+    ("feeds.ebpf.roots", "where the collector's eBPF tier writes (its EBPFM_OUTPUT_DIR); "
+                         "every candidate that exists is read, and a glob may name many"),
+    ("feeds.ebpf_node.roots", "where its node tier writes (EBPFM_NODE_OUTPUT_DIR), the same way"),
+    ("site.name", "the name every page and the sign-in form show; empty is this host's name"),
+    ("site.description", "a few words on what it watches, shown under the name"),
+    ("slurm.enabled", "the HPC tab, and reducing for it: false on servers without Slurm"),
+    ("ui.node_noun", "what every page calls the hosts, such as \"servers\""),
+    ("anonymize.enabled", "an alias for every user name, on every way out of the service"),
+    ("filters.drop_global", "accounts whose every record is dropped, such as the deployment's own"),
+    ("live.retention_min", "minutes held in memory, and the widest window the page offers: "
+                           "more costs memory and a longer refill"),
+    ("history.days", "the newest days kept as Parquet beside the day-files: 0 keeps every one"),
+    ("cache.dir", "where the saved builds, the history store, the roll-up table and the "
+                  "anonymization salt are kept"),
+    ("risk.profile", "a cluster's risk rules, merged over the built-in ones: a file under "
+                     "dashboard/, such as risk-profiles/gpu-dev.json"),
+    ("clock.as_of", "the present pinned for a capture from elsewhere: a local time, or auto "
+                    "for its newest record; empty is the wall clock"),
+    ("server.host", "the address to listen on: 127.0.0.1 behind a proxy or an ssh tunnel"),
+    ("server.port", "the port to listen on"),
+    ("server.allowed_hosts", "names the page may be reached by besides loopback and "
+                             "server.host, such as a proxy's"),
+    ("server.auth.password_hash_file", "the password's hash (rc-dashboard new-password "
+                                       "--install), read again whenever it changes"),
+    ("server.auth.open", "no password: only where every account that can reach the port may "
+                         "read the data"),
+)
+PUBLIC_KEYS = tuple(k for k, _ in PUBLIC)
+
+
+def is_public(dotted):
+    return dotted in PUBLIC_KEYS
+
+
+def public_view(tree):
+    """print-config's tree, {_value, _origin} leaves, cut to what a site reads: every public
+    setting, each internal one that is not at its default, and `_meta`. Returns it and how
+    many internal settings were left out."""
+    left = [0]
+
+    def walk(node, prefix):
+        out = {}
+        for k, v in node.items():
+            path = "%s.%s" % (prefix, k) if prefix else k
+            if path == "_meta":
+                out[k] = v
+            elif isinstance(v, dict) and "_origin" in v and "_value" in v:
+                if is_public(path) or v["_origin"] != "default":
+                    out[k] = v
+                else:
+                    left[0] += 1
+            elif isinstance(v, dict):
+                sub = walk(v, path)
+                if sub:
+                    out[k] = sub
+        return out
+    return walk(tree, ""), left[0]
+
+
+def reference_toml(everything=False):
+    """The settings a site chooses (`PUBLIC`), each with its line of help and its built-in
+    default on this host, as a TOML config file would set it, each with the RC_DASH_*
+    variable that sets it too: `rc-dashboard print-config --reference`; with `everything`
+    (`--all`), every setting there is. Made from `defaults()`, so it cannot drift from the
+    code (tests/test_config.py reads it back). A setting whose default is unset (null,
+    which TOML cannot write) is a comment."""
     env_of = {k: var for k, (var, _c) in ENV_MAP.items()}
-    out = ["# Every rc-dashboard setting, with its built-in default on this host.",
-           "# Generated by `rc-dashboard print-config --reference`; dashboard/README.md",
-           "# says what each does. Set any of them in dashboard/dashboard.toml (or the",
-           "# file --config or RC_DASH_CONFIG names): a key left out keeps its default,",
-           "# and per key a flag beats its RC_DASH_* variable, which beats the file.",
-           "# A relative path in the file is under the repository's root.",
-           "# feeds.*.roots: every candidate that exists is read; set roots to name your",
-           "# own folders instead (a glob pattern may name many)."]
+    helps = dict(PUBLIC)
+    tree = defaults()
+    if not everything:
+        cut = {}
+        for path in PUBLIC_KEYS:
+            _set(cut, path, _get(tree, path))
+        internal = sum(1 for _ in _leaf_paths(tree)) - len(PUBLIC_KEYS)
+        tree = cut
+    out = ["# %s on this host."
+           % ("Every rc-dashboard setting, with its built-in default" if everything
+              else "The settings a site chooses, each with its built-in default"),
+           "# Generated by `rc-dashboard print-config --reference%s`; dashboard/README.md"
+           % (" --all" if everything else ""),
+           "# says more. Set any of them in dashboard/dashboard.toml (or the file --config or",
+           "# RC_DASH_CONFIG names): a key left out keeps its default, and per key a flag",
+           "# beats its RC_DASH_* variable, which beats the file. A relative path in the",
+           "# file is under the repository's root."]
+    if not everything:
+        out += ["# %d more settings are internal: they tune the reducers, caches and workers,"
+                % internal,
+                "# and their defaults are the answer. `--all` lists them."]
 
     def emit(node, prefix):
         scalars = [(k, v) for k, v in node.items()
@@ -1300,8 +1380,11 @@ def reference_toml():
         if prefix and scalars:
             out.extend(["", "[%s]" % ".".join(_toml_key(p) for p in prefix)])
         for k, v in scalars:
-            var = env_of.get(".".join(prefix + [k]))
+            dotted = ".".join(prefix + [k])
+            var = env_of.get(dotted)
             note = "  # %s" % var if var else ""
+            if dotted in helps:
+                out.extend("# " + line for line in textwrap.wrap(helps[dotted], 86))
             if v is None:
                 out.append("# %s = (unset)%s" % (_toml_key(k), note))
             else:
@@ -1316,5 +1399,16 @@ def reference_toml():
                     out.extend("%s = %s" % (_toml_key(kk), _toml_value(vv))
                                for kk, vv in item.items())
 
-    emit(defaults(), [])
+    emit(tree, [])
     return "\n".join(out) + "\n"
+
+
+def _leaf_paths(node, prefix=""):
+    """Every setting's dotted name in a defaults() tree: a section with something in it is
+    no setting, its leaves are."""
+    for k, v in node.items():
+        path = "%s.%s" % (prefix, k) if prefix else k
+        if _is_table(v):
+            yield from _leaf_paths(v, path)
+        else:
+            yield path
