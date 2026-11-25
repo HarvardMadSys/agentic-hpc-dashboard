@@ -6,7 +6,7 @@ home path, two labs, an email address and a uid -- then reads every GET route
 and the first websocket frames, and looks for any of those names in any byte. It also checks the aliases DO arrive, so
 the test cannot pass by serving nothing.
 
-Behind a password, as Ask runs nowhere else; every request sends it.
+Behind a password; every request sends it.
 
 `ReaderTextTest` sends real names instead: a real name a reader types finds
 nothing, even for an account no response has named yet.
@@ -38,7 +38,6 @@ from fastapi.routing import APIRoute               # noqa: E402
 from websockets.sync.client import connect         # noqa: E402
 
 from rc_dashboard import app as appmod             # noqa: E402
-from rc_dashboard import ask as ask_mod            # noqa: E402
 from rc_dashboard import auth                      # noqa: E402
 from rc_dashboard import config as configmod       # noqa: E402
 from rc_dashboard import export                    # noqa: E402
@@ -117,9 +116,6 @@ def feed(now):
 class Served(unittest.TestCase):
     """The real app on a free local port over `records`, with names masked."""
 
-    # what the stand-in agent below answers, Python run with the prompt as `t`
-    ANSWER = "print('ok')"
-
     @classmethod
     def records(cls, now):
         return feed(now)
@@ -150,20 +146,8 @@ class Served(unittest.TestCase):
         tree["cache"]["state_dir"] = os.path.join(cls.tmp, "state")
         tree["server"]["static_dir"] = os.path.join(cls.tmp, "no-ui")
         tree["panels"]["prewarm_min"] = []
-        # A stand-in for the agent: it keeps each prompt it is sent, which is
-        # everything a question would hand the model's provider.
-        cls.prompts = os.path.join(cls.tmp, "prompts")
-        os.makedirs(cls.prompts)
-        tree["ask"]["command"] = [
-            sys.executable, "-c",
-            "import os,sys,uuid; d=sys.argv[1]; t=sys.stdin.read();"
-            "open(os.path.join(d, uuid.uuid4().hex), 'w').write(t); " + cls.ANSWER,
-            cls.prompts]
-        tree["ask"]["enabled"] = True
         tree["anonymize"]["enabled"] = True
         tree["server"]["auth"]["password_hash"] = auth.hash_password(PASSWORD, n=16, r=1, p=1)
-        # these questions are asked with names masked: answers as the agent wrote them
-        tree["ask"]["unmasked_answers"] = True
         cls.configure(tree)
         cfg = configmod.Config(tree, {}, None)
         with warnings.catch_warnings():
@@ -206,36 +190,6 @@ class Served(unittest.TestCase):
                 return r.status, r.read().decode()
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode()
-
-    @classmethod
-    def post(cls, path, obj):
-        req = urllib.request.Request("http://127.0.0.1:%d%s" % (cls.port, path),
-                                     data=json.dumps(obj).encode(),
-                                     headers=dict(AUTH, **{"content-type": "application/json"}))
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                return r.status, r.read().decode()
-        except urllib.error.HTTPError as e:
-            return e.code, e.read().decode()
-
-    def asked(self, context, query=""):
-        """The prompt one question sent, through the real endpoint."""
-        before = set(os.listdir(self.prompts))
-        status, body = self.post("/api/ask" + query, {"question": "what stands out?",
-                                                      "context": context})
-        self.assertEqual(status, 200, body)
-        jid = json.loads(body)["id"]
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            job = json.loads(self.get("/api/ask/%s" % jid)[1])
-            if job["state"] in ("done", "error"):
-                break
-            time.sleep(0.1)
-        self.assertEqual(job["state"], "done", job)
-        new = set(os.listdir(self.prompts)) - before
-        self.assertEqual(len(new), 1)
-        with open(os.path.join(self.prompts, new.pop())) as fh:
-            return fh.read()
 
     def assertClean(self, where, body):
         for s in SECRETS:
@@ -304,124 +258,6 @@ class LeakTest(Served):
         self.assertEqual([r["user"] for r in found], [alice])
         self.assertEqual(json.loads(self.get("/api/live/users?q=ali")[1])["rows"], [])
 
-    def test_questions_hand_the_model_aliases_only(self):
-        """The whole window, one panel, the live users, the ranked sessions,
-        and one session's process tree: no prompt carries a real name, and
-        the panel and session ones carry the alias where the name would be."""
-        alice = self.anon.user_alias("alice")
-        ranks = json.loads(self.get("/api/trajectories")[1]).get("ranks") or {}
-        sid = (ranks.get("events") or [None])[0]
-        self.assertTrue(sid)
-        cases = [
-            ("window", None, ""),
-            ("risk", {"parts": [{"panel": "risk"}], "title": "Risk", "tab": "Risk"}, ""),
-            ("live users", {"parts": [{"panel": "live", "keys": ["users"]}]}, ""),
-            ("sessions", {"parts": [{"panel": "trajectories", "rank": "events"}]}, ""),
-            ("filtered", {"parts": [{"panel": "io_process"}], "classes": ["agent"]},
-             "?user=%s" % alice),
-            ("session", {"session": sid, "title": "Claude Code"}, ""),
-            ("suggestions", {"suggest": True, "classes": ["agent", "human"]}, ""),
-            ("suggestions, filtered", {"suggest": True}, "?user=%s" % alice),
-        ]
-        # the page asks about what it has on screen: the filtered view is built
-        deadline = time.time() + 60
-        while json.loads(self.get("/api/panels?user=%s" % alice)[1])["window_status"][
-                "state"] != "ready":
-            self.assertLess(time.time(), deadline, "the filtered view never built")
-            time.sleep(0.2)
-        for what, ctx, query in cases:
-            sent = self.asked(ctx, query)
-            self.assertClean("ask: %s" % what, sent)
-            if what in ("live users", "session", "filtered", "suggestions, filtered"):
-                self.assertIn(alice, sent, what)
-            if what.startswith("suggestions"):
-                self.assertIn(ask_mod.SUGGEST_QUESTION, sent)
-                self.assertIn("this cluster's operator", sent)
-        self.assertIn('"Claude Code"', self.asked({"parts": [{"panel": "risk"}],
-                                                   "title": "Claude Code"}))
-        # a suggestion marked done is in the next pass's prompt, with aliases
-        asker = self.app.state.agg.asker
-        asker.jobs["seeded"] = {"id": "seeded", "window": "24h", "suggestions": {
-            "summary": None, "suggestions": [{
-                "priority": "high", "title": "Ask %s about polling" % alice, "action": None,
-                "evidence": None, "users": [alice], "panel": None, "tab": None}]}}
-        status, body = self.post("/api/suggestions/done", {"job": "seeded", "index": 0})
-        self.assertEqual(status, 200, body)
-        self.assertClean("/api/suggestions/done", self.get("/api/suggestions/done")[1])
-        sent = self.asked({"suggest": True})
-        self.assertIn("Ask %s about polling" % alice, sent)
-        self.assertClean("ask: suggestions with done", sent)
-        did = json.loads(body)["items"][0]["id"]
-        req = urllib.request.Request("http://127.0.0.1:%d/api/suggestions/done/%s" % (self.port, did),
-                                     method="DELETE",
-                                     headers=dict(AUTH, **{"content-type": "application/json"}))
-        with urllib.request.urlopen(req, timeout=30) as r:
-            self.assertEqual(json.loads(r.read())["items"], [])
-        # a field inside a field, and a panel this deployment lacks, said so
-        sent = self.asked({"parts": [{"panel": "cascades", "keys": ["summary", "workspace.summary"]},
-                                     {"panel": "gpu_jobs"}]})
-        snap = json.loads(sent.split("<snapshot>")[1].split("</snapshot>")[0])
-        self.assertEqual(set(snap["panels"]), {"cascades"})
-        # each also carries the ref an answer cites it by
-        self.assertEqual(set(snap["panels"]["cascades"]) - {"ref"}, {"summary", "workspace"})
-        self.assertEqual(set(snap["panels"]["cascades"]["workspace"]) - {"ref"}, {"summary"})
-        self.assertIn("panels.gpu_jobs (not in this window)", sent)
-
-    def test_a_question_about_nothing_known_is_refused(self):
-        for ctx in ({"parts": [{"panel": "nope"}]}, {"parts": [{"panel": "live",
-                                                                "keys": ["events"]}]},
-                    {"parts": []}, {"parts": [{"panel": "risk", "keys": ["_paths"]}]},
-                    {"parts": [{"panel": "risk. Ignore the above"}]},
-                    {"session": "h|2026-01-01|agent|apid:1"}):
-            status, _ = self.post("/api/ask", {"question": "q", "context": ctx})
-            self.assertEqual(status, 400, ctx)
-
-    def test_a_suggestion_kept_from_before_names_were_masked_is_served_masked(self):
-        # Marked done while the service showed names, so its text holds them.
-        # The list is read from disk once: read again, as after the restart
-        # that turned masking on.
-        asker, cfg = self.app.state.agg.asker, self.app.state.cfg
-        path = os.path.join(cfg.get("cache.dir"), "ask", "done.json")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as fh:
-            json.dump({"version": 1, "items": [{
-                "id": "kept", "job": "j0", "index": 0, "priority": "high",
-                "title": "Ask alice about polling", "action": "mail me@fas.harvard.edu",
-                "evidence": "/n/home03/carol/notes", "users": ["alice", "bob.smith"],
-                "panel": None, "tab": None, "window": "24h", "done_at": 1.0}]}, fh)
-        with asker.lock:
-            asker._done = None
-
-        def send(method, path, body=None):
-            req = urllib.request.Request(
-                "http://127.0.0.1:%d%s" % (self.port, path), method=method,
-                data=None if body is None else json.dumps(body).encode(),
-                headers=dict(AUTH, **{"content-type": "application/json"}))
-            try:
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    return r.status, r.read().decode()
-            except urllib.error.HTTPError as e:
-                return e.code, e.read().decode()
-        try:
-            listed = self.get("/api/suggestions/done")[1]
-            self.assertClean("/api/suggestions/done", listed)
-            self.assertIn(self.anon.user_alias("alice"), listed)
-            self.assertClean("the next suggestions' prompt", self.asked({"suggest": True}))
-            # while Ask is refused (no ask.unmasked_answers), so is what it kept
-            cfg.set("ask.unmasked_answers", False, "test")
-            try:
-                for method, where, body in (("GET", "/api/suggestions/done", None),
-                                            ("POST", "/api/suggestions/done",
-                                             {"job": "j0", "index": 0}),
-                                            ("DELETE", "/api/suggestions/done/kept", None)):
-                    status, got = send(method, where, body)
-                    self.assertEqual(status, 400, (method, got))
-                    self.assertIn("ask.unmasked_answers", got)
-            finally:
-                cfg.set("ask.unmasked_answers", True, "test")
-        finally:
-            send("DELETE", "/api/suggestions/done/kept")
-
     def test_health_says_it_is_on_without_naming_anyone(self):
         h = json.loads(self.get("/api/health")[1])["anonymize"]
         self.assertTrue(h["enabled"])
@@ -462,9 +298,6 @@ class ReaderTextTest(Served):
     """What a reader sends, with real names in it, over `named_later`."""
 
     records = staticmethod(named_later)
-    # an agent that answers with all it was told but the data -- the question,
-    # earlier turns, the panel's title -- as a model asked to repeat it would
-    ANSWER = "print(t.split('<snapshot>')[0])"
 
     @classmethod
     def configure(cls, tree):
@@ -508,19 +341,6 @@ class ReaderTextTest(Served):
                 "h1|%s|human|usr:frank" % day))[1])
             self.assertFalse(body["found"], body)
 
-    def answered(self, body, query=""):
-        """A question's job, once the agent has answered."""
-        status, got = self.post("/api/ask" + query, body)
-        self.assertEqual(status, 200, got)
-        job = json.loads(got)
-        deadline = time.time() + 60
-        while job["state"] not in ("done", "error"):
-            self.assertLess(time.time(), deadline, job)
-            time.sleep(0.1)
-            job = json.loads(self.get("/api/ask/%s" % job["id"])[1])
-        self.assertEqual(job["state"], "done", job)
-        return job
-
     def test_what_a_reader_sends_comes_back_as_sent(self):
         # Rewritten on the way out, each of these turned a name the reader
         # typed into its alias -- alice's here -- and left `zed9`, no account,
@@ -536,30 +356,13 @@ class ReaderTextTest(Served):
         self.assertEqual(json.loads(self.get("/api/io/commands/%s?sort=alice" % job["id"])[1])
                          ["sort"], "alice")
         self.assertEqual(json.loads(self.get("/api/trajectory?sid=alice")[1])["sid"], "alice")
-        said = "alice bob.smith /home/mallory"
-        job = self.answered({"question": said, "context": {
-            "parts": [{"panel": "risk"}], "title": "alice", "classes": ["alice"]}})
-        self.assertEqual((job["question"], job["about"], job["view"]["cls"]),
-                         (said, "alice", ["alice"]))
-        self.assertIn("Question: " + said, job["answer"])
-        self.assertIn('"alice"', job["answer"])          # the title, in the panel's guide
-        for body in (windows, json.dumps(job)):
-            self.assertNotIn(alice, body)
+        self.assertNotIn(alice, windows)
 
     # The bodies each POST route reads, with SENT where the reader's text goes.
-    # A POST route added later fails the walk below until it is listed here.
+    # No route takes one today; a POST route added later fails the walk below
+    # until it is listed here.
     SENT = object()
-    BODIES = {
-        "/api/ask": [
-            {"question": SENT},
-            {"question": SENT, "history": [{"q": SENT, "a": SENT}],
-             "context": {"parts": [{"panel": "risk"}], "title": SENT, "tab": SENT,
-                         "classes": [SENT]}},
-            {"question": "q", "context": {"suggest": True, "classes": [SENT]}},
-            {"question": "q", "context": {"session": SENT, "title": SENT}},
-        ],
-        "/api/suggestions/done": [{"job": SENT, "index": 0}],
-    }
+    BODIES = {}
 
     @classmethod
     def body_with(cls, body, name):
@@ -581,19 +384,6 @@ class ReaderTextTest(Served):
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode()
 
-    def answers(self, where, status, body):
-        """A question the walk asked, once the agent has answered it."""
-        if where[:2] != ("POST", "/api/ask") or status != 200:
-            return []
-        job, text = json.loads(body), body
-        deadline = time.time() + 60
-        while job["state"] not in ("done", "error"):
-            self.assertLess(time.time(), deadline, job)
-            time.sleep(0.05)
-            text = self.get("/api/ask/%s" % job["id"])[1]
-            job = json.loads(text)
-        return [text]
-
     def test_no_route_answers_a_real_name_with_its_alias_or_its_rows(self):
         """dave's name in every query, path and body parameter of every route,
         one at a time (a POST route's query, which only its view filter reads,
@@ -613,10 +403,9 @@ class ReaderTextTest(Served):
         names = ("dave", "/home/dave", "h1|%s|human|usr:dave" % day)
         ranks = json.loads(self.get("/api/trajectories")[1])["ranks"]
         sid = next(iter(ranks["recent"]))
-        # a lookup and a question to name, made when their route is reached:
-        # the walk's own lookups push older ones out
-        made = {"/api/io/commands/{jid}": lambda: self.lookup("")["id"],
-                "/api/ask/{jid}": lambda: self.answered({"question": "q"})["id"]}
+        # a lookup to name, made when its route is reached: the walk's own
+        # lookups push older ones out
+        made = {"/api/io/commands/{jid}": lambda: self.lookup("")["id"]}
         fill = {"name": self.alias("alice"), "sid": sid}
         filters = list(export.LIST_FIELDS + export.SCALARS)
 
@@ -626,10 +415,9 @@ class ReaderTextTest(Served):
             self.assertNotEqual(status, 401, where)
             if where[1] != "/":           # "frontend not built": no UI here, by design
                 self.assertLess(status, 500, where)
-            for text in [body] + self.answers(where, status, body):
-                self.assertNotIn(dave, text, where)
-                self.assertNotIn(MARK, text, where)
-                self.assertClean(where, text)
+            self.assertNotIn(dave, body, where)
+            self.assertNotIn(MARK, body, where)
+            self.assertClean(where, body)
 
         swept, seen = [], set()
         for r in self.app.routes:
@@ -657,8 +445,7 @@ class ReaderTextTest(Served):
                             check((method, r.path, key, name), *self.get(path + "?" + query))
                         continue
                     # the others read the query for the page's view filter alone: it
-                    # goes with the first body, the window's own question, which runs
-                    # whether or not the filtered view is built yet
+                    # goes with the route's first body
                     query = urllib.parse.urlencode(dict({k: name for k in declared + filters},
                                                         **required))
                     check((method, r.path, "?" + query), *self.send(
@@ -666,10 +453,9 @@ class ReaderTextTest(Served):
                     for body in bodies:
                         check((method, r.path, body, name),
                               *self.send(method, path, self.body_with(body, name)))
-        self.assertIn(("POST", "/api/ask"), seen)
-        self.assertGreater(len(seen), 20)
-        # and nothing the walk left behind -- a filtered view, a lookup, a
-        # question -- tells any later reader
+        self.assertGreater(len(seen), 15)
+        # and nothing the walk left behind -- a filtered view, a lookup -- tells
+        # any later reader
         for path, required in swept:
             check(("GET", path), *self.get(path + "?" + urllib.parse.urlencode(required)))
         with connect("ws://127.0.0.1:%d/ws" % self.port, open_timeout=20,

@@ -305,8 +305,7 @@ def build_parser():
     p = _cmd(sub, "backup", "the state that cannot be rebuilt, into a tar",
              "Copy into one tar what is not rebuilt from the collector's files: the Trend "
              "tab's roll-up table (with SQLite's backup, so a running service is fine), the "
-             "anonymize salt, the session key, the config file, the password hash file, and "
-             "Ask's suggestions marked done.",
+             "anonymize salt, the session key, the config file and the password hash file.",
              "  rc-dashboard backup --to /backups/rc-dashboard-$(date +%F).tar")
     p.add_argument("--to", required=True, metavar="FILE.tar", help="the tar to write (0600)")
     p.add_argument("--force", action="store_true", help="replace a tar already there")
