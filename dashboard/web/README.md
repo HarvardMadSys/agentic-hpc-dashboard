@@ -24,7 +24,7 @@ RC_BACKEND=http://127.0.0.1:8080 npm run dev:real   # /api, /ws, /login, /logout
 from (`/api/config`, `feeds`, `windows`, `panels`, `trend`, `live`, `trajectories`, `trajectory`,
 `users`, `user`) out of `mock/api.json`, which it re-reads on every request. Any other
 route (the collectors' health, Active users' searches and accounts, the commands behind an I/O
-number, Ask) is a 404 there, so what reads it says it was not returned.
+number) is a 404 there, so what reads it says it was not returned.
 `src/api/client.ts` has no mock branch: dev runs the production code path.
 
 The backend refuses a websocket from any origin but its own (`rc_dashboard/guard.py`), and Vite
@@ -140,7 +140,7 @@ Research-integrity constraints: breaking one is a reporting error, not a styling
    value exactly 0: a counter the collector could not fill), in Internal's distributions too.
 7. **Data only**: a panel holds its title, its feed and the chart or table, and no method notes:
    what a reader needs to read a number goes in its `data-tip`. The service does not send the page
-   its `notes`, `basis` and `*_basis` texts ([API](../README.md#api)); Ask LLM reads them. Every
+   its `notes`, `basis` and `*_basis` texts ([API](../README.md#api)). Every
    panel's ⓘ opens **How to read** (`components/About.tsx`), a drawer of the explanations its
    labels hold -- its tips, gathered from the panel as drawn, not the per-row and per-point ones --
    so they can be read, scrolled and reached by keyboard and screen reader; nothing is written
@@ -249,10 +249,6 @@ one line, the transport as a light and the last update; the window and how much 
 service holds, when the panels were built (and whether they were restored from a saved build),
 and which code the page is are that line's hover.
 
-**Ask LLM** is not a stop: it asks about the window on screen, so the head's **Ask** button
-opens it in a drawer beside whatever tab is open (`components/AskDrawer.tsx`), and only where a
-site turned it on (`ask.enabled`); `?tab=chat` opens Live with it open.
-
 A pane beside a list never stands empty: with nothing picked, Agents shows its list's first
 agent and Sessions its first session, held while it stays listed (the list is re-read every few
 seconds, and a new row at its top must not swap the tree under the reader); a pick is the
@@ -263,7 +259,7 @@ and one pill saying how current the data is (`live`, or what is wrong: `data del
 `no data yet`, `no data`, …; `frozen capture · as of …` on a pinned clock). What the pill
 stands on is its hover: the newest record's age, each feed past its own limit and by how much,
 and the login nodes that reported. `anonymized` and `fake data` sit beside it when they apply,
-then Ask (where it is on), the **time zone** every time on the page is in, and the refresh.
+then the **time zone** every time on the page is in, and the refresh.
 Below 900px the top bar names the tab, so the head shows the pills alone.
 
 **One time zone.** Every time on the page is in the dashboard service's zone, which
@@ -319,7 +315,6 @@ How each figure is computed is in [`docs/figures`](../../docs/figures/README.md)
 | **Usage › Login nodes** (`?tab=resources`; `?tab=io` opens it too) | `node`, `resources`, `io_process` | *Login node health* (`src/tabs/NodeHealth.tsx`), the node tier's newest snapshot of each host; then the window over time, on one zoom (`src/tabs/LiveCharts.tsx`): *Over the window* (CPU and memory), *Login node response* (`node.series`, `src/tabs/NodeResponse.tsx`) and *More over time* (runqueue wait, D-state, major faults, disk, network, Slurm checks and jobs, one at a time); then the worst individual processes; disk read and written by tool, on one scale; where the network bytes went (*Network bytes*, its endpoints); I/O per user. The per-class tables behind them are on **Internal** |
 | **Risk › Site rules** (`?tab=risk`) | `risk` | the sections the site's [risk profile](../risk-profiles/README.md) lays out, by default build and interpreter CPU on the login node, commands that should not run there, and credentials on command lines (counted, never shown) |
 | **Usage › HPC** (`?tab=slurm`; `?tab=hpc` opens it too) | `slurm`, `submits` (`/api/live`) | *Abnormal Slurm activity* (`src/tabs/SlurmTab.tsx`), each rule worded from the threshold the service sends with it, each class's count of the sessions that broke it, then every such session with its own numbers as evidence; then sessions at the scheduler, how each class uses it, refused submissions, the latest submissions; its two series, queue checks and jobs submitted, are in Resources' *More over time*. Gone where `slurm.enabled` is false |
-| **Ask LLM** (a drawer: the head's Ask button; `?tab=chat` opens it) | `/api/ask`, `/api/ask/{job}`, `/api/suggestions/done` | a question about the window, its answer's citations linking to the panels it read (`src/lib/cites.ts`); *Suggestions for the operator*, one marked done kept for every reader; off unless the site turned `ask` on (`src/tabs/ChatTab.tsx`) |
 | **System › Internal** (`?tab=internal`; in the rail where `ui.show_internal`) | `resources`, `io_process` | panels not settled yet, and the detail behind the operator tabs: per-process distributions, faults, delays and D-state (`not measured` where unread), requested against disk bytes, I/O distributions |
 | **System › Feeds** (`?tab=feeds`) | `/api/feeds`, `/api/collectors` (every 20 s), `/api/config` | *Collectors*, each login node's collector and how its runs ended; *Feeds*, each one's configured **vs** resolved path, status, newest record against its own `max_age_s`, files and notice; *Startup read*; *Configuration*, each resolved setting and where it came from |
 

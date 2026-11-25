@@ -124,5 +124,7 @@ roots are a pattern (`…/mirror/ebpf/*`). Sizing and measured times:
 
 ## Ask LLM is missing
 
-The head's Ask button shows only where a site turned Ask on (`ask.enabled`, `RC_DASH_ASK=1`)
-and the agent CLI it runs is on the service's host ([dashboard/README.md](../dashboard/README.md#ask-llm)).
+It was removed: it ran an agent CLI on the dashboard's host over the window, a read-only
+sandbox rather than a confined one, and sent what it read to a model's provider. A config
+that still has an `ask` section, or an `RC_DASH_ASK*` variable, starts with one warning that
+says so, and the setting is ignored.

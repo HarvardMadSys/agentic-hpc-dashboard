@@ -87,7 +87,7 @@ covers it.
 | the Worker (`src/index.ts`) | sends every request, the page's websocket included, to one container instance named `demo` |
 | the container | `rc_dashboard demo` on port 8080: writes 2 days of history (`RC_DASH_DEMO_DAYS`), then serves and keeps appending in real time |
 | instance | `basic` (1/4 vCPU, 1 GiB), at most one (`max_instances: 1`); the demo holds ~150 MB with every window built |
-| outbound internet | none (`enableInternet = false`); Ask LLM is off in the image |
+| outbound internet | none (`enableInternet = false`) |
 | visits | counted by [Statcounter](https://statcounter.com/): the Worker adds its code (`STATCOUNTER` in `src/index.ts`) to the end of each dashboard page, never to the "starting" page, which reloads itself, nor to an API reply. Nothing else does: the image and the service load no tracker, so a dashboard on a cluster, whose URLs carry real user names, sends nothing to a third party |
 | time zone | `America/New_York` (`TZ` in the Dockerfile): the working day the fictional people keep |
 

@@ -83,10 +83,9 @@ as sub-tabs.
 | **Usage** › Login nodes · HPC · Trend | node health, the window's series and each login node's responsiveness, the worst processes; the Slurm scheduler, abnormal use first, each rule a threshold the site sets; each class's use per day, week or month over up to a year |
 | **System** › Feeds | each collector and feed: where it was looked for, its status, how fresh it is, and the version of each; every resolved setting |
 
-**Ask LLM** opens beside any tab, from the head's Ask button, where a site turns it on:
-questions about the window on screen, answered by an agent that cites the panels it read. With
-no data at all, the tabs give way to a setup screen that says where the dashboard looked and
-how to fix it; Trend stays, since its roll-up table outlives the day-files it was made from. Ctrl+K (or `/`) goes to any tab, section, user, login node or session.
+With no data at all, the tabs give way to a setup screen that says where the dashboard looked and
+how to fix it; Trend stays, since its roll-up table outlives the day-files it was made from.
+Ctrl+K (or `/`) goes to any tab, section, user, login node or session.
 
 The whole page can be narrowed to classes, users and agent types, over any window the
 service offers. What each tab holds: [`dashboard/web/README.md`](dashboard/web/README.md#tabs);
@@ -220,8 +219,7 @@ The records name real users and show what they ran, so both halves keep them clo
 - **The dashboard** will not start without a password unless told to (`--open`), and masks
   credentials again on every way out. `RC_DASH_ANONYMIZE=1` replaces every name with an alias.
   It names network endpoints by reverse DNS from its own host (`RC_DASH_RDNS=0` turns that
-  off). **Ask LLM**, off by default, sends masked data to a model's provider when a site turns
-  it on.
+  off). Nothing it reads or shows leaves the host for a model's provider.
 - **The fleet stream** carries the files over ssh, with a key that can run the sender and
   nothing else, and only from the dashboard's host.
 - **The fleet's copy** ([`deploy/fleet`](deploy/fleet/README.md)) is pulled by an account in
