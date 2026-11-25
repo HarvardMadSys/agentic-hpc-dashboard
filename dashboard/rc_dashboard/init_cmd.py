@@ -95,8 +95,8 @@ def _paths(text):
 def toml_config(site, ebpf, node, slurm, port, hash_file, when, host):
     q = configmod._toml_value
     lines = ["# Written by `rc-dashboard init` on %s, on %s." % (when, host),
-             "# Every setting, with its default: `rc-dashboard print-config --reference`;",
-             "# dashboard/README.md says what each does. A flag or an RC_DASH_* variable",
+             "# The settings a site chooses, each with its default and a line of help:",
+             "# `rc-dashboard print-config --reference`. A flag or an RC_DASH_* variable",
              "# beats what is set here.",
              "",
              "[site]",

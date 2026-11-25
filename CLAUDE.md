@@ -86,10 +86,11 @@ Each is a past mistake.
 - A copy of a day-file must grow in place, never be replaced by rename (rsync's default): the
   dashboard knows a file by inode and offset, and would count a renamed copy again.
 - `dashboard/web/src/api/types.ts` mirrors the service's payloads: change them together.
-- `dashboard.config.example.json`'s values are the built-in defaults (a test holds them equal);
-  `rc-dashboard print-config --reference` is the full list. A new config section that no
-  reduction reads goes in `config.UNREDUCED`, or it changes the saved builds' and hours'
-  fingerprints and discards them.
+- A new setting is internal unless every site must choose it: then it joins `config.PUBLIC`
+  and the table in `dashboard/README.md#configuration` (a test holds them equal).
+  `rc-dashboard print-config --reference` prints the public ones, `--all` every one, both
+  generated from the defaults. A new config section that no reduction reads goes in
+  `config.UNREDUCED`, or it changes the saved builds' and hours' fingerprints and discards them.
 - `dashboard/web/mock/api.json` is generated: edit `mock/gen_fixture.mjs` and run
   `TZ=America/New_York npm run fixture`.
 - **Docs track the code**: a change to a setting, route, panel, module or command updates the
