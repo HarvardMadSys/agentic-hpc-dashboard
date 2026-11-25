@@ -5,6 +5,7 @@ systemctl is a stand-in that logs its calls."""
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -95,11 +96,21 @@ class TestWhere(Rig):
         self.assertIn("kit single, settings %s" % self.root_site, self.bare("which"))
 
     def test_init_without_root_says_the_command_with_the_answers(self):
+        """Every answer decided so far, typed or taken by --yes, and --kit: the command run
+        again as root asks nothing it was told and comes to the same kit (it once said
+        `init` alone, and the defaults chose another)."""
         out = self.bare("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes",
                         "--set", "SITE_NAME=c 1", code=1, root=False)
         self.assertIn("which only root writes", out)
-        self.assertIn("init --set NODES= --set ROOT_ON_DASHBOARD=yes --set 'SITE_NAME=c 1'", out)
+        self.assertIn("init --set NODES= --set ROOT_ON_DASHBOARD=yes --set 'SITE_NAME=c 1' "
+                      "--set SLURM=yes --yes`", out)
         self.assertFalse(os.path.exists(self.root_site))
+        out = self.bare("init", "--kit", "fleet", "--yes", "--set", "NODES=n1 n2", code=1, root=False)
+        said = re.search(r"run `sudo \S+ (init [^`]*)`", out).group(1)
+        self.assertEqual(said, "init --kit fleet --set 'NODES=n1 n2' --set ROOT_ON_DASHBOARD=no "
+                               "--set ROOT_ON_NODES=no --set SLURM=yes --yes")
+        out = self.bare(*shlex.split(said), code=0)       # as root, from what it said
+        self.assertIn("the kit: fleet", out)
 
     def test_a_settings_file_from_before_moves_once_root_runs(self):
         with open(self.old_site, "w") as fh:
@@ -109,10 +120,15 @@ class TestWhere(Rig):
         self.assertIn("settings %s" % self.old_site, out)
         out = self.bare("which")
         self.assertIn("settings moved from %s to %s" % (self.old_site, self.root_site), out)
-        self.assertFalse(os.path.exists(self.old_site))
+        # a link stays at the old place: a checkout rolled back past the move reads only
+        # there, and finds the same settings; this one reads them once, not twice
+        self.assertEqual(os.readlink(self.old_site), self.root_site)
         with open(self.root_site) as fh:
             self.assertEqual(fh.read(), "KIT=single\nSLURM=no\n")
-        self.assertNotIn("moved", self.bare("which"))
+        out = self.bare("which")
+        self.assertNotIn("moved", out)
+        self.assertNotIn("two settings files", out)
+        self.assertIn("settings %s" % self.root_site, out)
 
     def test_the_history_is_beside_them_and_the_kits_own_still_read(self):
         os.makedirs(os.path.dirname(self.root_site))

@@ -29,8 +29,11 @@ sudo deploy/rc-deploy status          # every collector's verdict, and every nod
 answers, outside the checkout, so another checkout or kit finds it with nothing to copy; it
 records the kit in it
 (`KIT=single` or `fleet`; the `hpc` kit runs as you, without sudo, and keeps its settings
-in `hpc/deploy/site.env`). Whether the page has an HPC tab is asked (`SLURM`), never
-guessed from root. Edit the file and run `apply` again to change a setting.
+in `hpc/deploy/site.env`). A `deploy/site.env` from before moves there the first time
+`rc-deploy` runs as root, and a link to it stays at the old place for a checkout rolled
+back past the move. Whether the page has an HPC tab is asked (`SLURM`), never guessed from
+root. Edit the file and run `apply` again to change a setting; `init` run without sudo
+prints the `sudo` command to run, with every answer given.
 `rc-deploy --help` lists the rest: `add-node`, `remove-node`, `upgrade`, `rollback`,
 `backup`, `uninstall`.
 

@@ -188,7 +188,13 @@ def site_file(args):
         if not os.path.exists(path):
             raise Refused("no %s yet: run `rc-deploy init` first (with --site %s)" % (path, path))
     else:
-        there = [p for p in (ROOT_SITE, DEPLOY_SITE, HPC_SITE) if os.path.exists(p)]
+        # The link a move leaves at DEPLOY_SITE (_move_old_settings) is ROOT_SITE again,
+        # not a second file.
+        there, seen = [], set()
+        for p in (ROOT_SITE, DEPLOY_SITE, HPC_SITE):
+            if os.path.exists(p) and os.path.realpath(p) not in seen:
+                seen.add(os.path.realpath(p))
+                there.append(p)
         if len(there) > 1:
             kits = [read_env(p).get("KIT", "?") for p in there]
             raise Refused("two settings files, %s (%s): rc-deploy runs one kit; remove the other"
@@ -210,7 +216,9 @@ def site_file(args):
 
 def _move_old_settings(path):
     """A deploy/site.env from before settings moved to ROOT_SITE: moved there when run as
-    root (it is one file, its lines as they were), else read where it is."""
+    root (it is one file, its lines as they were), else read where it is. A link to them
+    stays at the old place: a checkout rolled back past this change looks for them only
+    there."""
     if not _is_root():
         say("settings in %s: the next command run as root moves them to %s" % (path, ROOT_SITE))
         return path
@@ -224,7 +232,12 @@ def _move_old_settings(path):
     os.chmod(ROOT_SITE + ".tmp", 0o644)
     os.rename(ROOT_SITE + ".tmp", ROOT_SITE)
     os.unlink(path)
-    say("settings moved from %s to %s, where any checkout or kit finds them" % (path, ROOT_SITE))
+    try:
+        os.symlink(ROOT_SITE, path)
+    except OSError:
+        pass                            # the link is for a rollback; the move stands
+    say("settings moved from %s to %s, where any checkout or kit finds them (a link to "
+        "them stays at the old place, for a checkout rolled back past this)" % (path, ROOT_SITE))
     return ROOT_SITE
 
 
@@ -374,15 +387,24 @@ def cmd_init(args):
     if kit in ("single", "fleet"):
         path = args.site or ROOT_SITE
         for other in (HPC_SITE, DEPLOY_SITE):
-            if os.path.exists(other) and not args.site:
+            if os.path.exists(other) and not args.site \
+                    and os.path.realpath(other) != os.path.realpath(path):
                 raise Refused("%s exists (%s): remove it first, or give --site"
                               % (other, "the hpc kit" if other == HPC_SITE else "from before"))
         if not args.site and not _is_root():
+            # Everything decided so far, typed or answered: run again as root, the command
+            # asks nothing it was told, and comes to the same kit.
+            told = dict(answers, SLURM=slurm, NODES=nodes, ROOT_ON_DASHBOARD=root_dash)
+            if nodes:
+                told["ROOT_ON_NODES"] = root_nodes
             given = " ".join("--set %s" % shlex.quote("%s=%s" % (k, v))
-                             for k, v in sorted(answers.items()) if not k.startswith("__"))
+                             for k, v in sorted(told.items()) if not k.startswith("__"))
+            if args.kit:
+                given = "--kit %s %s" % (args.kit, given)
+            if answers.get("__yes__"):
+                given += " --yes"
             raise Refused("%s keeps its settings with the install, in %s, which only root "
-                          "writes: run `sudo %s init%s`" % (kit, ROOT_SITE, sys.argv[0],
-                                                            (" " + given) if given else ""))
+                          "writes: run `sudo %s init %s`" % (kit, ROOT_SITE, sys.argv[0], given))
         settings = list(common)
         if kit == "fleet":
             settings.append(("NODES", nodes))
