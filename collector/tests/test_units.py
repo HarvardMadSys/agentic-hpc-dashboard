@@ -18,12 +18,30 @@ SCRIPT = str(_ROOT / "ebpfm.sh")
 ID = """#!/bin/sh
 if [ "$1" = "-u" ]; then echo 0; else exec /usr/bin/id "$@"; fi
 """
-# is-active answers yes for the units named in STUB_ACTIVE; show answers a pid.
-SYSTEMCTL = """#!/bin/sh
+# is-active answers yes for the units named in STUB_ACTIVE; show answers a pid. With
+# STUB_STATE, a file of the active units, stop and start change it, and STUB_PARTOF
+# names a unit whose stop takes ebpfm-node.service down too unless its requirements are
+# ignored, as PartOf= does (and even then, with STUB_PARTOF_ALWAYS).
+SYSTEMCTL = """#!/bin/bash
 echo "systemctl $*" >> "$STUB_LOG"
+active() {
+  if [ -n "${STUB_STATE:-}" ]; then cat "$STUB_STATE"; else printf '%s\\n' $STUB_ACTIVE; fi
+}
+unit=${@: -1}
 case "$1" in
-  is-active) for u in $STUB_ACTIVE; do [ "$u" = "$3" ] && exit 0; done; exit 3 ;;
+  is-active) active | grep -qx "$unit" && exit 0; exit 3 ;;
   show) echo 4242 ;;
+  stop)
+    if [ -n "${STUB_STATE:-}" ]; then
+      gone="$unit"
+      if [ "$unit" = "${STUB_PARTOF:-}" ] && { [ -n "${STUB_PARTOF_ALWAYS:-}" ] \\
+           || [[ " $* " != *" --job-mode=ignore-requirements "* ]]; }; then
+        gone="$gone ebpfm-node.service"
+      fi
+      active | grep -vxF -f <(printf '%s\\n' $gone) > "$STUB_STATE.new"
+      mv "$STUB_STATE.new" "$STUB_STATE"
+    fi ;;
+  start) [ -n "${STUB_STATE:-}" ] && echo "$unit" >> "$STUB_STATE" ;;
 esac
 exit 0
 """
@@ -194,6 +212,36 @@ class TestDefer(Rig):
         p = self.run_sh("stop", active="ebpfm-node.service", EBPFM_TIER="node")
         self.assertIn("systemctl stop ebpfm-node.service", self.calls())
         self.assertIn("still ENABLED", p.stdout)
+
+    def test_stopping_the_ebpf_tier_alone_leaves_the_node_tier_running(self):
+        """The node tier's unit is PartOf ebpfm.service: `systemctl stop ebpfm` stops both,
+        as it should, but EBPFM_TIER=ebpf stop stops the eBPF tier alone (OPERATIONS.md).
+        Its requirements ignored, the stop does not reach the node tier; one that went down
+        anyway is started again. A stop of both tiers is a plain stop."""
+        state = os.path.join(self.tmp, "active")
+
+        def stop(tier, **env):
+            with open(state, "w") as fh:
+                fh.write("ebpfm.service\nebpfm-node.service\n")
+            if os.path.exists(self.log):
+                os.unlink(self.log)
+            p = self.run_sh("stop", EBPFM_TIER=tier, STUB_STATE=state,
+                            STUB_PARTOF="ebpfm.service", **env)
+            self.assertEqual(p.returncode, 0, p.stdout)
+            with open(state) as fh:
+                return p, fh.read().split()
+
+        p, up = stop("ebpf")
+        self.assertIn("systemctl stop --job-mode=ignore-requirements ebpfm.service", self.calls())
+        self.assertIn("node tier (ebpfm-node.service) runs on", p.stdout)
+        self.assertEqual(up, ["ebpfm-node.service"])
+        p, up = stop("ebpf", STUB_PARTOF_ALWAYS="1")         # a systemd that propagates anyway
+        self.assertIn("stopped with it and is started again", p.stdout)
+        self.assertIn("systemctl start ebpfm-node.service", self.calls())
+        self.assertEqual(up, ["ebpfm-node.service"])
+        p, up = stop("all")
+        self.assertIn("systemctl stop ebpfm.service", self.calls())
+        self.assertNotIn("--job-mode", self.calls())
 
     def test_without_the_unit_status_is_as_before(self):
         p = self.run_sh("status", EBPFM_TIER="node")

@@ -1598,12 +1598,31 @@ _node_stop() {
 
 _ebpf_stop() {
     need_root stop
-    local u p i
+    local u p i alone=0 opts=()
     if u="$(_active_unit)"; then
-        if _systemctl_stop "$u"; then
+        # The node tier's unit is PartOf ebpfm.service, so stopping that unit stops it
+        # too: right for `systemctl stop ebpfm`, not for a stop of the eBPF tier alone
+        # (EBPFM_TIER=ebpf), which leaves the node tier running. With its requirements
+        # ignored the stop does not reach the node tier's unit, and one that went down
+        # anyway is started again.
+        if [ "$u" = "${NAME}.service" ] && ! want_node \
+           && systemctl is-active --quiet "${NAME}-node.service" 2>/dev/null; then
+            alone=1
+            opts=(--job-mode=ignore-requirements)
+        fi
+        if _systemctl_stop "$u" ${opts[@]+"${opts[@]}"}; then
             echo "$NAME unit $u stopped on $HOST (SIGTERM -> truncated flush)"
             [ "$u" = "${NAME}.service" ] && \
                 echo "  note: the persistent unit is still ENABLED; 'systemctl disable $NAME' to keep it down across reboots"
+            if [ "$alone" = 1 ]; then
+                if systemctl is-active --quiet "${NAME}-node.service" 2>/dev/null; then
+                    echo "  the node tier (${NAME}-node.service) runs on: EBPFM_TIER=ebpf stops the eBPF tier alone"
+                elif systemctl start "${NAME}-node.service" 2>/dev/null; then
+                    echo "  the node tier (${NAME}-node.service) stopped with it and is started again: EBPFM_TIER=ebpf stops the eBPF tier alone"
+                else
+                    echo "ebpfm: the node tier (${NAME}-node.service) stopped with $u and did not start again: systemctl start ${NAME}-node.service" >&2
+                fi
+            fi
             rm -f "$PID_FILE" "$STATE_FILE"
             return 0
         fi
@@ -1624,9 +1643,10 @@ _ebpf_stop() {
 }
 
 # As root, plainly; as a user, without polkit's password prompt in the middle.
-_systemctl_stop() {
-    if [ "$IS_ROOT" = 1 ]; then systemctl stop "$1" 2>/dev/null
-    else systemctl --no-ask-password stop "$1" 2>/dev/null; fi
+_systemctl_stop() {     # UNIT [OPTION...]
+    local u=$1; shift
+    if [ "$IS_ROOT" = 1 ]; then systemctl stop "$@" "$u" 2>/dev/null
+    else systemctl --no-ask-password stop "$@" "$u" 2>/dev/null; fi
 }
 
 # The eBPF tier can be carried by either unit: the PERSISTENT one from

@@ -98,6 +98,7 @@ With the units (`install`), systemd starts both tiers at boot:
 sudo systemctl status ebpfm ebpfm-node
 sudo systemctl restart ebpfm                # both tiers: after a settings change or an upgrade
 sudo systemctl restart ebpfm-node           # the node tier alone, which loses no live process
+sudo EBPFM_TIER=ebpf ./collector/ebpfm.sh stop   # the eBPF tier alone; the node tier runs on
 ```
 
 Without them, `start` runs each tier in the background until the next reboot: the eBPF
