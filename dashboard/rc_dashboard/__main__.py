@@ -273,20 +273,14 @@ def build_parser():
     _settings(p, serve=False)
 
     p = _cmd(sub, "print-config", "the resolved settings, each with where it came from",
-             "Print the settings a site chooses as JSON, each {_value, _origin}: a flag, a "
-             "variable, the config file, or the default; a path also lists what exists of it "
-             "(_existing). An internal setting (one that tunes the reducers, caches and "
-             "workers) is printed only when it is not at its default; --all prints every one. "
-             "--reference prints the settings a site chooses with their built-in defaults "
-             "and a line of help each, as TOML, instead.",
+             "Print every setting as JSON, each {_value, _origin}: a flag, a variable, the "
+             "config file, or the default; a path also lists what exists of it (_existing). "
+             "--reference prints every setting with its built-in default as TOML instead.",
              "  rc-dashboard print-config\n"
-             "  rc-dashboard print-config --reference > dashboard.toml\n"
-             "  rc-dashboard print-config --reference --all")
+             "  rc-dashboard print-config --reference > dashboard.full.toml")
     p.add_argument("--reference", action="store_true",
-                   help="the settings a site chooses with their built-in defaults, as a TOML "
-                        "config file, with a line of help and the RC_DASH_* variable of each")
-    p.add_argument("--all", action="store_true", dest="all_settings",
-                   help="every setting, the internal ones too")
+                   help="every setting with its built-in default, as a TOML config file, with "
+                        "the RC_DASH_* variable of each")
     _settings(p)
 
     p = _cmd(sub, "new-password", "a password for the page, and its hash",
@@ -471,7 +465,7 @@ def main(argv=None):
         from . import init_cmd
         return init_cmd.main(args)
     if cmd == "print-config" and getattr(args, "reference", False):
-        sys.stdout.write(configmod.reference_toml(getattr(args, "all_settings", False)))
+        sys.stdout.write(configmod.reference_toml())
         return 0
     if cmd == "restore" and not (args.print_config or args.check_feeds):
         # before the config is read: the config it reads may be the one it restores
@@ -503,13 +497,7 @@ def main(argv=None):
                 return 0
 
     if args.print_config or cmd == "print-config":
-        tree = cfg.as_dict(with_origins=True)
-        if not getattr(args, "all_settings", False):
-            tree, left = configmod.public_view(tree)
-            if left:
-                sys.stderr.write("print-config: %d internal settings at their defaults are left "
-                                 "out; `rc-dashboard print-config --all` prints them\n" % left)
-        print(json.dumps(tree, indent=1, default=str))
+        print(json.dumps(cfg.as_dict(with_origins=True), indent=1, default=str))
         return 0
     if args.check_feeds or cmd == "check-feeds":
         return check_feeds(cfg)

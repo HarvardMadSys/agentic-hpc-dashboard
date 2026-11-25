@@ -80,9 +80,9 @@ It says why and exits; the reasons a newcomer meets most:
 - `refusing to serve: there is no password`: make one (`rc-dashboard new-password --install …`,
   or `rc-dashboard init`), or serve open on a machine only you can reach (`--open`).
 - `<key> is not a setting; the nearest is <key>`: a typo in the config's `server`, `anonymize`
-  or `ask` section stops it; elsewhere it is a warning. `rc-dashboard print-config --all` shows
-  every setting and where it came from, and `rc-dashboard print-config --reference --all` every
-  setting there is.
+  or `ask` section stops it; elsewhere it is a warning. `rc-dashboard print-config` shows every
+  setting and where it came from, and `rc-dashboard print-config --reference` every setting
+  there is.
 - `config file <path>, named by --config, does not exist` (or by `RC_DASH_CONFIG`): a config
   file the command line or the environment names must be there.
 

@@ -252,13 +252,10 @@ class UnknownKeys(Case):
                                      "dangerous": {"override": {"rm_rf": {"severity": "low"}}}}})
         self.assertEqual(err, "")
 
-    def test_the_full_reference_loads_without_a_word(self):
-        """Every setting `print-config --reference --all` writes is one the loader knows."""
-        path = os.path.join(self.tmp, "full.toml")
-        with open(path, "w") as fh:
-            fh.write(configmod.reference_toml(everything=True))
+    def test_the_example_file_loads_without_a_word(self):
+        # its risk profile is a path under dashboard/
         with mock.patch.object(configmod, "HERE", DASH):
-            _, err = self.load(path=path)
+            _, err = self.load(path=os.path.join(DASH, "dashboard.config.example.json"))
         self.assertEqual(err, "")
 
 
@@ -449,10 +446,9 @@ class RelativePaths(Case):
                           os.path.join(repo, "data", "*", "ebpf")])
         self.assertEqual(cfg.get("history.dir"), "")      # empty is the default, still
 
-    def test_the_readmes_relative_paths_find_the_page_and_the_cache(self):
+    def test_a_verbatim_copy_of_the_example_finds_the_page_and_the_cache(self):
         with mock.patch.object(configmod, "HERE", DASH):
-            cfg, _ = self.load({"cache": {"dir": "dashboard/.cache"},
-                                "server": {"static_dir": "dashboard/web/dist"}})
+            cfg, _ = self.load(path=os.path.join(DASH, "dashboard.config.example.json"))
         self.assertEqual(cfg.get("cache.dir"), os.path.join(DASH, ".cache"))
         self.assertEqual(cfg.get("server.static_dir"), os.path.join(DASH, "web", "dist"))
 
@@ -494,91 +490,59 @@ class Candidates(Case):
 
 
 class Reference(Case):
-    def drop_none(self, node):
-        return {k: self.drop_none(v) if isinstance(v, dict) else v
-                for k, v in node.items() if v is not None}
-
     def test_it_reads_back_as_the_defaults(self):
         import tomllib
-        everything = tomllib.loads(configmod.reference_toml(everything=True))
-        self.assertEqual(everything, self.drop_none(configmod.defaults()))
-        public = tomllib.loads(configmod.reference_toml())
-        want = {}
-        for path in configmod.PUBLIC_KEYS:
-            configmod._set(want, path, configmod._get(configmod.defaults(), path))
-        self.assertEqual(public, self.drop_none(want))
+        tree = tomllib.loads(configmod.reference_toml())
+
+        def drop_none(node):
+            return {k: drop_none(v) if isinstance(v, dict) else v
+                    for k, v in node.items() if v is not None}
+        self.assertEqual(tree, drop_none(configmod.defaults()))
 
     def test_it_names_each_variable(self):
-        text = configmod.reference_toml(everything=True)
+        text = configmod.reference_toml()
         for dotted, (var, _c) in configmod.ENV_MAP.items():
             self.assertIn("# %s" % var, text, dotted)
         self.assertIn("# command = (unset)  # RC_DASH_ASK_CMD", text)
 
     def test_the_command_prints_it(self):
-        for argv, everything in ((["print-config", "--reference"], False),
-                                 (["print-config", "--reference", "--all"], True)):
-            out = io.StringIO()
-            with redirect_stdout(out):
-                self.assertEqual(cli.main(argv), 0)
-            self.assertEqual(out.getvalue(), configmod.reference_toml(everything))
-
-
-class Public(Case):
-    """A site chooses a few settings; the rest are internal, loadable but left out of the
-    reference, the starter and the README's table."""
-
-    def test_each_is_a_setting_with_a_line_of_help(self):
-        dflt = configmod.defaults()
-        for path, text in configmod.PUBLIC:
-            with self.subTest(key=path):
-                self.assertIsNot(configmod._get(dflt, path, configmod._MISSING),
-                                 configmod._MISSING)
-                self.assertTrue(text and not text.endswith("."), text)
-        self.assertEqual(len(set(configmod.PUBLIC_KEYS)), len(configmod.PUBLIC_KEYS))
-
-    def test_they_stay_few(self):
-        """A new setting is internal unless every site must choose it."""
-        self.assertLessEqual(len(configmod.PUBLIC), 24)
-
-    def test_the_readme_table_names_each_and_only_them(self):
-        with open(os.path.join(DASH, "README.md")) as fh:
-            text = fh.read()
-        table = text[text.index("| Setting | Variable |"):]
-        table = table[:table.index("\n\n")]
-        named = [line.split("`")[1] for line in table.splitlines()[2:]]
-        self.assertEqual(sorted(named), sorted(configmod.PUBLIC_KEYS))
-
-    def test_the_reference_says_how_many_are_internal(self):
-        n = sum(1 for _ in configmod._leaf_paths(configmod.defaults()))
-        self.assertIn("# %d more settings are internal" % (n - len(configmod.PUBLIC)),
-                      configmod.reference_toml())
-
-    def test_print_config_shows_them_and_any_internal_one_changed(self):
-        path = self.write({"site": {"name": "c"}, "panels": {"max_windows": 3}})
-        for argv, everything in ((["print-config", "--config", path], False),
-                                 (["print-config", "--config", path, "--all"], True)):
-            out, err = io.StringIO(), io.StringIO()
-            with clean_env(), redirect_stdout(out), redirect_stderr(err):
-                self.assertEqual(cli.main(argv), 0)
-            tree = json.loads(out.getvalue())
-            self.assertEqual(tree["site"]["name"]["_value"], "c")
-            self.assertTrue(tree["site"]["name"]["_origin"].startswith("file"))
-            self.assertEqual(tree["panels"]["max_windows"]["_value"], 3)     # changed: shown
-            self.assertIn("_meta", tree)
-            self.assertEqual("ingest" in tree, everything)                   # all at defaults
-            self.assertEqual("internal settings at their defaults are left out" in
-                             err.getvalue(), not everything)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(cli.main(["print-config", "--reference"]), 0)
+        self.assertEqual(out.getvalue(), configmod.reference_toml())
 
 
 class Examples(Case):
-    """The starter and run.sh hold nothing of one site's."""
+    """The example files hold the built-in defaults and nothing of one site's."""
+
+    def leaves(self, node, prefix=""):
+        for k, v in node.items():
+            path = prefix + k
+            if isinstance(v, dict) and v:
+                yield from self.leaves(v, path + ".")
+            else:
+                yield path, v
+
+    def test_every_value_in_the_json_example_is_the_default(self):
+        with open(os.path.join(DASH, "dashboard.config.example.json")) as fh:
+            tree = configmod.strip_comments(json.load(fh))
+        with mock.patch.object(configmod, "HERE", DASH):
+            configmod._resolve_paths(tree, os.path.join(DASH, "x.json"))
+            dflt = configmod.defaults()
+        for path, val in self.leaves(tree):
+            if configmod._code_key(path):
+                continue
+            with self.subTest(key=path):
+                self.assertEqual(val, configmod._get(dflt, path))
 
     def test_no_site_of_ours_in_the_examples_or_run_sh(self):
-        texts = {}
-        for name in ("dashboard.example.toml", "run.sh"):
+        """No value of one site's set: the JSON example's comments may point at a
+        site's profile, its settings may not use one."""
+        for name in ("dashboard.config.example.json", "dashboard.example.toml", "run.sh"):
             with open(os.path.join(DASH, name)) as fh:
-                texts[name] = fh.read()
-        for name, text in texts.items():
+                text = fh.read()
+            if name.endswith(".json"):
+                text = json.dumps(configmod.strip_comments(json.loads(text)))
             for word in ("netscratch", "juncheng", "flamraoui", "marthen", "fasrc.json",
                          "holy|bos", "human-vscode"):
                 with self.subTest(file=name, word=word):
