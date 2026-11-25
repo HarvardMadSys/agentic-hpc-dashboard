@@ -918,6 +918,27 @@ class TestCheck(Rig):
         out = self.check(dict(doc, level="warn", hosts=[]), rc=1, code=1)
         self.assertIn("warn: a collector is silent", out)
 
+    def test_the_status_runs_the_code_the_unit_runs(self):
+        """The status command runs in the unit's WorkingDirectory, so it imports what the
+        dashboard runs: a checkout's dashboard/ folder, or a release's state folder, where
+        only the venv's wheel imports. Not this script's own kit, which after a rollback is
+        another release's code."""
+        venv = os.path.join(self.tmp, "fake-venv")
+        os.makedirs(os.path.join(venv, "bin"))
+        py = os.path.join(venv, "bin", "python")
+        with open(py, "w") as fh:
+            fh.write('#!/bin/sh\nprintf \'{"level": "ok", "why": [], "hosts": [], "cwd": "%s"}\\n\' "$PWD"\n')
+        os.chmod(py, 0o755)
+        unit = os.path.join(self.units, "rc-dashboard.service")
+        out = self.run_script("deploy/common/check.sh", "--print", RC_CHECK_VENV=venv)
+        self.assertIn('"cwd": "%s/dashboard"' % self.repo, out)          # a checkout's
+        with open(unit) as fh:
+            text = fh.read()
+        with open(unit, "w") as fh:
+            fh.write(re.sub(r"(?m)^WorkingDirectory=.*$", "WorkingDirectory=%s" % self.state, text))
+        out = self.run_script("deploy/common/check.sh", "--print", RC_CHECK_VENV=venv)
+        self.assertIn('"cwd": "%s"' % self.state, out)                     # a release's
+
     def test_no_status_at_all_is_said(self):
         out = self.check("Traceback (most recent call last)", rc=1, code=3)
         self.assertIn("could not run rc-dashboard status (exit 1)", out)
