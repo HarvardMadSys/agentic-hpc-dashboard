@@ -446,7 +446,6 @@ export const TrajectoriesTab = memo(function TrajectoriesTab({
         <Panel
           title="Sessions"
           id="sec-ranked-sessions"
-          ask={[{ panel: 'trajectories', rank }]}
           p={env}
           empty={!listed.length}
           emptyWhat={

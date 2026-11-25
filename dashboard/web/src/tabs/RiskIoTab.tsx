@@ -544,11 +544,10 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
 
         {ioPart === 'main' && (
         <>
-        {/* the anchor the read chart had, so a link or a citation to it lands here */}
+        {/* the anchor the read chart had, so a link to it lands here */}
         <Panel
           id="sec-reads-by-tool"
           title="Disk read and written by tool"
-          ask={[{ panel: 'io_process', keys: ['by_tool', 'notes'] }]}
           p={io}
           span
           empty={!toolDisk.length}
@@ -566,7 +565,6 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
 
         <Panel
           title="Network bytes"
-          ask={[{ panel: 'io_process', keys: ['by_class', 'by_tool', 'endpoints', 'notes'] }]}
           p={io}
           span
           empty={!have.length || !have.some(netRead)}
@@ -584,7 +582,6 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
 
         <Panel
           title="I/O by user"
-          ask={[{ panel: 'io_process', keys: ['by_user', 'notes'] }]}
           p={io}
           span
           empty={!byUser.length}
@@ -648,8 +645,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
         )}
 
         {ioPart === 'internal' && quantKeys.length > 0 && (
-          <Panel title="I/O distributions" p={io} span empty={!have.length}
-            ask={[{ panel: 'io_process', keys: ['by_class', 'notes'] }]}>
+          <Panel title="I/O distributions" p={io} span empty={!have.length}>
             <div className="scroller">
               <table>
                 <thead>
@@ -698,7 +694,6 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
             <Panel
               key={sc.id}
               title={sc.title}
-              ask={[{ panel: 'risk', keys: ['login_compute', 'sections'] }]}
               p={risk}
               span
               empty={!lcRows.length}
@@ -769,7 +764,6 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
             <Panel
               key={sc.id}
               title={sc.title}
-              ask={[{ panel: 'risk', keys: ['secrets', 'sections', 'rules'] }]}
               p={risk}
               span
               empty={!inSection(secRows, sc).length}
@@ -825,7 +819,6 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
             <Panel
               key={sc.id}
               title={sc.title}
-              ask={[{ panel: 'risk', keys: ['dangerous', 'sections', 'rules'] }]}
               p={risk}
               span
               empty={!inSection(dgRows, sc).length}
@@ -888,8 +881,7 @@ export const RiskIoTab = memo(function RiskIoTab({ P, cls, part, io: ioPart = 'm
           ),
         )}
 
-        <Panel title="Rules in effect" p={risk} span empty={!risk.rules} emptyWhat="the service sent no rule list"
-          ask={[{ panel: 'risk', keys: ['rules', 'sections', 'totals'] }]}>
+        <Panel title="Rules in effect" p={risk} span empty={!risk.rules} emptyWhat="the service sent no rule list">
           <RulesInEffect r={risk.rules} />
         </Panel>
       </div>

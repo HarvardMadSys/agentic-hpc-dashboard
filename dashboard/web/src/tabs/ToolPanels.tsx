@@ -79,7 +79,6 @@ export function ToolPanels({ P, cls, type = null }: { P: Panels; cls: Cls[]; typ
     note: type && !one && cls.includes('agent')
       ? 'every agent type together: this window was read before tools were counted per type'
       : null,
-    askKeys: (keys: string[]) => (one && type ? [...keys, `by_agent_type.${type}`] : keys),
     ioq: (c: string) => (c === 'agent' && one && type ? { class: [c], agent_type: [type] } : { class: [c] }),
   };
   return (
@@ -95,7 +94,6 @@ interface ToolScope {
   lbl: (c: string) => string;
   title: (t: string) => string;
   note: string | null;
-  askKeys: (keys: string[]) => string[];
   /** a column's processes, for the commands behind one of its numbers */
   ioq: (c: string) => Partial<IoQuery>;
 }
@@ -103,7 +101,6 @@ const CLASS_SCOPE: ToolScope = {
   lbl: (c) => CLS_LBL[c] ?? c,
   title: (t) => t,
   note: null,
-  askKeys: (keys) => keys,
   ioq: (c) => ({ class: [c] }),
 };
 
@@ -177,7 +174,6 @@ function ToolMixPanel({ tm, have, buckets, byClass, scope = CLASS_SCOPE }: {
     <Panel
       title={scope.title('Tool mix')}
       id="sec-tool-mix"
-      ask={[{ panel: 'tool_mix', keys: scope.askKeys(['by_class', 'by_type', 'buckets']) }]}
       p={tm}
       span
       empty={!have.length || !buckets.length}
@@ -324,7 +320,6 @@ function HeadPanel({ tm, have, scope = CLASS_SCOPE }: { tm: ToolMix; have: strin
   return (
     <Panel
       title={scope.title('Top tools')}
-      ask={[{ panel: 'tool_mix', keys: scope.askKeys(['tools', 'n_tools']) }]}
       id="sec-head-of-the-tool-distribution"
       p={tm}
       span

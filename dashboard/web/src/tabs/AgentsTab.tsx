@@ -614,7 +614,7 @@ function OutsideOf({ ns }: { ns: CascadeNode[] }) {
  * home; when it ran, how much, and whether it wrote outside its home. */
 function LoneRow({ n, on, onPick, inFold, keys }: {
   n: CascadeNode; on: boolean; onPick: () => void; inFold?: boolean;
-  /** the agent's `host:pid`, by which an Ask LLM citation finds its row (lib/cites.ts) */
+  /** the agent's `host:pid`, by which a link finds its row (lib/cites.ts) */
   keys: string;
 }) {
   const w = n.workspace;
@@ -650,7 +650,7 @@ function TreeRow({ e, on, onPick }: { e: Extract<Entry, { k: 'tree' }>; on: bool
   const { t, agents, at } = e;
   const lead = agents.filter((n) => (n.agent_level ?? 1) <= 1).sort(busier)[0];
   const user = t.users.length === 1 ? t.users[0] : null;
-  // the tree's root and every agent in it, for a citation to find it by
+  // the tree's root and every agent in it, for a link to find it by (lib/cites.ts)
   const keys = [e.key, ...agents.map((n) => keyOf(t.host, n.pid))].join(' ');
   return (
     <button className={`al-item${on ? ' on' : ''}`} style={{ borderLeftColor: on ? undefined : typeCol(lead?.agent_type) }}
@@ -1296,7 +1296,6 @@ export const AgentsTab = memo(function AgentsTab({ P, cls }: { P: Panels; cls: C
         <div className="grid wide">
           <Panel
             title="Agents and their subagents"
-            ask={[{ panel: 'cascades', keys: ['summary', 'trees', 'workspace.summary'] }]}
             id="sec-agent-trees"
             p={c}
             span
