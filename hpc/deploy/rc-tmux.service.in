@@ -1,13 +1,13 @@
 # Rendered by render.py; installed in ~/.config/systemd/user/ by install-remote.sh.
 # The tmux session that runs the dashboard host's two processes, one window each:
-# `stream` (fleet_stream.py receive) and `dashboard` (rc_dashboard serve). Each window
+# `copy` (deploy/fleet/pull.py loop) and `dashboard` (rc_dashboard serve). Each window
 # runs keep-running.sh, which starts its process in a memory-capped scope and starts it
 # again when it ends. To watch: tmux -L rc-dashboard attach (Ctrl-b d leaves it).
 # Linger keeps the user manager, and with it this session, running when no one is
 # logged in; install-remote.sh and the hourly check turn it on. If the home is shared
 # with other machines, ConditionHost keeps the unit to the dashboard's host.
 [Unit]
-Description=rc dashboard: the tmux session that runs the stream and the dashboard
+Description=rc dashboard: the tmux session that runs the copy and the dashboard
 ConditionHost=@DASH_NODE@*
 StartLimitIntervalSec=600
 StartLimitBurst=5
@@ -27,7 +27,7 @@ Environment=RC_DASH_MEMORY_MAX=@DASH_MEMORY_MAX@
 ExecStart=@DASH_ROOT@/current/@KIT@/tmux-session.sh
 Restart=always
 RestartSec=10
-# The tmux server, the two loops, and their log viewers. The stream (512M) and the
+# The tmux server, the two loops, and their log viewers. The copy (512M) and the
 # dashboard (RC_DASH_MEMORY_MAX) run in scopes of their own and are capped there.
 MemoryMax=64M
 # On stop, each loop sends its process SIGTERM and waits for it to end.

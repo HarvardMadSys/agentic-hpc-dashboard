@@ -420,7 +420,7 @@ The JSON (`--json`, and `GET /api/status`) is a contract other tools code agains
  "hosts": [{"host": "login01", "verdict": "ok|degraded|stopped|silent|unknown",
             "heartbeat_age_s": 42.0,
             "newest_age_s": {"ebpf": 12.5, "ebpf_node": 210.0},
-            "transport": {"kind": "rsync|stream", "ok": true, "last_ok_age_s": 30.1,
+            "transport": {"kind": "rsync", "ok": true, "last_ok_age_s": 30.1,
                           "error": null}}]}
 ```
 
@@ -436,20 +436,15 @@ what it has read. A pinned clock (`clock.as_of`) is the present for a capture's 
 | `status.transport_files` | `RC_DASH_TRANSPORT_FILES` (comma-separated) | `[]` | the state files of what copies the collectors' files here, as paths or glob patterns |
 | `status.stale_s` | `RC_DASH_STATUS_STALE_S` | `900` | how old a host's newest record, or its copy's last good pass, may be; `--stale` (`300`, `90s`, `15m`, `2h`, `1d`) and `/api/status?stale=` override it |
 
-A transport file is read in the format its writer has:
-
-- **rsync**, [`deploy/fleet/pull.py`](../deploy/fleet/pull.py)'s `<mirror>/.state/<node>.json`
-  (`RC_DASH_TRANSPORT_FILES='<mirror>/.state/*.json'`): `ok` and `error` of its last pass,
-  `ok_epoch` of its last good one (`last_ok_age_s`), and `file_hosts`, the host names the node's
-  day-files carry. A pass marked ok but older than `stale_s` is not ok: pull.py may have stopped.
-- **stream**, [`hpc/fleet`](../hpc/fleet/README.md)'s receiver's `<base>/state/status.json`, one
-  entry per source host: `connected`, `lag_s` since its last frame and `down_since` give
-  `last_ok_age_s`, `last_error` the error; a status file older than `stale_s` (the receiver writes
-  it every 10 s) or a receiver paused for disk space is not ok.
+A transport file is [`deploy/fleet/pull.py`](../deploy/fleet/pull.py)'s
+`<mirror>/.state/<node>.json` (`RC_DASH_TRANSPORT_FILES='<mirror>/.state/*.json'`), which both
+kits copy with: `ok` and `error` of its last pass, `ok_epoch` of its last good one
+(`last_ok_age_s`), and `file_hosts`, the host names the node's day-files carry. A pass marked ok
+but older than `stale_s` is not ok: pull.py may have stopped.
 
 A transport answers for a host by name (its node name or a `file_hosts` name), else by where the
-host's files are (`<mirror>/{ebpf,node}/<node>/`, `<base>/mirror/<host>/`). Errors are masked
-(`redact.py`).
+host's files are (`<mirror>/{ebpf,node}/<node>/`, or `<mirror>/<node>/` in the HPC kit's flat
+layout). Errors are masked (`redact.py`).
 
 `GET /metrics` serves the same numbers in Prometheus' text format, behind the same sign-in (a
 scraper sends the password as HTTP Basic auth, `curl --netrc-file`): `rc_dashboard_status_level`

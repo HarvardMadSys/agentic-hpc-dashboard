@@ -854,7 +854,7 @@ class TestCheck(Rig):
         STALE, and the check says crit, whatever the dashboard has read."""
         self.fleet_with_copy(86400)
         out = self.check({"level": "ok", "why": [], "hosts": []}, code=2)
-        self.assertIn("crit: copy: n1 STALE (no pass for 1d 0h: is rc-pull running?", out)
+        self.assertIn("crit: copy: n1 STALE (no pass for 1d 0h: is the copy running?", out)
 
 
 class TestUninstall(Rig):

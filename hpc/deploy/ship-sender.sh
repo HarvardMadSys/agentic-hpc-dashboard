@@ -1,12 +1,12 @@
 #!/bin/bash
-# ship-sender.sh SHA FILE: put FILE (a release's hpc/fleet/fleet_stream.py) on the source
-# nodes as SENDER_DIR/SHA/fleet_stream.py, and move SENDER_DIR/current to it, with
-# install-sender.sh run on each node. deploy.sh runs it before it ships the release, so
-# the nodes never run an older sender than the receiver expects.
+# ship-sender.sh SHA FILE: put FILE (a release's hpc/fleet/rsync_guard.py, the copy key's
+# forced command) on the source nodes as SENDER_DIR/SHA/rsync_guard.py, and move
+# SENDER_DIR/current to it, with install-sender.sh run on each node. deploy.sh runs it
+# before it ships the release, so the nodes' guard is in place before the copy asks.
 #
 # SHARED_HOME=yes (the default): the nodes share one home, so the first node that
 # answers is enough; a node that does not answer is skipped. SHARED_HOME=no: every node
-# gets the sender, and a node that fails fails the step. Exit 0, 1 (a node failed, or
+# gets the guard, and a node that fails fails the step. Exit 0, 1 (a node failed, or
 # none answered), or 2 (a usage error, or no SENDER_DIR).
 set -uo pipefail
 umask 077
@@ -31,7 +31,7 @@ for node in $SOURCE_NODES; do
   if "${ssh_[@]}" "$dest" "umask 077; mkdir -p $SENDER_DIR && chmod 700 $SENDER_DIR && cat > $SENDER_DIR/.incoming-$sha" \
        < "$file" &&
      "${ssh_[@]}" "$dest" "bash -s -- $sha $SENDER_DIR" < "$here/install-sender.sh"; then
-    echo "  $node: sender $sha"
+    echo "  $node: guard $sha"
     done_=$((done_ + 1))
     [ "$shared" = yes ] && break
   else
@@ -40,7 +40,7 @@ for node in $SOURCE_NODES; do
   fi
 done
 if [ "$done_" -eq 0 ] || { [ "$shared" = no ] && [ ${#failed[@]} -gt 0 ]; }; then
-  echo "ship-sender.sh: the sender is not on ${failed[*]:-any node}" >&2
+  echo "ship-sender.sh: the guard is not on ${failed[*]:-any node}" >&2
   exit 1
 fi
 exit 0

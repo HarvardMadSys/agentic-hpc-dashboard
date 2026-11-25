@@ -50,8 +50,9 @@ jobs:
       # procps-ng for ps: the image has none, and node_snapshot.py reads its
       # process tables from ps, as on the login nodes.
       # tar, gzip and hostname for ebpfm.sh, which tests/test_units.py runs (bundle, units).
-      - name: Install Python 3.6, gcc, git, ps, tar, gzip and hostname
-        run: dnf -y install python3 gcc git-core procps-ng tar gzip hostname
+      # rsync for the guard's tests, which copy through it with pull.py, both on 3.6.
+      - name: Install Python 3.6, gcc, git, ps, tar, gzip, hostname and rsync
+        run: dnf -y install python3 gcc git-core procps-ng tar gzip hostname rsync
 
       # The same commits demo-deploy.yml pins.
       - name: Checkout
@@ -64,8 +65,13 @@ jobs:
           python3 --version
           python3 -m unittest discover -s collector/tests -q
 
-      - name: The fleet sender, the fleet puller and rc-deploy compile on Python 3.6
-        run: python3 -m py_compile hpc/fleet/fleet_stream.py hpc/fleet/seed_mirror.py deploy/fleet/pull.py deploy/rc-deploy
+      - name: The nodes' guard, the fleet puller and rc-deploy compile on Python 3.6
+        run: python3 -m py_compile hpc/fleet/rsync_guard.py deploy/fleet/pull.py deploy/rc-deploy
+
+      # The guard runs on the nodes, under their own /usr/bin/python3: EL8's 3.6 here; and
+      # its tests copy through it with pull.py, which the dashboard's host runs on its own.
+      - name: The nodes' guard, and pull.py through it, on Python 3.6
+        run: python3 -m unittest discover -s hpc/fleet/tests -q
 
   python:
     name: Collector, deploy modes and HPC kit
@@ -98,7 +104,7 @@ jobs:
       - name: Installer tests (single and fleet)
         run: python3 -m unittest discover -s deploy/common/tests -q
 
-      - name: HPC fleet stream tests
+      - name: The HPC nodes' guard tests
         run: python3 -m unittest discover -s hpc/fleet/tests -q
 
       - name: HPC deploy kit tests

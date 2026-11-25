@@ -15,11 +15,11 @@ fi
 sha=$1 first=$2 restart=$3 R=$4 py=${5:-python3}
 inc=$R/incoming/$sha
 rel=$R/releases/$sha
-# site.env's PRIVATE_TREE, in the stream.json this release ships. "no" (a host that only
-# the team can log in to): the modes and ACLs the user set stay as they are; only etc/,
+# site.env's PRIVATE_TREE, in the kit.env this release ships. "no" (a host that only the
+# team can log in to): the modes and ACLs the user set stay as they are; only etc/,
 # which holds the secrets, is made 700.
-private=$(python3 -c 'import json,sys; print("no" if json.load(open(sys.argv[1])).get("private") is False else "yes")' \
-          "$inc/stream.json" 2>/dev/null || echo yes)
+private=$(sed -n 's/^PRIVATE_TREE=//p' "$inc/kit.env" 2>/dev/null | tail -n 1)
+[ "$private" = no ] || private=yes
 mkdir -p "$R/releases" "$R/etc" "$HOME/.config/systemd/user"
 if [ "$private" = yes ]; then
   chmod 700 "$R" "$R/releases" "$R/etc"
@@ -74,7 +74,15 @@ mv -T "$R/current.new" "$R/current"
 # Which release came before which, for rollback.sh.
 printf '%s %s\n' "$sha" "$(date '+%F %T')" >> "$R/releases/.history"
 
-install -m 600 "$inc/stream.json" "$R/etc/stream.json"
+# The copy's settings (pull.py), and what the kit's scripts read. An etc/stream.json from
+# the stream this replaced stays: a rollback to a release before it reads it again.
+install -m 600 "$inc/fleet.env" "$R/etc/fleet.env"
+install -m 600 "$inc/kit.env" "$R/etc/kit.env"
+if [ -e "$R/TRIPPED" ]; then
+  echo "note: $R/TRIPPED, where the stream before the copy stopped both processes, is no longer read;" \
+       "its reason is in $R/logs/rc-fleet-stream.log. Remove it once read (a rollback to a release" \
+       "before the copy would stop at it again)."
+fi
 install -m 600 "$inc/dashboard.config.json" "$R/etc/dashboard.config.json"
 [ -e "$R/etc/auth.env" ] || install -m 600 /dev/null "$R/etc/auth.env"
 # The session's windows run the kit's scripts by the path the unit named, through
@@ -91,10 +99,11 @@ fi
 install -m 600 "$inc/rc-tmux.service" "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
 systemctl --user enable rc-tmux.service >/dev/null 2>&1 || true
-# A session without its two windows (a deploy that stopped half way, or one someone
-# closed) must restart: a start would keep it as it is.
+# A session without its two windows (a deploy that stopped half way, one someone closed,
+# or one from before the copy replaced the stream, whose window was `stream`) must
+# restart: a start would keep it as it is.
 again=0
-for w in stream dashboard; do
+for w in copy dashboard; do
   tmux -L rc-dashboard list-panes -t "rc-dashboard:$w" >/dev/null 2>&1 || again=1
 done
 # Start the session (a no-op when it runs), then turn linger on, so it outlives this
@@ -103,6 +112,17 @@ if [ "$restart" = 1 ] || [ "$again" = 1 ]; then
   systemctl --user restart rc-tmux.service || echo "rc-tmux did not start; see check-local.sh"
 else
   systemctl --user start rc-tmux.service || echo "rc-tmux did not start; see check-local.sh"
+  # The running copy reads etc/fleet.env again on SIGHUP (pull.py's reload): a node added
+  # starts, one taken out stops, and nothing restarts. Its lock holds its pid; a lock no
+  # process holds names none.
+  lock=$R/data/mirror/.state/pull.lock
+  if [ -s "$lock" ] && ! flock -n "$lock" true 2>/dev/null; then
+    pid=$(head -n 1 "$lock")
+    case $pid in
+      ''|*[!0-9]*) ;;
+      *) kill -HUP "$pid" 2>/dev/null && echo "the copy reads its new settings (pid $pid)" ;;
+    esac
+  fi
 fi
 loginctl enable-linger 2>/dev/null || true
 # pip writes executables and libraries with fixed modes (755, 711) whatever the umask;

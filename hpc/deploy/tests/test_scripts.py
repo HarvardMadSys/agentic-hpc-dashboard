@@ -330,7 +330,7 @@ class TestDeployPlan(Rig):
 
     def checkout(self):
         repo = os.path.join(self.tmp, "repo")
-        for part in ("hpc/deploy", "hpc/fleet"):
+        for part in ("hpc/deploy", "hpc/fleet", "deploy/fleet"):
             shutil.copytree(os.path.join(REPO, part), os.path.join(repo, part),
                             ignore=shutil.ignore_patterns("tests", "__pycache__", "site.env"))
         git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
@@ -351,6 +351,25 @@ class TestDeployPlan(Rig):
         self.assertIn("nothing was changed", p.stdout)
         self.assertNotIn("ssh", self.calls())
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "work")))
+
+    def test_settings_the_copy_refuses_stop_the_deploy(self):
+        """The rendered fleet.env is loaded by the copy itself before anything ships:
+        render.py checks the values the remote commands use, pull.py the rest."""
+        repo = self.checkout()
+        with open(os.path.join(repo, "deploy", "fleet", "pull.py"), "w") as fh:
+            fh.write("import sys\nsys.stderr.write('pull.py: FLEET_DAYS is not a number\\n')\n"
+                     "sys.exit(2)\n")
+        subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c",
+                        "commit.gpgsign=false", "commit", "-qam", "refuse"], check=True)
+        for plan in (["--plan"], []):
+            p = subprocess.run(["bash", os.path.join(repo, "hpc", "deploy", "deploy.sh")] + plan,
+                               env=dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"],
+                                        HOME=self.home, STUB_LOG=self.log),
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               universal_newlines=True)
+            self.assertEqual(p.returncode, 1, p.stdout)
+            self.assertIn("do not load: pull.py: FLEET_DAYS is not a number", p.stdout)
+        self.assertNotIn("ssh", self.calls())
 
     def test_plan_reads_the_settings_file_it_is_given(self):
         """rc-deploy --site hands deploy.sh its file as SITE_ENV: that one is read, rendered

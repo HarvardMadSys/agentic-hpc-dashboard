@@ -5,8 +5,10 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -50,7 +52,8 @@ class Rig(unittest.TestCase):
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
             for name, body in (("rc/dashboard/rc_dashboard/__init__.py", version),
-                               ("rc/hpc/fleet/fleet_stream.py", version)):
+                               ("rc/hpc/fleet/rsync_guard.py", version),
+                               ("rc/deploy/fleet/pull.py", version)):
                 data = body.encode()
                 info = tarfile.TarInfo(name)
                 info.size = len(data)
@@ -58,7 +61,8 @@ class Rig(unittest.TestCase):
         with open(os.path.join(inc, "release.tar"), "wb") as fh:
             fh.write(buf.getvalue())
         files = {"dist/index.html": version, "requirements.txt": "",
-                 "stream.json": "{}", "dashboard.config.json": '{"v": "%s"}' % version}
+                 "fleet.env": "FLEET_HOSTS=n1\n", "kit.env": "PRIVATE_TREE=yes\n",
+                 "dashboard.config.json": '{"v": "%s"}' % version}
         files["rc-tmux.service"] = unit
         for name, body in files.items():
             with open(os.path.join(inc, name), "w") as fh:
@@ -95,8 +99,8 @@ class TestInstall(Rig):
         lets one more account read the copy, say). etc/, which holds the secrets, is still
         700."""
         self.payload()
-        with open(os.path.join(self.r, "incoming", SHA, "stream.json"), "w") as fh:
-            fh.write('{"private": false}')
+        with open(os.path.join(self.r, "incoming", SHA, "kit.env"), "w") as fh:
+            fh.write("PRIVATE_TREE=no\n")
         data = os.path.join(self.r, "data")
         os.mkdir(data)
         f = os.path.join(data, "shared.jsonl")
@@ -120,7 +124,72 @@ class TestInstall(Rig):
         self.assertTrue(os.path.exists(os.path.join(rel, "dist", "index.html")))
         cfg = os.path.join(self.r, "etc", "dashboard.config.json")
         self.assertEqual(stat.S_IMODE(os.stat(cfg).st_mode), 0o600)
+        # the copy's settings (pull.py) and the kit's own, the dashboard's and the copy's
+        # code in the release
+        for name in ("fleet.env", "kit.env"):
+            p = os.path.join(self.r, "etc", name)
+            self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600, name)
+        self.assertTrue(os.path.exists(os.path.join(rel, "deploy", "fleet", "pull.py")))
         self.assertFalse(os.path.exists(os.path.join(self.r, "incoming", SHA)))
+
+    def test_the_streams_settings_stay_for_a_rollback(self):
+        """A deployment from before the copy holds etc/stream.json: a rollback to a release
+        from before it reads that file again, so the deploy that brings the copy keeps it."""
+        os.makedirs(os.path.join(self.r, "etc"))
+        old = os.path.join(self.r, "etc", "stream.json")
+        with open(old, "w") as fh:
+            fh.write('{"hosts": {}}')
+        self.payload()
+        self.install()
+        with open(old) as fh:
+            self.assertEqual(fh.read(), '{"hosts": {}}')
+
+    def test_the_running_copy_reads_its_new_settings(self):
+        """A deploy with no restart (add-node's) signals the copy that holds pull.py's lock,
+        whose pid the lock holds: pull.py reads etc/fleet.env again on SIGHUP. With a
+        restart, or no holder, nothing is signalled."""
+        state = os.path.join(self.r, "data", "mirror", ".state")
+        os.makedirs(state)
+        lock = os.path.join(state, "pull.lock")
+        got = os.path.join(self.tmp, "got-hup")
+        holder = subprocess.Popen([sys.executable, "-c", (
+            "import fcntl, os, signal, sys, time\n"
+            "fh = open(sys.argv[1], 'a'); fcntl.flock(fh, fcntl.LOCK_EX)\n"
+            "fh.truncate(0); fh.write('%d\\n' % os.getpid()); fh.flush()\n"
+            "signal.signal(signal.SIGHUP, lambda *a: open(sys.argv[2], 'w').close())\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(30)\n"), lock, got], stdout=subprocess.PIPE, universal_newlines=True)
+        self.addCleanup(holder.stdout.close)
+        self.addCleanup(holder.kill)
+        self.assertEqual(holder.stdout.readline().strip(), "ready")
+        self.payload()
+        out = self.install(restart="1")
+        self.assertFalse(os.path.exists(got), "a restart starts the copy afresh")
+        self.payload()
+        out = self.install()
+        self.assertIn("the copy reads its new settings (pid %d)" % holder.pid, out)
+        deadline = time.time() + 10
+        while not os.path.exists(got):
+            self.assertLess(time.time(), deadline, "no SIGHUP reached the copy")
+            time.sleep(0.05)
+        holder.kill()
+        holder.wait()
+        self.payload()
+        self.assertNotIn("the copy reads", self.install(), "a lock no process holds names none")
+
+    def test_a_trip_left_by_the_stream_is_named(self):
+        """The copy reads no TRIPPED file: one the stream left is named once, with where its
+        reason is, and stays for a rollback, which would stop at it again."""
+        marker = os.path.join(self.r, "TRIPPED")
+        open(marker, "w").close()
+        self.payload()
+        out = self.install()
+        self.assertIn("TRIPPED, where the stream before the copy stopped both processes", out)
+        self.assertIn("rc-fleet-stream.log", out)
+        self.assertTrue(os.path.exists(marker))
+        os.unlink(marker)
+        self.payload()
+        self.assertNotIn("TRIPPED", self.install())
 
     def test_same_release_again_keeps_the_running_folder(self):
         """A settings change ships the same sha again. A unit may be running from that

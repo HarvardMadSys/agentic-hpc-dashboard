@@ -26,10 +26,6 @@ import sys
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 PRESETS = [60, 360, 720, 1440, 4320, 10080]
-SSH_OPTS = ["-T", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "Compression=no",
-            "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=4",
-            "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "LogLevel=ERROR"]
 # Values that land inside JSON strings, unit lines, or remote commands: no quotes,
 # backslashes, or spaces.
 PLAIN = re.compile(r"^[A-Za-z0-9_./:+@-]*$")
@@ -145,6 +141,12 @@ def derive(v):
     for k in ("SENDER_DIR", "CODEX"):
         if v.get(k) and not v[k].startswith("/"):
             raise ValueError("%s=%r must be a full path, or empty" % (k, v[k]))
+    # The collector's folder on the nodes, which the copy reads and the nodes' guard lets
+    # it read: a full path, as the guard takes nothing else.
+    source_root = (v.get("SOURCE_ROOT") or "/scratch/ebpfm").rstrip("/")
+    if not PLAIN.match(source_root) or not source_root.startswith("/"):
+        raise ValueError("SOURCE_ROOT=%r must be a full path, such as /scratch/ebpfm"
+                         % v.get("SOURCE_ROOT"))
     sources = v.get("SOURCE_NODES", "").split()
     if not sources:
         raise ValueError("SOURCE_NODES must name at least one node")
@@ -186,30 +188,32 @@ def derive(v):
         "BACKFILL_HOURS": str(days * 24),
         "PRESETS_JSON": json.dumps([m for m in PRESETS if m <= days * 1440]),
         "PREWARM_JSON": json.dumps(_minutes(v.get("PREWARM_MIN", "60 360 720"))),
-        # Every node comes over the stream, into the copy in the deployment's folder: one
+        # Every node is copied into the deployment's folder: one
         # root per node, as a glob the dashboard expands again at every rescan, so a node
         # added to SOURCE_NODES needs no restart of it.
         "DASH_ROOT": root,
         "EBPF_ROOTS_JSON": json.dumps(["%s/data/mirror/*" % root]),
-        "HOSTS_JSON": json.dumps({h: ["ssh"] + SSH_OPTS + ["-i", "%s/etc/rc_fleet_stream" % root,
-                                                          "%s@%s" % (user, h + ("." + domain if domain else "")),
-                                                          "send"]
-                                  for h in sources}, sort_keys=True),
+        # the copy's (fleet.env.in): the nodes as pull.py names them, and their folder
+        "SOURCE_NODES": " ".join(sources),
+        "SOURCE_DOMAIN": domain,
+        "SOURCE_ROOT": source_root,
         "DAY_CACHE": _flag(v, "DAY_CACHE", "true"),
         "ANONYMIZE": _flag(v, "ANONYMIZE", "false"),
         "PRIVATE_TREE": _flag(v, "PRIVATE_TREE", "true"),
+        "PRIVATE_TREE_YESNO": "yes" if _flag(v, "PRIVATE_TREE", "true") == "true" else "no",
         # A cluster's login nodes run Slurm unless site.env says not.
         "SLURM": _flag(v, "SLURM", "true"),
         "NODE_NOUN_JSON": json.dumps(v.get("NODE_NOUN") or "login nodes"),
         "DASH_MEMORY_MAX": memory,
         "FREE_MIN_GB": json.dumps(int(free) if free.is_integer() else free),
+        "FREE_MIN_GB_PLAIN": str(int(free) if free.is_integer() else free),
         # Ask runs the Codex CLI when site.env names one; the command stays well formed
         # either way, so the page's settings show what it would run.
         "ASK_ENABLED": "true" if codex else "false",
         "CODEX_JSON": json.dumps(codex or "codex"),
         "DASH_PATH": (os.path.dirname(codex) + ":" if codex else "") + SYSTEM_PATH,
         "RISK_PROFILE_JSON": json.dumps(profile),
-        # The stream's own account, and the ones site.env names.
+        # The copy's own account on the nodes, and the ones site.env names.
         "DROP_GLOBAL_JSON": json.dumps([user] + [a for a in _accounts(v, "DROP_USERS") if a != user]),
         "DROP_AGENT_JSON": json.dumps(_accounts(v, "DROP_AGENT_USERS")),
         "SITE_NAME_JSON": json.dumps(v.get("SITE_NAME", "")),

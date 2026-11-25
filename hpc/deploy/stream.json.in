@@ -1,5 +1,0 @@
-{"base": "@DASH_ROOT@/data", "base_parents": 1, "private": @PRIVATE_TREE@,
- "trip_marker": "@DASH_ROOT@/TRIPPED",
- "days": @DAYS@, "keep_gz": true, "free_min_gb": @FREE_MIN_GB@,
- "dashboard_unit": "rc-dashboard.scope", "backoff": [5, 300],
- "hosts": @HOSTS_JSON@}

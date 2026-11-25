@@ -7,6 +7,6 @@
 set -eu
 keep=$(dirname "$0")/keep-running.sh
 exec tmux -L rc-dashboard -f /dev/null \
-  new-session -d -s rc-dashboard -n stream "exec $keep stream" \; \
+  new-session -d -s rc-dashboard -n copy "exec $keep copy" \; \
   set-window-option -g remain-on-exit on \; \
   new-window -d -t rc-dashboard: -n dashboard "exec $keep dashboard"

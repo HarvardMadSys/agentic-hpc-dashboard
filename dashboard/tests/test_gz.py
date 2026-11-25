@@ -108,8 +108,8 @@ class SmallSpans(unittest.TestCase):
 class IndexCache(unittest.TestCase):
     """The process keeps an index for each compressed file it reads, up to `_KEEP`
     of them. It drops the index of a file that is gone, and of one no reader used for
-    `_IDLE_S`: a copy that drops a day of `.gz` files each night (fleet_stream with
-    keep_gz), and days that left the window, would otherwise keep theirs here."""
+    `_IDLE_S`: a copy that drops a day of `.gz` files each night (pull.py, as a node seals
+    its days), and days that left the window, would otherwise keep theirs here."""
 
     def setUp(self):
         gz._indexes.clear()

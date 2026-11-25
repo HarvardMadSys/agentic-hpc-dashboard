@@ -75,7 +75,7 @@ Each is a past mistake.
 ## Constraints
 
 - **Python 3.6** for `collector/` (the Python inside `ebpfm.sh` included),
-  `hpc/fleet/{fleet_stream,seed_mirror}.py`, `deploy/fleet/pull.py` and `deploy/rc-deploy`. A
+  `hpc/fleet/rsync_guard.py`, `deploy/fleet/pull.py` and `deploy/rc-deploy`. A
   newer local Python won't catch a break; CI's EL8 job will. The dashboard needs 3.11+.
 - **Vendored files**: `collector/node_snapshot.py` and
   `collector/lib/{procparse,agent_classify,provider_cidrs,slurm_args}.py` are copies from an

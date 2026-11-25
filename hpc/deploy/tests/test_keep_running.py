@@ -59,7 +59,7 @@ for a in "$@"; do printf '%s\n' "$a"; done >> "$STUB_LOG"
 ''',
 }
 
-LOGS = {"stream": "rc-fleet-stream.log", "dashboard": "rc-dashboard.log"}
+LOGS = {"copy": "rc-fleet-copy.log", "dashboard": "rc-dashboard.log"}
 CHILD_WAITS = 'trap "echo got-term; exit 0" TERM; echo ready; while :; do sleep 0.1; done'
 CHILD_STUCK = 'trap "echo ignoring-term" TERM; echo ready; while :; do sleep 0.1; done'
 
@@ -179,8 +179,8 @@ class TestFolders(Rig):
     def test_logs_go_to_the_deployment_folder(self):
         """Without a run folder of its own, everything is in RC_DASH_ROOT."""
         os.mkdir(os.path.join(self.root, "logs"), 0o700)
-        self.run_loop("stream", "echo in-the-root; exit 3", RC_DASH_RUN=None)
-        with open(os.path.join(self.root, "logs", "rc-fleet-stream.log")) as fh:
+        self.run_loop("copy", "echo in-the-root; exit 2", RC_DASH_RUN=None)
+        with open(os.path.join(self.root, "logs", "rc-fleet-copy.log")) as fh:
             self.assertIn("in-the-root", fh.read())
         self.assertEqual(os.listdir(os.path.join(self.tmpd, "logs")), [])
 
@@ -208,34 +208,42 @@ class TestStarts(Rig):
         self.assertIn("started 4 times in 360 min", log)
         self.assertNotEqual(code, 0)
 
-    def test_stream_runs_in_its_own_scope_and_stops_on_exit_3(self):
-        """Exit 3 is the stream's unsafe-folder exit, which the old unit did not restart on."""
-        code, out = self.run_loop("stream", "echo unsafe; exit 3")
-        runs = self.runs()
-        self.assertEqual(len(runs), 1, self.calls())
-        self.assertIn("--unit=rc-fleet-stream ", runs[0])
-        self.assertIn(" -p MemoryMax=512M -- ", runs[0])
-        self.assertIn("exit 3", self.log("stream"))
+    def test_copy_runs_in_its_own_scope_and_stops_on_wrong_settings(self):
+        """pull.py's exit 2 (etc/fleet.env is wrong) and 4 (it names no node): a start
+        cannot help, so the loop stops until a deploy fixes it."""
+        for rc in (2, 4):
+            with self.subTest(rc=rc):
+                for f in (self.log_path("copy"), self.calls_file):
+                    if os.path.exists(f):
+                        os.unlink(f)
+                code, out = self.run_loop("copy", "echo wrong; exit %d" % rc)
+                runs = self.runs()
+                self.assertEqual(len(runs), 1, self.calls())
+                self.assertIn("--unit=rc-fleet-copy ", runs[0])
+                self.assertIn(" -p MemoryMax=512M -- ", runs[0])
+                self.assertIn("it ended with exit %d: etc/fleet.env is wrong" % rc, self.log("copy"))
 
-    def test_stream_starts_again_after_a_crash(self):
-        code, out = self.run_loop("stream", "exit 1")
+    def test_copy_starts_again_after_a_crash(self):
+        """Exit 3 too: another pull.py held the copy, which a later start may not find."""
+        code, out = self.run_loop("copy", "exit 3")
         self.assertEqual(len(self.runs()), 5, self.calls())
-        self.assertIn("started 5 times in 10 min", self.log("stream"))
+        self.assertIn("started 5 times in 10 min", self.log("copy"))
 
     def test_each_start_runs_the_start_checks(self):
-        self.run_loop("stream", "exit 3")
+        self.run_loop("copy", "exit 2")
         self.run_loop("dashboard", "exit 0")
         checks = [l for l in self.calls().splitlines() if l.startswith("check ")]
         self.assertIn("check --base-ok", checks)
         self.assertIn("check --port-free", checks)
         self.assertIn("check --auth-set", checks)
-        stream_part = self.calls().split("--unit=rc-fleet-stream")[0]
-        self.assertNotIn("--port-free", stream_part)
+        copy_part = self.calls().split("--unit=rc-fleet-copy")[0]
+        self.assertNotIn("--port-free", copy_part)
 
-    def test_trip_stops_before_any_start(self):
-        code, out = self.run_loop("dashboard", "echo no", STUB_CHECK_base_ok="11")
+    def test_an_unsafe_base_stops_before_any_start(self):
+        code, out = self.run_loop("dashboard", "echo no", STUB_CHECK_base_ok="13")
         self.assertEqual(self.runs(), [])
-        self.assertIn("--base-ok failed (exit 11)", self.log("dashboard"))
+        self.assertIn("--base-ok failed (exit 13)", self.log("dashboard"))
+        self.assertIn("stopped until the folder is fixed", self.log("dashboard"))
         self.assertEqual(self.calls().count("check --base-ok"), 1)
 
     def test_unsafe_folder_stops_without_writing_there(self):
@@ -270,24 +278,15 @@ class TestStarts(Rig):
         self.assertIn("already runs", self.log("dashboard"))
         self.assertEqual(sorted(os.listdir(self.tmpd)), ["data", "logs"])
 
-    def test_trip_marker_is_checked_just_before_the_start(self):
-        """The stream can trip between the start checks and the start."""
-        open(os.path.join(self.tmpd, "TRIPPED"), "w").close()
-        code, out = self.run_loop("dashboard", "echo no")
-        self.assertEqual(self.runs(), [])
-        self.assertNotEqual(code, 0)
-        self.assertIn("TRIPPED", self.log("dashboard"))
-        self.assertEqual(self.calls().count("check --port-free"), 1)
-
     def test_log_is_private(self):
-        self.run_loop("stream", "exit 3")
-        self.assertEqual(stat.S_IMODE(os.stat(self.log_path("stream")).st_mode), 0o600)
+        self.run_loop("copy", "exit 2")
+        self.assertEqual(stat.S_IMODE(os.stat(self.log_path("copy")).st_mode), 0o600)
 
 
 class TestSettings(Rig):
     REPORT = ('echo "cfg=$RC_DASH_CONFIG|arena=$MALLOC_ARENA_MAX|hash=${RC_DASH_PASSWORD_HASH:-none}'
               '|path=$PATH|cwd=$(pwd)|umask=$(umask)|core=$(ulimit -c)|unbuffered=$PYTHONUNBUFFERED'
-              '|sid=$(ps -o sid= -p $$ | tr -d " ")|pid=$$"; exit 3')
+              '|sid=$(ps -o sid= -p $$ | tr -d " ")|pid=$$"; exit 2')
 
     def report(self, name):
         line = [l for l in self.log(name).splitlines() if l.startswith("cfg=")][0]
@@ -317,21 +316,21 @@ class TestSettings(Rig):
             self.run_loop("dashboard", self.REPORT)
             self.assertEqual(self.report("dashboard")["hash"], HASH, line)
 
-    def test_dashboard_gets_the_hash_file_and_the_streams_status(self):
+    def test_dashboard_gets_the_hash_file_and_the_copys_state(self):
         """etc/password.hash, read again by the dashboard when it changes, and the
-        stream's status.json, so the dashboard can tell a link down from a collector
-        stopped."""
+        copy's state (pull.py's file per node), so the dashboard can tell a copy that
+        fails from a collector stopped."""
         with open(os.path.join(self.etc, "password.hash"), "w") as fh:
             fh.write(HASH + "\n")
         report = ('echo "cfg=x|file=${RC_DASH_PASSWORD_HASH_FILE:-none}'
-                  '|transport=${RC_DASH_TRANSPORT_FILES:-none}"; exit 3')
+                  '|transport=${RC_DASH_TRANSPORT_FILES:-none}"; exit 2')
         self.run_loop("dashboard", report)
         r = self.report("dashboard")
         self.assertEqual(r["file"], os.path.join(self.etc, "password.hash"))
-        self.assertEqual(r["transport"], os.path.join(self.tmpd, "data", "state", "status.json"))
+        self.assertEqual(r["transport"], os.path.join(self.tmpd, "data", "mirror", ".state", "*.json"))
         os.unlink(self.log_path("dashboard"))
-        self.run_loop("stream", report)
-        r = self.report("stream")
+        self.run_loop("copy", report)
+        r = self.report("copy")
         self.assertEqual((r["file"], r["transport"]), ("none", "none"))
 
     def test_the_hash_file_wins_over_a_hash_left_in_auth_env(self):
@@ -342,20 +341,20 @@ class TestSettings(Rig):
         with open(os.path.join(self.etc, "password.hash"), "w") as fh:
             fh.write(HASH + "\n")
         report = ('echo "cfg=x|file=${RC_DASH_PASSWORD_HASH_FILE:-none}'
-                  '|hash=${RC_DASH_PASSWORD_HASH:-none}"; exit 3')
+                  '|hash=${RC_DASH_PASSWORD_HASH:-none}"; exit 2')
         self.run_loop("dashboard", report)       # auth.env holds RC_DASH_PASSWORD_HASH (Rig)
         r = self.report("dashboard")
         self.assertEqual((r["file"], r["hash"]), (os.path.join(self.etc, "password.hash"), "none"))
 
     def test_child_has_a_session_of_its_own(self):
         """Ctrl-C and the hang-up when tmux goes away reach the loop, never the process."""
-        self.run_loop("stream", self.REPORT)
-        r = self.report("stream")
+        self.run_loop("copy", self.REPORT)
+        r = self.report("copy")
         self.assertEqual(r["sid"], r["pid"])
 
-    def test_stream_never_sees_the_password_hash(self):
-        self.run_loop("stream", self.REPORT)
-        r = self.report("stream")
+    def test_copy_never_sees_the_password_hash(self):
+        self.run_loop("copy", self.REPORT)
+        r = self.report("copy")
         self.assertEqual(r["hash"], "none")
         self.assertEqual(r["cwd"], self.home)
 
@@ -371,11 +370,11 @@ class TestSignals(Rig):
 
     def test_hangup_stops_the_process_and_ends_the_loop(self):
         """tmux going away hangs up the window: the loop stops its process first."""
-        p = self.start("stream", CHILD_WAITS)
-        self.wait_for("stream", "ready")
+        p = self.start("copy", CHILD_WAITS)
+        self.wait_for("copy", "ready")
         p.send_signal(signal.SIGHUP)
         p.communicate(timeout=20)
-        self.assertIn("got-term", self.log("stream"))
+        self.assertIn("got-term", self.log("copy"))
         self.assertEqual(len(self.runs()), 1)
 
     def test_ctrl_c_restarts_the_process(self):
@@ -403,13 +402,13 @@ class TestSignals(Rig):
 
     def test_ctrl_backslash_is_like_ctrl_c(self):
         """SIGQUIT must not kill the loop and leave its process running alone."""
-        p = self.start("stream", CHILD_WAITS)
-        self.wait_for("stream", "ready")
+        p = self.start("copy", CHILD_WAITS)
+        self.wait_for("copy", "ready")
         p.send_signal(signal.SIGQUIT)
-        self.wait_for("stream", "ready", count=2)
+        self.wait_for("copy", "ready", count=2)
         p.send_signal(signal.SIGTERM)
         p.communicate(timeout=20)
-        self.assertEqual(self.log("stream").count("got-term"), 2)
+        self.assertEqual(self.log("copy").count("got-term"), 2)
         self.assertEqual(len(self.runs()), 2)
 
     def test_ctrl_c_in_the_pause_ends_the_loop(self):
@@ -432,7 +431,7 @@ class TestSession(Rig):
         keep = os.path.join(KIT, "keep-running.sh")
         self.assertEqual(args, [
             "-L", "rc-dashboard", "-f", "/dev/null",
-            "new-session", "-d", "-s", "rc-dashboard", "-n", "stream", "exec %s stream" % keep, ";",
+            "new-session", "-d", "-s", "rc-dashboard", "-n", "copy", "exec %s copy" % keep, ";",
             "set-window-option", "-g", "remain-on-exit", "on", ";",
             "new-window", "-d", "-t", "rc-dashboard:", "-n", "dashboard", "exec %s dashboard" % keep])
 

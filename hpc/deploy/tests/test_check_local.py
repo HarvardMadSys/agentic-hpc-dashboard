@@ -97,9 +97,9 @@ class TestStartChecks(unittest.TestCase):
         self.assertEqual(self.run_check("--dirs-only"), 13)
 
     def not_private(self):
-        """site.env's PRIVATE_TREE=false, as deploy.sh renders it into etc/stream.json."""
-        with open(os.path.join(self.etc, "stream.json"), "w") as fh:
-            json.dump({"private": False}, fh)
+        """site.env's PRIVATE_TREE=false, as deploy.sh renders it into etc/kit.env."""
+        with open(os.path.join(self.etc, "kit.env"), "w") as fh:
+            fh.write("PRIVATE_TREE=no\n")
 
     def test_open_folders_pass_when_not_private(self):
         """PRIVATE_TREE=false (a host only the team can log in to): modes and ACLs are the user's

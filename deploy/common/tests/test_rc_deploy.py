@@ -96,11 +96,18 @@ class TestInit(Rig):
         self.assertIn("no root on the nodes", out)
         with open(self.site) as fh:
             self.assertIn("# ---- The source nodes", fh.read(), "the example's notes stay")
-        # what it wrote renders, and passes deploy.sh's --strict check
+        # what it wrote renders, passes deploy.sh's --strict check, and the copy loads it
         p = subprocess.run([sys.executable, os.path.join(REPO, "hpc", "deploy", "render.py"),
-                            "--strict", os.path.join(REPO, "hpc", "deploy", "stream.json.in"), self.site],
+                            "--strict", os.path.join(REPO, "hpc", "deploy", "fleet.env.in"), self.site],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
         self.assertEqual(p.returncode, 0, p.stderr)
+        fleet = os.path.join(self.tmp, "fleet.env")
+        with open(fleet, "w") as fh:
+            fh.write(p.stdout)
+        p = subprocess.run([sys.executable, os.path.join(REPO, "deploy", "fleet", "pull.py"),
+                            "--config", fleet, "check"],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        self.assertEqual((p.returncode, p.stdout.strip()), (0, "2 node(s): login01 login02"), p.stderr)
 
     def test_a_site_name_reads_back_as_given_by_every_reader(self):
         """init wrote SITE_NAME=O'Reilly, an unmatched quote: the next apply, which sources
@@ -343,12 +350,13 @@ class TestNodes(Rig):
         with open(self.site, "a") as fh:
             fh.write("SSH_KEY=$HOME/.ssh/id_test\n")
         out = self.tool("remove-node", "login01", "--purge-copy", HOME="/home/tester")
-        # its copy, its half-done fetches and its verified ledger, which, left behind,
-        # refused the node's files when it was added again
+        # its copy and pull.py's state for it; and the half-done fetches and verified
+        # ledger of the stream before the copy, which, left behind, refused the node's
+        # files when it was added again
         self.assertIn("RUN ssh -i /home/tester/.ssh/id_test -o IdentitiesOnly=yes -o BatchMode=yes "
                       "-o ConnectTimeout=20 -o LogLevel=ERROR alice@dash "
-                      "'rm -rf /data/rc/data/mirror/login01 /data/rc/data/staging/login01 "
-                      "/data/rc/data/state/login01.verified.json'", out)
+                      "'rm -rf /data/rc/data/mirror/login01 /data/rc/data/mirror/.state/login01.json "
+                      "/data/rc/data/staging/login01 /data/rc/data/state/login01.verified.json'", out)
 
     def test_a_relative_site_file_reaches_the_kit_whole(self):
         """The kit's scripts change directory: rc-deploy hands them the settings file's

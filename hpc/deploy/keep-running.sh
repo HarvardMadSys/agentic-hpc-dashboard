@@ -1,11 +1,13 @@
 #!/bin/bash
-# keep-running.sh stream|dashboard: one window of the rc-dashboard tmux session, which
+# keep-running.sh copy|dashboard: one window of the rc-dashboard tmux session, which
 # rc-tmux.service starts (tmux-session.sh). It runs one process and starts it again
 # when it ends:
 #
-#   stream     fleet_stream.py receive, in rc-fleet-stream.scope, capped at 512M. Starts
-#              again after 10 s, but not after exit 3 (its base folder is not what it
-#              was), and stops after 5 starts in 10 min.
+#   copy       deploy/fleet/pull.py loop (etc/fleet.env), which copies each node's eBPF
+#              tier into data/mirror/<node>/ with rsync, in rc-fleet-copy.scope, capped at
+#              512M. Starts again after 10 s, but not after exit 2 or 4 (etc/fleet.env is
+#              wrong, or names no node: a start cannot help), and stops after 5 starts in
+#              10 min.
 #   dashboard  rc_dashboard serve, in rc-dashboard.scope, capped at RC_DASH_MEMORY_MAX
 #              (site.env's DASH_MEMORY_MAX; 7G when run by hand without it). Starts
 #              again after 30 s, and stops after 4 starts in 6 h: each start refills
@@ -16,8 +18,8 @@
 # killing it, and a stalled dashboard answers nothing for as long as it lasts.
 #
 # Each start first stops a scope left from before (its loop was killed, and it may hold
-# the port), then runs the start checks (check-local.sh). A trip (11) or an unsafe
-# folder (13) stops the loop; the hourly check starts any other stopped loop again.
+# the port), then runs the start checks (check-local.sh). An unsafe folder (13) stops
+# the loop; the hourly check starts any other stopped loop again.
 #
 # The process runs in a session of its own and writes its log; this window shows that
 # log, so tmux never holds the process up. The process is stopped by stopping its
@@ -41,30 +43,28 @@ ETC=${RC_FLEET_ETC:-$R/etc}
 CHECK=${RC_KEEP_CHECK:-$(dirname "$0")/check-local.sh}
 name=${1:-}
 case $name in
-  stream)
-    scope=rc-fleet-stream; cap=512M; pause=10; burst=5; within=600
+  copy)
+    scope=rc-fleet-copy; cap=512M; pause=10; burst=5; within=600
     checks=(--dirs-only --base-ok)
     dir=$HOME
-    cmd=(/usr/bin/python3 "$R/current/hpc/fleet/fleet_stream.py" receive --config "$ETC/stream.json") ;;
+    cmd=(/usr/bin/python3 "$R/current/deploy/fleet/pull.py" --config "$ETC/fleet.env" loop) ;;
   dashboard)
     scope=rc-dashboard; cap=${RC_DASH_MEMORY_MAX:-7G}; pause=30; burst=4; within=21600
     checks=(--dirs-only --base-ok --auth-set --port-free)
     dir=$R/current/dashboard
     cmd=("$R/venv/bin/python" -m rc_dashboard serve) ;;
-  *) echo "usage: keep-running.sh stream|dashboard" >&2; exit 2 ;;
+  *) echo "usage: keep-running.sh copy|dashboard" >&2; exit 2 ;;
 esac
 pause=${RC_KEEP_PAUSE:-$pause}
 [ -n "${RC_KEEP_CMD:-}" ] && cmd=(bash -c "$RC_KEEP_CMD")
 log=$RUN/logs/$scope.log
-MARKER=$RUN/TRIPPED
 
 stamp() { date '+%F %T'; }
 say() { printf '== %s %s: %s\n' "$(stamp)" "$name" "$*" >> "$log"; }
-tripped() { [ -e "$MARKER" ] || [ -L "$MARKER" ]; }
 
 # The folders first, since the log lives there; if they are not safe, say so here only.
 if ! msg=$("$CHECK" --dirs-only 2>&1); then
-  echo "== $(stamp) $name: $msg; stopped. See the runbook, 'When the stream trips'."
+  echo "== $(stamp) $name: $msg; stopped until the folder is fixed."
   exit 1
 fi
 
@@ -157,9 +157,9 @@ run_once() {    # start the process in its scope, and wait for it to end; sets s
     export PYTHONUNBUFFERED=1
     if [ "$name" = dashboard ]; then
       export RC_DASH_CONFIG="$ETC/dashboard.config.json" MALLOC_ARENA_MAX=2
-      # The stream's status, so the Feeds tab and `rc-dashboard status` can tell a link
-      # that is down from a collector that stopped.
-      export RC_DASH_TRANSPORT_FILES="${RC_DASH_TRANSPORT_FILES:-$RUN/data/state/status.json}"
+      # The copy's state, each node's last pass, so the Feeds tab and `rc-dashboard
+      # status` can tell a copy that fails from a collector that stopped.
+      export RC_DASH_TRANSPORT_FILES="${RC_DASH_TRANSPORT_FILES:-$RUN/data/mirror/.state/*.json}"
       [ -n "${RC_DASH_PATH:-}" ] && export PATH="$RC_DASH_PATH"
       load_auth
     fi
@@ -209,20 +209,16 @@ while [ "$stopping" = 0 ]; do
       break
     fi
   done
-  if [ "$failed" = 11 ] || [ "$failed" = 13 ]; then
-    say "stopped until the folder is fixed; see the runbook, 'When the stream trips'"
+  if [ "$failed" = 13 ]; then
+    say "stopped until the folder is fixed"
     exit 1
   fi
   [ "$stopping" = 1 ] && break
-  if [ "$failed" = 0 ] && tripped; then
-    say "the stream tripped (TRIPPED) after the start checks; not starting. See the runbook, 'When the stream trips'"
-    exit 1
-  fi
   if [ "$failed" = 0 ]; then
     run_once
     [ "$stopping" = 1 ] && break
-    if [ "$name" = stream ] && [ "$status" = 3 ]; then
-      say "it ended with exit 3: its base folder is not what it was; stopped. See the runbook, 'When the stream trips'"
+    if [ "$name" = copy ] && { [ "$status" = 2 ] || [ "$status" = 4 ]; }; then
+      say "it ended with exit $status: etc/fleet.env is wrong, or names no node (its log says which); stopped until a deploy fixes it"
       exit 1
     fi
     say "it ended (exit $status); it starts again in $pause s. Ctrl-C now keeps it stopped"

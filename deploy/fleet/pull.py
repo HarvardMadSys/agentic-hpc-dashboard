@@ -23,7 +23,8 @@ may name its own source folders, for a fleet whose nodes differ:
 FLEET_HOSTS+=" node03=10.0.0.13:/scratch/ebpfm:/scratch/ebpfm-login". Every node keeps writing its own files, and this copies them: node
 NAME's eBPF tier into MIRROR/ebpf/NAME/<day>/, its node tier into MIRROR/node/NAME/<day>/,
 in the collector's own layout. The dashboard reads each MIRROR/<tier>/NAME as one root
-(`roots`), exactly as it would read the node's own folder.
+(`roots`), exactly as it would read the node's own folder. FLEET_LAYOUT=flat copies the eBPF
+tier alone, into MIRROR/NAME/<day>/: the HPC kit's copy, kept where its own stream kept it.
 
 How a file is copied. The dashboard follows a day-file by its inode and an offset into it
 (rc_dashboard/tail.py), so the copy must change as the node's file does:
@@ -115,7 +116,9 @@ DEFAULTS = {
     "FLEET_JOBS": "8",
     "FLEET_RSYNC": "rsync",
     "FLEET_SSH": "ssh",
+    "FLEET_LAYOUT": "tiers",
 }
+LAYOUTS = ("tiers", "flat")
 
 
 class ConfigError(Exception):
@@ -229,10 +232,14 @@ class Settings(object):
             self.free_min = float(v["FLEET_FREE_MIN_GB"]) * (1 << 30)
         except ValueError:
             raise ConfigError("FLEET_FREE_MIN_GB=%r is not a number" % v["FLEET_FREE_MIN_GB"])
+        self.layout = v["FLEET_LAYOUT"]
+        if self.layout not in LAYOUTS:
+            raise ConfigError("FLEET_LAYOUT=%r: tiers (MIRROR/<tier>/NAME) or flat (the eBPF "
+                              "tier alone, in MIRROR/NAME)" % self.layout)
         self.sources = {}
         for tier, key in TIERS:
             src = _source(v[key], key)
-            if src:
+            if src and (tier == "ebpf" or self.layout == "tiers"):
                 self.sources[tier] = src
         if "ebpf" not in self.sources:
             raise ConfigError("FLEET_EBPF_SOURCE is empty: the eBPF tier is the one feed the "
@@ -278,6 +285,9 @@ class Settings(object):
                 src["ebpf"] = ebpf
             if m.group("node") is not None:
                 node = _source(m.group("node"), "FLEET_HOSTS (%s)" % name)
+                if node and self.layout == "flat":
+                    raise ConfigError("FLEET_HOSTS: %s names a node-tier folder, and "
+                                      "FLEET_LAYOUT=flat copies the eBPF tier alone" % name)
                 if node:
                     src["node"] = node
                 else:
@@ -313,6 +323,8 @@ class Settings(object):
         return " ".join(shlex.quote(c) for c in cmd)
 
     def root(self, tier, name):
+        if self.layout == "flat":
+            return os.path.join(self.mirror, name)
         return os.path.join(self.mirror, tier, name)
 
     def roots(self, per_node=False):
@@ -327,7 +339,14 @@ class Settings(object):
         missing root, never the dashboard's default places. Per node, an empty list names
         a folder that is not there instead: left empty, the dashboard would look in its
         default places, and could read this host's own collector."""
-        if per_node:
+        if self.layout == "flat":
+            # the eBPF tier alone; the node tier's root names a folder that never is (in
+            # the state folder, which no node's name can be), so the dashboard reads no
+            # default place for it
+            ebpf = (":".join(self.root("ebpf", n) for n in self.hosts) if per_node
+                    else os.path.join(self.mirror, "*"))
+            node = os.path.join(self.state, "no-node-tier")
+        elif per_node:
             ebpf = ":".join(self.root("ebpf", n) for n in self.hosts)
             node = ":".join(self.root("node", n) for n in self.hosts
                             if "node" in self.sources_for(n))
@@ -760,7 +779,9 @@ def drop_state(s, name):
 
 def prepare(s):
     """The copy's folder and its state folder, private; and the lock that keeps a second
-    pull.py off this copy. Returns the lock's file, held until the process ends."""
+    pull.py off this copy, which holds the holder's pid: the HPC kit's deploy sends that
+    pid SIGHUP (a scope has no main process to signal alone). Returns the lock's file,
+    held until the process ends."""
     for d in (s.mirror, s.state):
         try:
             os.makedirs(d, mode=0o700)
@@ -775,6 +796,9 @@ def prepare(s):
     except OSError:
         fh.close()
         return None
+    fh.truncate(0)
+    fh.write("%d\n" % os.getpid())
+    fh.flush()
     return fh
 
 
@@ -940,15 +964,20 @@ def parse_duration(text):
     return float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
 
 
+# Where the copy runs, for a verdict that asks whether it does: rc-pull.service, or
+# the HPC kit's copy window (hpc/deploy/keep-running.sh), which runs this same loop.
+RUNS_IN = "rc-pull; on the HPC kit, its copy window"
+
+
 def node_status(s, name, now, stale_s):
     """One node's verdict from its state file: ok, STALE (no good pass for stale_s:
-    rc-pull is stopped, or every pass hangs), FAILED, or never."""
+    the copy is stopped, or every pass hangs), FAILED, or never."""
     st = read_state(s, name)
     row = {"host": name, "kind": "rsync", "ok": False, "last_ok_age_s": None,
            "last_attempt_age_s": None, "error": None, "file_hosts": st.get("file_hosts") or [],
            "bytes_last_pass": None}
     if not st:
-        row.update(state="never", error="no pass recorded: is rc-pull running?")
+        row.update(state="never", error="no pass recorded: is the copy running? (%s)" % RUNS_IN)
         return row
     if st.get("ok_epoch"):
         row["last_ok_age_s"] = round(now - st["ok_epoch"], 1)
@@ -957,8 +986,8 @@ def node_status(s, name, now, stale_s):
     if not st.get("ok"):
         row.update(state="FAILED", error=st.get("error") or "no message")
     elif row["last_ok_age_s"] is not None and row["last_ok_age_s"] > stale_s:
-        row.update(state="STALE", error="no pass for %s: is rc-pull running? "
-                                        "(systemctl status rc-pull)" % fmt_age(row["last_ok_age_s"]))
+        row.update(state="STALE", error="no pass for %s: is the copy running? (%s)"
+                   % (fmt_age(row["last_ok_age_s"]), RUNS_IN))
     else:
         row.update(state="ok", ok=True)
         row["bytes_last_pass"] = sum(t.get("bytes", 0) for t in (st.get("tiers") or {}).values())
@@ -982,7 +1011,7 @@ def cmd_status(s, stale_s=None, as_json=False):
             detail = r["error"]
             if r["state"] == "FAILED" and r["last_attempt_age_s"] is not None \
                     and r["last_attempt_age_s"] > stale_s:
-                detail += " (last tried %s ago: is rc-pull running?)" % fmt_age(r["last_attempt_age_s"])
+                detail += " (last tried %s ago: is the copy running?)" % fmt_age(r["last_attempt_age_s"])
         print("%-*s  %-6s  last ok %-12s  %s" % (w, r["host"], r["state"], age, detail))
     return worst
 

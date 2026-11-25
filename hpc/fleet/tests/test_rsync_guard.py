@@ -228,6 +228,20 @@ class TestAsSshdRunsIt(Tree):
         p = run_guard(["--rsync=%s" % self.stub, self.root, "/elsewhere"], cmd)
         self.assertEqual(p.returncode, 0, p.stderr)
 
+    def test_a_key_from_the_earlier_stream_keeps_working(self):
+        """Its forced command runs `fleet_stream.py send --root ROOT`: the same words read
+        as ROOT, so nothing changes on the nodes."""
+        cmd = LIST.format(root=self.root)
+        for args in (["send", "--root", self.root], ["send", "--root=%s" % self.root],
+                     ["--root", self.root]):
+            with self.subTest(args=args):
+                p = run_guard(["--rsync", self.stub] + args, cmd)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertEqual(p.stdout.splitlines(), [self.stub] + cmd.split()[1:])
+        p = run_guard(["--rsync", self.stub, "send", "--root", self.root],
+                      "rsync --server --sender . /etc/")
+        self.assertEqual(p.returncode, 1)
+
     def test_a_refusal_is_one_line_and_exit_1(self):
         p = run_guard(["--rsync", self.stub, self.root],
                       "rsync --server --sender --remove-source-files . %s/" % self.root)
@@ -246,7 +260,9 @@ class TestAsSshdRunsIt(Tree):
                           (["--rsync", self.stub, "/."], "not a full path below /"),
                           (["--rsync", "rsync", self.root], "not a full path to a program"),
                           (["--rsync", os.path.join(self.tmp, "none"), self.root], "not a full path to a program"),
-                          (["--root", self.root], "not an option")):
+                          (["send"], "no folder to read"),
+                          (["send", "--root"], "not an option"),
+                          (["--rooted", self.root], "not an option")):
             p = run_guard(args, cmd)
             self.assertEqual(p.returncode, 2, args)
             self.assertIn(why, p.stderr, args)

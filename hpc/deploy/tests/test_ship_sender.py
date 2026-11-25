@@ -36,9 +36,9 @@ class TestShipSender(unittest.TestCase):
             fh.write(SSH)
         os.chmod(os.path.join(self.bin, "ssh"), 0o700)
         self.log = os.path.join(self.tmp, "nodes.log")
-        self.file = os.path.join(self.tmp, "fleet_stream.py")
+        self.file = os.path.join(self.tmp, "rsync_guard.py")
         with open(self.file, "w") as fh:
-            fh.write("# the sender\n")
+            fh.write("# the guard\n")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -81,7 +81,7 @@ class TestShipSender(unittest.TestCase):
         p = self.ship(shared="no")
         for n in ("node01", "node02", "node03"):
             self.assertTrue(self.installed(n + ".cluster.example.org"), n)
-            self.assertIn("%s: sender %s" % (n, SHA), p.stdout)
+            self.assertIn("%s: guard %s" % (n, SHA), p.stdout)
 
     def test_a_node_down_fails_when_each_needs_it(self):
         p = self.ship(shared="no", down="node02.cluster.example.org", code=1)

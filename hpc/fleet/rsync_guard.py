@@ -35,6 +35,11 @@ leading `/` dropped, so the one way out of the ROOTs would be a link inside them
 only what writes them (the collector, as root) can make.
 
     rsync_guard.py [--rsync PATH] ROOT [ROOT ...]
+    fleet_stream.py send --root ROOT     the same, under the name a key from before has
+
+A node's key from the kit's earlier stream runs `<SENDER_DIR>/current/fleet_stream.py send
+--root <SOURCE_ROOT>`: install-sender.sh puts this script there under that name too, and it
+takes those words, so such a key keeps working with nothing to change on the nodes.
 
 --rsync names the rsync to run; by default the first of /usr/bin/rsync,
 /usr/local/bin/rsync and /bin/rsync. Exit 2 when it is installed wrong: no ROOT, a ROOT
@@ -190,7 +195,14 @@ def setup(argv):
     rsync, roots, args = None, [], list(argv)
     while args:
         a = args.pop(0)
-        if a == "--rsync" and args:
+        if a == "send":
+            # the earlier stream's forced command: `fleet_stream.py send --root ROOT`
+            continue
+        if a == "--root" and args:
+            roots.append(args.pop(0))
+        elif a.startswith("--root="):
+            roots.append(a[len("--root="):])
+        elif a == "--rsync" and args:
             rsync = args.pop(0)
         elif a.startswith("--rsync="):
             rsync = a[len("--rsync="):]
