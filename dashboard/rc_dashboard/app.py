@@ -31,6 +31,7 @@ from . import proctree
 from . import redact
 from . import roles, tool_buckets
 from . import status as statusmod
+from . import usage as usagemod
 from . import windows as winmod
 from .aggregator import Aggregator
 from .anonymize import Verbatim
@@ -833,6 +834,34 @@ def create_app(cfg):
             why.append("a view could not take a record in %d of the tail's batches in a "
                        "row: %s" % (ingest["feed_error_streak"], ingest["feed_error"]))
         return why
+
+    # Which tabs readers open, for the site's own use (usage.py, `rc-dashboard usage`):
+    # a tab's key and a count, nothing of who or what they looked at.
+    views = usagemod.Store(usagemod.folder(cfg)) if cfg.get("ui.count_views") is not False \
+        else None
+
+    @app.post("/api/usage", status_code=204)
+    async def api_usage(request: Request):
+        """Counts of the tabs opened since the page's last post: a 204, and with
+        `ui.count_views` off, nothing kept; a view that is no tab of the page's is
+        dropped. A 400 for anything but counts (usagemod.parse), a 413 past
+        usagemod.MAX_BODY bytes; neither repeats what was sent."""
+        chunks, n = [], 0
+        async for chunk in request.stream():
+            n += len(chunk)
+            if n > usagemod.MAX_BODY:
+                raise HTTPException(413, "the body is over %d bytes" % usagemod.MAX_BODY)
+            chunks.append(chunk)
+        if views is None:
+            return Response(status_code=204)
+        try:
+            counts = usagemod.parse(json.loads(b"".join(chunks) or b"null"))
+        except (ValueError, RecursionError) as e:
+            raise HTTPException(400, str(e) if isinstance(e, usagemod.UsageError)
+                                else "the body is not JSON")
+        if counts:
+            await asyncio.to_thread(views.add, counts)
+        return Response(status_code=204)
 
     @app.get("/api/health")
     def api_health(request: Request):

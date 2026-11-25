@@ -220,6 +220,8 @@ The records name real users and show what they ran, so both halves keep them clo
 - **The dashboard** will not start without a password unless told to (`--open`), and masks
   credentials again on every way out. `RC_DASH_ANONYMIZE=1` replaces every name with an alias.
   It names network endpoints by reverse DNS from its own host (`RC_DASH_RDNS=0` turns that
+  off). It counts which tabs readers open, a count a day kept on its own host and read with
+  `rc-dashboard usage`, with no user, window or filter (`RC_DASH_COUNT_VIEWS=0` turns that
   off). **Ask LLM**, off by default, sends masked data to a model's provider when a site turns
   it on.
 - **The fleet stream** carries the files over ssh, with a key that can run the sender and

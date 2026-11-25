@@ -530,6 +530,10 @@ def defaults():
             # The Internal tab -- figures whose reading is not settled yet --
             # listed in the rail. Off: a reader sees only the settled tabs.
             "show_internal": False,
+            # How often each tab is opened, counted on this host for the site's
+            # own use (usage.py, `rc-dashboard usage`): a tab's key and a count a
+            # day, never a user, a window or a filter. Off: the page sends nothing.
+            "count_views": True,
             "user_columns": ["agents", "ides", "running", "exited", "cpu", "read", "written", "last"],
             # What a trajectory's tree hides when "hide routine" is on, beside
             # runs of the same command: a command, a command and its first
@@ -667,6 +671,7 @@ ENV_MAP = {
     "server.auth.password_hash_file": ("RC_DASH_PASSWORD_HASH_FILE", str),
     "server.auth.open": ("RC_DASH_OPEN", _flag),
     "ui.show_internal": ("RC_DASH_SHOW_INTERNAL", _flag),
+    "ui.count_views": ("RC_DASH_COUNT_VIEWS", _flag),
     "status.transport_files": ("RC_DASH_TRANSPORT_FILES", _csv),
     "status.stale_s": ("RC_DASH_STATUS_STALE_S", int),
     "server.allowed_origins": ("RC_DASH_ALLOWED_ORIGINS", _csv),

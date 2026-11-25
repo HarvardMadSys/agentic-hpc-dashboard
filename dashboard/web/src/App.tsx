@@ -55,6 +55,7 @@ import { zoneLabel } from './lib/zone';
 import { useServiceZone } from './lib/useZone';
 import { SetupScreen, noData } from './components/SetupScreen';
 import { asksPassword } from './lib/auth';
+import { countTab, setCounting } from './lib/usage';
 import { AskDrawer } from './components/AskDrawer';
 
 /* Live is the first paint, with the shell; every other tab loads its code
@@ -402,6 +403,16 @@ export default function App() {
   const parent = tab.parent && railOn.tabs.length > 1 ? railOn : null;
   /** what the head's title answers: the entry's question, or the tab's own */
   const eyebrow = parent && tab.parent ? PARENTS[tab.parent].eyebrow : tab.eyebrow;
+  // Which tabs readers open, counted for the site's own use (lib/usage.ts): only
+  // once /api/config says the site counts (`ui.count_views`).
+  const countViews = (config.data?.ui as Record<string, { _value?: unknown }> | undefined)?.count_views
+    ?._value;
+  useEffect(() => {
+    if (typeof countViews === 'boolean') setCounting(countViews);
+  }, [countViews]);
+  useEffect(() => {
+    countTab(tab.k);
+  }, [tab.k]);
   // Back to a parent entry from elsewhere, the sub-tab last open there opens.
   const [lastSub, setLastSub] = useState<Record<string, string>>({});
   useEffect(() => {

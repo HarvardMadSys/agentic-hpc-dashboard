@@ -559,6 +559,9 @@ class ReaderTextTest(Served):
             {"question": "q", "context": {"session": SENT, "title": SENT}},
         ],
         "/api/suggestions/done": [{"job": SENT, "index": 0}],
+        # counts of tabs: a name in a count is refused, in a key dropped, never repeated
+        "/api/usage": [{"views": {"tab:live": 1}}, {"views": {"tab:live": SENT}},
+                       {"views": SENT}],
     }
 
     @classmethod

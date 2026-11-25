@@ -10,6 +10,7 @@
     backup        the state that cannot be rebuilt, into a tar (backup.py)
     restore       ... and back
     rollup        older days into the Trend tab's table (rollup.py)
+    usage         how often readers opened each tab, as the page counted (usage.py)
     version       the version and the commit it was built from (about.py)
 
 `rc-dashboard <command> --help` says what each does, with examples. Every flag
@@ -337,6 +338,18 @@ def build_parser():
                    help="read again the days the table already holds complete")
     _settings(p, serve=False)
 
+    p = _cmd(sub, "usage", "how often readers opened each tab, as the page counted",
+             "Print each tab and how many times readers opened it over the last --days days, "
+             "most opened first, from what the page counted on this host (<cache.dir>/usage; "
+             "ui.count_views turns counting off). No user, window or filter is kept: a tab's "
+             "key and a count a day. What a site's own use says about which tabs earn their "
+             "place.",
+             "  rc-dashboard usage\n"
+             "  rc-dashboard usage --days 7")
+    p.add_argument("--days", type=int, default=30, metavar="N",
+                   help="the days back to count, today among them (30)")
+    _settings(p, serve=False)
+
     _cmd(sub, "version", "the version, and the commit it was built from",
          "Print `rc-dashboard <version> (<commit>)`: the commit from a build stamp, else the "
          "checkout's git HEAD; none when neither is known.",
@@ -510,6 +523,13 @@ def main(argv=None):
         except backup.BackupError as e:
             sys.stderr.write("backup: %s\n" % e)
             return 1
+
+    if cmd == "usage":
+        from . import usage
+        if args.days < 1:
+            sys.stderr.write("usage: --days must be 1 or more\n")
+            return 2
+        return usage.report(cfg, args.days)
 
     if cmd == "rollup":
         from . import rollup
