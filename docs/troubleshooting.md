@@ -128,3 +128,10 @@ It was removed: it ran an agent CLI on the dashboard's host over the window, a r
 sandbox rather than a confined one, and sent what it read to a model's provider. A config
 that still has an `ask` section, or an `RC_DASH_ASK*` variable, starts with one warning that
 says so, and the setting is ignored.
+
+A host that had it on keeps two things it left until you remove them: `<cache.dir>/ask/`,
+whose `done.json` holds the suggestions marked done as the model wrote them (with real names
+in them if `ask.unmasked_answers` was on), and the agent CLI's login for the account the
+dashboard runs as (`~/.codex/` for Codex). Delete the folder; unless that account uses the CLI
+for anything else, log it out (`codex logout`) and revoke its key with the provider, since the
+agent's reach on this host is why Ask was removed.
