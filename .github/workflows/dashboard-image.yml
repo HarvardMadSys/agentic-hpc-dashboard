@@ -141,15 +141,20 @@ jobs:
 
       # The release's kit: the repository at this commit, with deploy/VERSION saying which
       # release it is, so deploy/rc-deploy installs that release's wheel. A release is
-      # installed from it, with no git checkout on any host.
+      # installed from it, with no git checkout on any host. Only a tag's kit says it is a
+      # release: any other build's kit has no VERSION, and builds its own code as a
+      # checkout does, since no release holds that code.
       - name: Make the kit
         env:
           VER: ${{ steps.build.outputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
           mkdir -p dist "$RUNNER_TEMP/kit"
           git archive --prefix="agentic-hpc-dashboard-$VER/" HEAD | tar -x -C "$RUNNER_TEMP/kit"
-          echo "v$VER" > "$RUNNER_TEMP/kit/agentic-hpc-dashboard-$VER/deploy/VERSION"
+          if [ "$REF_TYPE" = "tag" ]; then
+            echo "v$VER" > "$RUNNER_TEMP/kit/agentic-hpc-dashboard-$VER/deploy/VERSION"
+          fi
           tar -C "$RUNNER_TEMP/kit" -czf "dist/agentic-hpc-dashboard-$VER.tar.gz" "agentic-hpc-dashboard-$VER"
 
       # The wheel serves the page without a checkout: the page, the risk profiles and
