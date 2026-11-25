@@ -71,11 +71,12 @@ remote-IDE servers), or **human** (a person at a terminal). Every signal in plai
 
 ## What the dashboard shows
 
-Six stops in the rail, each answering one question; an entry with more than one tab holds them
-as sub-tabs.
+Seven stops in the rail, each answering one question; an entry with more than one tab holds them
+as sub-tabs. The page opens on the first.
 
 | stop | shows |
 |---|---|
+| **Summary** | four answers in at most eight numbers, each linking to where it is broken down: is collection healthy (collectors OK of every login node), who runs agents and how much (users and agent sessions in the window, each class's sessions beside them), is anything risky (agents' commands the site's rules flag, credentials on their command lines), is a login node struggling (the busiest one's CPU, and what the service flags) |
 | **Live** | what needs attention now; processes exited per minute (per 5 minutes past an hour's window), by class; each class's share of the nodes' CPU, memory, disk and network and of what was asked of Slurm; who is active |
 | **Users** | a portrait of each user from how they use coding agents, and their sessions, each opening its process tree under the portrait |
 | **Agents** › Agents · Sessions | every agent and its subagents, where each one's processes ran and wrote (its blast radius), the mix of tools they ran and the commands that failed; then every session, ranked, and an inspector that reads one as tasks, phases and its process tree |

@@ -1161,7 +1161,71 @@ function trajectories(nowEpoch) {
       session_scope: sids.filter((s) => rows[s].key_type === 'session_scope').length,
       cgroup: sids.filter((s) => rows[s].key_type === 'cgroup').length,
     },
+    summary: sessionSummary(rows),
     basis: 'tool_rle is the run-length encoding of effective_comm in exit order; chains over 4096 runs are truncated',
+  };
+}
+
+/* Every session of the window, per class, as the service counts it (`TrajectoryReducer.summary`): what Live's sessions
+ * plate, the Sessions tab's plates and Summary's agents card read. Each row is a session here (the fixture holds no
+ * probe, a script's `codex --version`), the two days of one agent two of them, as the service's two day-keys are; the
+ * share of tool calls that only wait is not worked out from the rows, so it is null, not measured. */
+function sessionSummary(rows) {
+  const q = (v, p) => {
+    if (!v.length) return null;
+    const s = [...v].sort((a, b) => a - b);
+    return s[Math.min(s.length - 1, Math.floor(p * (s.length - 1)))];
+  };
+  const by = {};
+  for (const r of Object.values(rows)) (by[r.actor3] ??= []).push(r);
+  return Object.fromEntries(
+    Object.entries(by).map(([cls, rs]) => {
+      const calls = rs.map((r) => r.n_calls ?? 0);
+      const wall = rs.map((r) => r.last - r.first);
+      const total = calls.reduce((a, b) => a + b, 0);
+      const perUser = {};
+      for (const r of rs) perUser[r.user] = (perUser[r.user] ?? 0) + (r.n_calls ?? 0);
+      const top = Math.max(...Object.values(perUser));
+      const longest = rs.reduce((a, r) => (!a || r.last - r.first > a.last - a.first ? r : a), null);
+      const surfaces = {};
+      for (const r of rs) surfaces[r.surface ?? 'unknown'] = (surfaces[r.surface ?? 'unknown'] ?? 0) + 1;
+      return [
+        cls,
+        {
+          sessions: rs.length,
+          probes: 0,
+          users: Object.keys(perUser).length,
+          top_user_share_pct: total ? Math.round((1000 * top) / total) / 10 : null,
+          tool_calls: total,
+          calls_p50: q(calls, 0.5),
+          calls_p90: q(calls, 0.9),
+          calls_max: Math.max(...calls),
+          wall_p50_s: q(wall, 0.5),
+          wall_p90_s: q(wall, 0.9),
+          longest: { sid: longest.sid, wall_s: Math.round(longest.last - longest.first), user: longest.user,
+                     agent_type: longest.agent_type, tool_calls: longest.n_calls ?? 0 },
+          wait_pct: null,
+          by_surface: cls === 'agent' ? surfaces : null,
+        },
+      ];
+    }),
+  );
+}
+
+/* `/api/status` (status.py): each host's collector verdict and the level they roll up to, which Summary's first card
+ * reads. One collector is degraded, so the card has a host to name and a level of `warn`; the files are read where the
+ * collectors write them, so no host has a copy (`transport`). */
+function statusDoc() {
+  return {
+    level: 'warn',
+    why: ['holylogin02: collector degraded: sysctl kernel.perf_event_paranoid is 3; the stack probe needs 2 or less'],
+    hosts: HOSTS.map((host, i) => ({
+      host,
+      verdict: host === 'holylogin02' ? 'degraded' : 'ok',
+      heartbeat_age_s: 12 + i * 7,
+      newest_age_s: { ebpf: 2 + i, ebpf_node: 60 + i * 20 },
+      transport: null,
+    })),
   };
 }
 
@@ -2308,6 +2372,7 @@ function build() {
       full_built_at: nowIso,
     }),
     live,
+    status: statusDoc(),
     trend_days: trendDays(nowEpoch),
     trajectories: stripBasis(trajectories(nowEpoch)),
     trajectory_detail: stripBasis(trajectoryDetail(nowEpoch, trajectories(nowEpoch))),

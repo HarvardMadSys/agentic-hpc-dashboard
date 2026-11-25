@@ -23,7 +23,7 @@ import { buildStamp } from './lib/buildStamp';
 import { WindowPicker, offeredWindows } from './components/WindowPicker';
 import { TooltipLayer } from './components/Tooltip';
 import { ago, fint, lagStr } from './lib/format';
-import { whoQuery } from './lib/filters';
+import { patched, urlQuery, whoQuery } from './lib/filters';
 import type { Who } from './lib/filters';
 import { UrlCtx, useUrlState } from './lib/useUrlState';
 import type { Panels } from './lib/panels';
@@ -40,6 +40,7 @@ import { arriveFromHash } from './lib/cites';
 import type { SessionNav } from './tabs/OpenSession';
 import { LiveTab } from './tabs/LiveTab';
 import { OverviewTab } from './tabs/OverviewTab';
+import { SummaryTab } from './tabs/SummaryTab';
 // The other tabs are chunks of their own (lib/lazyTab.tsx). Their stylesheets
 // are not: imported here, where the tabs were, each keeps its place in the
 // page's one stylesheet -- the sessions list's and its inspector's where the
@@ -57,8 +58,9 @@ import { SetupScreen, noData } from './components/SetupScreen';
 import { asksPassword } from './lib/auth';
 import { AskDrawer } from './components/AskDrawer';
 
-/* Live is the first paint, with the shell; every other tab loads its code
- * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). The sessions
+/* Summary, the first tab, and Live, one click from it, are the first paint,
+ * with the shell; every other tab loads its code apart, fetched as soon as the
+ * page is idle (lib/lazyTab.tsx). The sessions
  * list and its inspector (TrajectoriesTab), the Agents tab's last part, are split
  * off like a tab: the Sessions tab was not, so that its inspector, near the
  * top of that tab, opened in the first render without scrolling the page. At
@@ -75,12 +77,15 @@ const ChatTab = lazyTab(() => import('./tabs/ChatTab').then((m) => m.ChatTab));
 const UsersTab = lazyTab(() => import('./tabs/UsersTab').then((m) => m.UsersTab));
 const TrendTab = lazyTab(() => import('./tabs/TrendTab').then((m) => m.TrendTab));
 
-/* Six stops in the rail, in the order an operator reads them: what is
- * happening now, who works with agents and how, the agents and every session,
- * what was risky, what the nodes and the scheduler gave, and the system itself.
+/* Seven stops in the rail, in the order an operator reads them: the four
+ * answers a reader opens the page for, what is happening now, who works with
+ * agents and how, the agents and every session, what was risky, what the nodes
+ * and the scheduler gave, and the system itself.
  * Eleven entries made every question a hunt; each entry now answers one, and
  * holds the tabs that answer it as sub-tabs along the foot of the head:
  *
+ *   Summary is collection healthy, who runs agents, is anything risky, is a
+ *           login node struggling: the first tab, which the bare address opens
  *   Live    the window now (Overview's table is its section)
  *   Users   each user's portrait, and their sessions under it
  *   Agents  › Agents (trees, blast radius, tools) · Sessions (every session, and its inspector)
@@ -93,11 +98,14 @@ const TrendTab = lazyTab(() => import('./tabs/TrendTab').then((m) => m.TrendTab)
  * on. Every tab keeps its key, so `?tab=resources`, a citation and every link
  * into a tab land where they always did; old keys still open (lib/filters.ts
  * TAB_ALIAS): cascades -> agents, trajectories -> sessions, io -> resources,
- * sandbox -> security, overview -> live, hpc -> slurm; `?tab=chat` opens Ask. */
+ * sandbox -> security, overview -> live, hpc -> slurm; `?tab=chat` opens Ask.
+ * A link with no tab but the page's other keys was written while Live was the
+ * first tab, and opens Live (lib/filters.ts `parseUrl`). */
 /* `also`: the names a tab had before, which "go to" still finds it by. */
 type Parent = 'agents' | 'risk' | 'usage' | 'system';
 type Tab = { k: string; lbl: string; eyebrow: string; icon: IconName; group: string; parent?: Parent; also?: string };
 const TABS: Tab[] = [
+  { k: 'summary', lbl: 'Summary', eyebrow: 'is collection healthy, who runs agents, is anything risky, is a login node struggling', icon: 'overview', group: 'Monitor', also: 'today home start glance four questions' },
   { k: 'live', lbl: 'Live', eyebrow: 'what runs, and who runs it', icon: 'live', group: 'Monitor', also: 'overview who uses what now' },
   { k: 'users', lbl: 'Users', eyebrow: 'how each user works with coding agents, and their sessions', icon: 'users', group: 'Monitor', also: 'people portrait' },
   { k: 'agents', lbl: 'Agents', eyebrow: 'agents, subagents, where they reached, and the tools they ran', icon: 'agents', group: 'Monitor', parent: 'agents', also: 'cascades subagents blast radius tools' },
@@ -234,6 +242,21 @@ export default function App() {
   // Another tab closes the session open on this one (lib/filters.ts `patched`).
   const goto = useCallback((t: string) => setUrl({ tab: t }, true), [setUrl]);
   const goResources = useCallback(() => setUrl({ tab: 'resources' }, true), [setUrl]);
+  // Summary's links: a tab, from its top or landing on the part named (`land`).
+  const goPart = useCallback(
+    (t: string, sec?: string) => {
+      setUrl({ tab: t }, true);
+      setLand(sec ? { tab: t, sec } : null);
+      window.scrollTo({ top: 0 });
+    },
+    [setUrl],
+  );
+  // ... and the same link as an address, over this page's window and filters,
+  // for a reader who opens it in a new tab
+  const hrefTo = useCallback(
+    (t: string) => `${window.location.pathname}?${urlQuery(patched(url, { tab: t }))}`,
+    [url],
+  );
   // Every session opens on the Sessions tab: its list, and the inspector beside it.
   const openTraj = useCallback(
     (sid: string) => {
@@ -628,6 +651,8 @@ export default function App() {
   const body = (() => {
     if (setup) return <SetupScreen feeds={feeds.data!} goFeeds={() => goto('feeds')} />;
     switch (tab.k) {
+      case 'summary':
+        return <SummaryTab P={P} traj={traj.data} trajError={traj.error} cls={cls} go={goPart} href={hrefTo} />;
       case 'live':
         return (
           <LiveTab

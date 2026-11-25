@@ -1,4 +1,4 @@
-/* A self-check that the rail's six stops hold what they say and every way to a session lands: the
+/* A self-check that the rail's seven stops hold what they say and every way to a session lands: the
  * Sessions tab, a sub-tab of the Agents entry, with its list of every session and the inspector beside
  * it, and a user's own sessions opening under their portrait on Users (`src/App.tsx`,
  * `src/tabs/OpenSession.tsx`). Every way to a session -- a saved `?tab=trajectories` or `?tab=agents&traj=`
@@ -26,7 +26,7 @@ after(() => ui?.close());
 const source = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8');
 const SID = 'login1|2026-11-20|agent|apid:4242';
 
-test('six stops in the rail, Sessions a sub-tab of Agents, and a saved link to the old tab opens it', async () => {
+test('seven stops in the rail, Summary first, Sessions a sub-tab of Agents, and a saved link to the old tab opens it', async () => {
   const app = source('App.tsx');
   const tabs = /const TABS: Tab\[\] = \[([\s\S]*?)\n\];/.exec(app)?.[1] ?? '';
   assert.ok(tabs, 'App.tsx keeps its TABS');
@@ -35,7 +35,9 @@ test('six stops in the rail, Sessions a sub-tab of Agents, and a saved link to t
   for (const [k, parent] of [['security', 'risk'], ['risk', 'risk'], ['resources', 'usage'], ['slurm', 'usage'], ['trend', 'usage'], ['feeds', 'system'], ['internal', 'system']]) {
     assert.match(tabs, new RegExp(`k: '${k}',[^\\n]*parent: '${parent}'`), `${k} under ${parent}`);
   }
-  // the stops: Live and Users, then the four parents; Ask is not one
+  // the stops: Summary, Live and Users, then the four parents; Ask is not one
+  assert.match(tabs, /^\s*\{ k: 'summary', lbl: 'Summary',[^\n]*\n\s*\{ k: 'live', lbl: 'Live',/);
+  assert.doesNotMatch(/\{ k: 'summary'[^\n]*/.exec(tabs)?.[0] ?? '', /parent:/);
   const parents = /const PARENTS: Record<Parent, [^>]*> = \{([\s\S]*?)\n\};/.exec(app)?.[1] ?? '';
   for (const k of ['agents', 'risk', 'usage', 'system']) assert.match(parents, new RegExp(`\\b${k}: \\{ lbl: '`));
   assert.match(app, /if \(t\.k === 'chat' \|\| \(t\.k === 'internal' && !showInternal && tab\.k !== 'internal'\)\) continue;/);

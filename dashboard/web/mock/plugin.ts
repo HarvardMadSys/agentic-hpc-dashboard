@@ -29,6 +29,8 @@ interface Fixture {
     by_class: Record<string, { n: number | null; cpu_s: number | null; users: number | null }>;
     types: Record<string, { users: number; n: number; cpu_s: number }> }[];
   live: { rate: Record<string, number | null>[]; events: Record<string, unknown>[]; [k: string]: unknown };
+  /** `/api/status`: each host's collector verdict and their level (gen_fixture.mjs: `statusDoc`) */
+  status?: unknown;
   trajectories: Record<string, unknown>;
   trajectory_detail?: Record<string, unknown>;
   /** the Users tab's roster, and each user's portrait, composed from `trajectories` (gen_fixture.mjs: `users`) */
@@ -397,6 +399,8 @@ export function mockApi(): Plugin {
             return send(fx.config);
           case '/api/feeds':
             return send(fx.feeds);
+          case '/api/status':
+            return fx.status ? send(fx.status) : send({ error: 'the fixture holds no status' }, 404);
           case '/api/windows':
             return send({
               held: [windowStatus(win.minutes)],
