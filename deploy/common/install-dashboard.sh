@@ -9,7 +9,8 @@
 #                     Node and no build here, and the service reads nothing from this
 #                     folder: the scripts its units run are copied to OPT/kit. RELEASE in
 #                     the environment or install.env says the same; deploy/rc-deploy sets it
-#                     from the kit's own version.
+#                     from the kit's own version. RC_RELEASE_URL names a mirror to fetch
+#                     from instead of GitHub's releases, with a folder per tag.
 #   without it        The code in this checkout: the venv from its lockfile (uv) and the
 #                     page built from it (npm), for development.
 #
@@ -44,7 +45,7 @@
 # changed), else the defaults: SERVICE_USER (rc-dashboard), PULL_USER (rc-pull: the account
 # on the nodes, whose processes the dashboard drops), ETC (/etc/rc-dashboard), STATE
 # (/var/lib/rc-dashboard), OPT (/opt/rc-dashboard), MEMORY_MAX (8G; DASH_MEMORY_MAX is the
-# same), and for single EBPF_DIR, NODE_DIR, COLLECTOR_GROUP (the folders and group
+# same), RELEASE (none: the checkout's code), and for single EBPF_DIR, NODE_DIR, COLLECTOR_GROUP (the folders and group
 # /etc/default/ebpfm names win: collector-paths.sh).
 #
 # Settings that go into dashboard.env (and fleet.env), under the names every kit uses:
