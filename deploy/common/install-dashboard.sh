@@ -121,16 +121,22 @@ fi
 # Unset, the cap is half this host's memory in whole gigabytes, from 2G to 32G: a host
 # kept for a fleet's dashboard gets room without being told, one that runs other work
 # keeps half for it, and past 32G it is a choice to make (MEMORY_MAX), not a default.
+# MemTotal leaves out what the kernel and firmware keep, so a "16 GB" host says about
+# 15.5 GiB: rounded to the nearest gigabyte first, half of it is the 8G one expects.
+meminfo=${RC_MEMINFO:-/proc/meminfo}
+kb=$( (sed -n 's/^MemTotal:[[:space:]]*\([0-9][0-9]*\) kB$/\1/p' "$meminfo" 2>/dev/null || true) | head -n 1)
+host_g=
+[ -n "$kb" ] && host_g=$(( (kb + 524288) / 1048576 ))
 if [ -z "${MEMORY_MAX:-}" ]; then
-  kb=$( (sed -n 's/^MemTotal:[[:space:]]*\([0-9][0-9]*\) kB$/\1/p' "${RC_MEMINFO:-/proc/meminfo}" 2>/dev/null || true) | head -n 1)
-  if [ -n "$kb" ]; then
-    g=$(( kb / 2097152 ))
+  if [ -n "$host_g" ]; then
+    g=$(( (host_g + 1) / 2 ))
     [ "$g" -ge 2 ] || g=2
     [ "$g" -le 32 ] || g=32
     MEMORY_MAX=${g}G
-    say "MEMORY_MAX=$MEMORY_MAX: half this host's $(( kb / 1048576 ))G (from 2G to 32G; MEMORY_MAX sets it)"
+    say "MEMORY_MAX=$MEMORY_MAX: half this host's ${host_g}G (from 2G to 32G; MEMORY_MAX sets it)"
   else
     MEMORY_MAX=8G
+    say "MEMORY_MAX=8G: could not read $meminfo for this host's memory (MEMORY_MAX sets it)"
   fi
 fi
 
@@ -142,6 +148,20 @@ for v in ETC STATE OPT; do
 done
 [[ $repo =~ ^/[A-Za-z0-9._/@+-]*$ ]] || die "the checkout's path ($repo) must have no spaces or quotes: the units name it"
 [[ $MEMORY_MAX =~ ^[1-9][0-9]*[KMGT]$ ]] || die "MEMORY_MAX='$MEMORY_MAX' must be a size such as 4G"
+# A cap kept from before (install.env, the drop-in) may be more than this host has, as on
+# a host moved to a smaller machine: it then caps nothing, which is said, not changed.
+if [ -n "$kb" ]; then
+  cap_kb=${MEMORY_MAX%?}
+  case $MEMORY_MAX in
+    *K) ;;
+    *M) cap_kb=$(( cap_kb * 1024 )) ;;
+    *G) cap_kb=$(( cap_kb * 1048576 )) ;;
+    *T) cap_kb=$(( cap_kb * 1073741824 )) ;;
+  esac
+  if [ "$cap_kb" -gt "$kb" ]; then
+    say "warning: MEMORY_MAX=$MEMORY_MAX is more than this host's ${host_g}G, so it caps nothing; MEMORY_MAX=<size> sets a lower one"
+  fi
+fi
 # The settings that go into dashboard.env, checked before anything changes.
 for v in SLURM ANONYMIZE; do
   if [ -n "${!v:-}" ]; then

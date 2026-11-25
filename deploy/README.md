@@ -167,7 +167,7 @@ The installers' own answers come from their environment, else from
 | `COLLECTOR_GROUP` | `ebpfm` | the group that may read it (saved as `EBPFM_GROUP`) |
 | `SERVICE_USER`, `PULL_USER` | `rc-dashboard`, `rc-pull` | the dashboard's account; the account the copy logs in to the nodes as |
 | `ETC`, `STATE`, `OPT` | `/etc/rc-dashboard`, `/var/lib/rc-dashboard`, `/opt/rc-dashboard` | the folders above (`install.env` stays at `/etc/rc-dashboard/install.env`, so a run finds it whatever `ETC` is) |
-| `MEMORY_MAX` | half the host's memory, from 2G to 32G (8G where `/proc/meminfo` cannot be read) | the dashboard's hard memory cap, in `rc-dashboard.service.d/50-memory.conf`: written when there is none, or when `MEMORY_MAX` is given; a plain rerun leaves it, so `systemctl edit rc-dashboard` stays. The first install's choice is saved, and kept |
+| `MEMORY_MAX` | half the host's memory (to the nearest gigabyte), from 2G to 32G; 8G where `/proc/meminfo` cannot be read | the dashboard's hard memory cap, in `rc-dashboard.service.d/50-memory.conf`: written when there is none, or when `MEMORY_MAX` is given; a plain rerun leaves it, so `systemctl edit rc-dashboard` stays. The first install's choice is saved, and kept; a run says when the cap is more than the host has, which then caps nothing |
 
 Past 32G, raise `MEMORY_MAX` with the fleet: [Memory and disk](../hpc/deploy/README.md#memory-and-disk)
 has measurements over 8 busy login nodes, and the settings that trade history for memory.
