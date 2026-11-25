@@ -268,10 +268,10 @@ screen. The rest it takes from what the shell already holds: the panels, the ses
 
 | card | its numbers | from | links to |
 |---|---|---|---|
-| **Is collection healthy?** | login nodes whose collector is OK, of every one `/api/status` lists; the level (`working`, `something to look at`, `data not arriving`) in its pill; the others named, with their verdicts | `/api/status`: the verdicts the Feeds tab's *Collectors* draws (`rc_dashboard/health.py`), rolled up by `status.py` | System › Feeds, *Collectors* |
+| **Is collection healthy?** | login nodes whose collector is OK, of every one `/api/status` lists; the level (`working`, `something to look at`, `data not arriving`) in its pill, or `not current` when a read after an answer failed (the answer before is drawn, and says so); the others named, with their verdicts | `/api/status`: the verdicts the Feeds tab's *Collectors* draws (`rc_dashboard/health.py`), rolled up by `status.py` | System › Feeds, *Collectors* |
 | **Who runs agents, and how much?** | users with an agent session in the window; agent sessions; each class's sessions side by side, agent, human and IDE each with its word, the counts on hover | `/api/trajectories`' `summary`, as Live's sessions plate reads it | Users; Agents › Sessions |
 | **Is anything risky?** | agents' commands this site's rules say should not run here; credentials on agents' command lines (counted, never shown); `flagged` or `nothing flagged` | `panels.risk`, summed as Live's risky-actions plate sums it | Risk › Site rules, on the first section with an agent's hit |
-| **Is a login node struggling?** | the busiest login node's CPU busy share at its newest snapshot, named; the problems the service's own lines flag (a full local filesystem, an account held back at its CPU limit, an NFS mount retransmitting), as *Needs attention* counts them | `panels.node` | Usage › Login nodes, *Login node health* |
+| **Is a login node struggling?** | the busiest login node's CPU busy share at its newest snapshot, named; the problems the service's own lines flag (a full local filesystem, an account held back at its CPU limit, an NFS mount retransmitting), as *Needs attention* counts them; `flagged`, `busy` (the busiest at or past 90% CPU busy, `SummaryTab.BUSY_PCT`, a line of the page's) or `no problem flagged` | `panels.node` | Usage › Login nodes, *Login node health* |
 
 A number nobody measured reads **not measured**, never 0, with why beside it (`waiting for
 /api/status`, `not checked: no risk panel was sent`); with the agent class filtered out, its

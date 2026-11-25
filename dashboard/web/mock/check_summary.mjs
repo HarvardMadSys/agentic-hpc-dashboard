@@ -95,6 +95,29 @@ test('the four answers render from the fixture, each number with its words', asy
   assert.match(clean, /nothing flagged 0 agent commands that should not run here 0 credentials on agents’ command lines/, 'a measured 0 stays 0');
 });
 
+test('a login node with its CPU nearly all busy is struggling with nothing else flagged; a failed status read is not current', async () => {
+  // the fixture's nodes with nothing the service's lines flag, and one of them 96% busy
+  const quiet = {
+    ...FIX.node,
+    disk: FIX.node.disk.map((d) => ({ ...d, full: false })),
+    nfs: [],
+    hosts: FIX.node.hosts.map((h, i) => ({
+      ...h,
+      cpu_idle_pct: i === 0 ? 4 : 60,
+      per_user: (h.per_user ?? []).map((u) => ({ ...u, throttled_delta_s: 0 })),
+    })),
+  };
+  const busy = cards(await draw({ P: { ...FIX, node: quiet } }))['sec-summary-nodes'];
+  assert.match(busy, /^Is a login node struggling\? busy /);
+  assert.match(busy, new RegExp(`96% CPU busy on ${quiet.hosts[0].host}, the busiest login node 0 problems flagged ${quiet.hosts[0].host}’s CPU nearly all busy`));
+  const calm = { ...quiet, hosts: quiet.hosts.map((h) => ({ ...h, cpu_idle_pct: 60 })) };
+  assert.match(cards(await draw({ P: { ...FIX, node: calm } }))['sec-summary-nodes'], /^Is a login node struggling\? no problem flagged 40% CPU busy/);
+  // an answer, then a read that failed: the answer before is drawn, and the verdict says it is not current
+  const stale = cards(await draw({ statusError: '503 Service Unavailable' }))['sec-summary-collection'];
+  assert.match(stale, /^Is collection healthy\? not current /);
+  assert.match(stale, /\/api\/status did not answer its last read; this is its answer before that; not OK then: holylogin02 \(degraded\)/);
+});
+
 test('at most eight numbers, and no other number in the words around them', async () => {
   // as the service sends them: each payload names the window it was reduced over
   const win = { label: '24h', state: 'ready' };

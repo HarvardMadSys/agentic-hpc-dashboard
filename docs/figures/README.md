@@ -363,7 +363,9 @@ as that figure reads it, so the two cannot disagree.
 - **Shows:** the login nodes whose collector is OK, of every host `/api/status` lists; the level in
   a word (`working`, `something to look at`, `data not arriving`), its reasons on the pill's hover;
   each host that is not OK, named with its verdict, or with `copy failed` where its collector is OK
-  and the copy bringing its files here is not.
+  and the copy bringing its files here is not. A read that fails after an answer leaves that
+  answer drawn, with `not current` in the pill and why on its hover, rather than old health shown
+  as now's.
 - **Records:** each host's own `meta`, `residency_totals` and `stop` records (FD-1's verdicts), the
   newest record of each host's plain day-files, and the transport files (`status.transport_files`).
 - **Computation:** `status.from_service` takes the service's collector health and feed reports and
@@ -393,7 +395,9 @@ as that figure reads it, so the two cannot disagree.
 - **Shows:** the busiest login node by CPU busy (100 less `cpu_idle_pct`) at its newest snapshot,
   named; and the problems the service's own lines flag there, as LV-1 flags them: local filesystems
   at or past `node.disk_full_pct` or `node.inode_full_pct` (90%), accounts the kernel held back at
-  their CPU limit, NFS mounts retransmitting.
+  their CPU limit, NFS mounts retransmitting. The verdict is `flagged` for any of those, else
+  `busy` when the busiest is at or past 90% CPU busy (`BUSY_PCT`, the page's own line: no reduction
+  reads it), else `no problem flagged`.
 - **Records, computation, cost:** RE-1's: the node tier's newest snapshot of each host. A node
   with no CPU reading is left out of the busiest; none at all reads "not measured".
 

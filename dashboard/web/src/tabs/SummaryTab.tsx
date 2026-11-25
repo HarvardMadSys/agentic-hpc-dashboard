@@ -120,9 +120,14 @@ export function collection(status: StatusDoc | null, error: string | null, nodes
     };
   }
   const hosts = status.hosts ?? [];
-  const verdict = { ...(LEVEL[status.level] ?? LEVEL.warn), tip: status.why?.length ? status.why.join('\n') : undefined };
+  // A read that failed after an answer: what is drawn is that earlier answer, so the
+  // verdict says it is not current rather than calling old health "working".
+  const verdict: Verdict = error
+    ? { cls: 'stale', text: 'not current', tip: `/api/status did not answer its last read (${error}); what is shown is its answer before that` }
+    : { ...(LEVEL[status.level] ?? LEVEL.warn), tip: status.why?.length ? status.why.join('\n') : undefined };
+  const before = error ? '/api/status did not answer its last read; this is its answer before that' : null;
   if (!hosts.length) {
-    return { verdict, figs: [{ n: nm(), what, tip }], note: `no ${nodes.one}’s collector has written a record here`, links };
+    return { verdict, figs: [{ n: nm(), what, tip }], note: before ?? `no ${nodes.one}’s collector has written a record here`, links };
   }
   const ok = hosts.filter((h) => h.verdict === 'ok').length;
   const wrong = [
@@ -133,11 +138,13 @@ export function collection(status: StatusDoc | null, error: string | null, nodes
   return {
     verdict,
     figs: [{ n: num(ok), of: num(hosts.length), what, tip }],
-    note: wrong.length
-      ? `not OK: ${names(wrong)}`
-      : status.level === 'ok'
-        ? null
-        : 'what is wrong is listed on System › Feeds',
+    note: before
+      ? `${before}${wrong.length ? `; not OK then: ${names(wrong)}` : ''}`
+      : wrong.length
+        ? `not OK: ${names(wrong)}`
+        : status.level === 'ok'
+          ? null
+          : 'what is wrong is listed on System › Feeds',
     links,
   };
 }
@@ -247,6 +254,11 @@ export function risky(P: Panels, cls: Cls[]): Answer {
 
 /* ------------------------------------------ is a login node struggling */
 
+/** CPU busy at or past this on a login node's newest snapshot is a node struggling: the
+ *  next person to log in waits for a core. A line of the page's, not a setting: no
+ *  reduction reads it, and a site's own reading of the number is beside it. */
+export const BUSY_PCT = 90;
+
 export function struggling(P: Panels, nodes: NodeWords): Answer {
   const node = pick<NodePanel>(P, 'node', 'ebpf_node');
   const hosts = node.hosts ?? [];
@@ -281,13 +293,21 @@ export function struggling(P: Panels, nodes: NodeWords): Answer {
   const held = hosts.reduce((s, h) => s + (h.per_user ?? []).filter((u) => (u.throttled_delta_s ?? 0) > 0).length, 0);
   const retrying = (node.nfs ?? []).filter((m) => (m.rd_retrans ?? 0) + (m.wr_retrans ?? 0) > 0).length;
   const flags = full + held + retrying;
+  const busy = busiest != null && busiest.busy >= BUSY_PCT;
   const kinds = [
+    // the number is the figure beside it; the words count nothing of their own
+    busy && busiest ? `${busiest.host}’s CPU nearly all busy` : null,
     full ? plural(full, 'a local filesystem full', 'local filesystems full') : null,
     held ? plural(held, 'an account held back at its CPU limit', 'accounts held back at their CPU limit') : null,
     retrying ? 'NFS retransmissions' : null,
   ].filter((k): k is string => k != null);
+  const busyWhy = `CPU busy at or past ${BUSY_PCT}% on a ${nodes.one}’s newest snapshot`;
   return {
-    verdict: flags ? { cls: 'stale', text: 'flagged' } : { cls: 'ok', text: 'nothing flagged' },
+    verdict: flags
+      ? { cls: 'stale', text: 'flagged' }
+      : busy
+        ? { cls: 'stale', text: 'busy', tip: busyWhy }
+        : { cls: 'ok', text: 'no problem flagged', tip: `no line the service flags, and no ${nodes.one} past ${BUSY_PCT}% CPU busy` },
     figs: [
       busiest
         ? { n: num(busiest.busy, pc(busiest.busy)), what: `CPU busy on ${busiest.host}, the busiest ${nodes.one}`, tip: busyTip }
