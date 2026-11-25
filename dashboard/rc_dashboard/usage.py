@@ -86,28 +86,52 @@ class Store:
         self.folder = folder
         self._lock = threading.Lock()
         self._pruned = None             # the day the old files were last looked for
+        self._failed = False            # a write that failed has been said
 
     def add(self, counts, now=None):
+        """Add `counts` to today's. A count is worth losing, not a failed request: a
+        folder that cannot be written (read-only, full, refused) loses this post's
+        counts, says so once, and leaves no file of its own behind. True when kept."""
         day = _day(now)
         path = os.path.join(self.folder, day + ".json")
+        tmp = "%s.%d.tmp" % (path, os.getpid())
         with self._lock:
-            os.makedirs(self.folder, mode=0o700, exist_ok=True)
-            have = _read(path)
-            for k, v in counts.items():
-                have[k] = have.get(k, 0) + v
-            tmp = "%s.%d.tmp" % (path, os.getpid())
-            with open(tmp, "w") as fh:
-                json.dump(have, fh, sort_keys=True)
-            os.replace(tmp, path)
+            try:
+                os.makedirs(self.folder, mode=0o700, exist_ok=True)
+                have = _read(path)
+                for k, v in counts.items():
+                    have[k] = have.get(k, 0) + v
+                with open(tmp, "w") as fh:
+                    json.dump(have, fh, sort_keys=True)
+                os.replace(tmp, path)
+            except OSError as e:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                if not self._failed:
+                    self._failed = True
+                    sys.stderr.write("usage: tab counts cannot be kept in %s (%s); they are "
+                                     "dropped until it can be written\n"
+                                     % (self.folder, e.strerror or e))
+                return False
+            if self._failed:
+                self._failed = False
+                sys.stderr.write("usage: tab counts are kept in %s again\n" % self.folder)
             if self._pruned != day:
                 self._pruned = day
                 self._prune(day)
+            return True
 
     def _prune(self, today):
         """Each day's file older than KEEP_DAYS, removed."""
         cut = (datetime.date.fromisoformat(today)
                - datetime.timedelta(days=KEEP_DAYS)).isoformat()
-        for name in os.listdir(self.folder):
+        try:
+            names = os.listdir(self.folder)
+        except OSError:
+            return
+        for name in names:
             m = DAY_FILE.match(name)
             if m and m.group(1) < cut:
                 try:
@@ -136,7 +160,9 @@ class Store:
 
 
 def folder(cfg):
-    return os.path.join(cfg.get("cache.dir"), "usage")
+    """<cache.dir>/usage, the working directory standing in for an unset cache.dir as
+    it does for the session key and the salt."""
+    return os.path.join(cfg.get("cache.dir") or ".", "usage")
 
 
 def report(cfg, days, out=None, now=None):

@@ -1081,9 +1081,11 @@ posts the counts at most once a minute, and when it is put away (`src/lib/usage.
 (UTC days, 400 of them; `rc_dashboard/usage.py`). **Nothing else is kept**: no user, address,
 window, filter or time of day. A view is one of the page's own tabs (`usage.TABS`, which a test
 holds to the page's): any other key a post holds is dropped, so nothing a client writes is kept
-but a count, and a refused post's error never repeats what it sent. `ui.count_views` (`RC_DASH_COUNT_VIEWS=0`) turns it off: the page sends nothing, and the
-route keeps nothing. It is in neither saved-state fingerprint, and the counts never leave the
-host but by this command.
+but a count, and a refused post's error never repeats what it sent. A count is worth losing, not
+a failed request: where the folder cannot be written (read-only, full), a post still gets its 204,
+its counts are dropped, and the log says so once. `ui.count_views` (`RC_DASH_COUNT_VIEWS=0`) turns
+it off: the page sends nothing, and the route keeps nothing. It is in neither saved-state
+fingerprint, and the counts never leave the host but by this command.
 
 ## Trend: up to a year
 

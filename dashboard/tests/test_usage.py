@@ -130,6 +130,25 @@ class Store(unittest.TestCase):
     def test_no_counts_yet(self):
         self.assertEqual(self.store.totals(30, NOW), {})
 
+    def test_a_folder_that_cannot_be_written_loses_the_counts_not_the_request(self):
+        """A read-only or full cache.dir: the post's counts are dropped, said once, and no
+        file of the write is left behind (old days are pruned by name, which a .tmp never
+        matches); the first write that works again says so."""
+        os.makedirs(os.path.join(self.dir, "2026-11-20.json"))     # cannot be replaced
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertFalse(self.store.add({"tab:live": 1}, NOW))
+            self.assertFalse(self.store.add({"tab:live": 1}, NOW + 60))
+        self.assertEqual(err.getvalue().count("tab counts cannot be kept in %s" % self.dir), 1)
+        self.assertEqual(os.listdir(self.dir), ["2026-11-20.json"])
+        with redirect_stderr(err):
+            self.assertTrue(self.store.add({"tab:live": 1}, NOW + DAY))
+        self.assertIn("tab counts are kept in %s again" % self.dir, err.getvalue())
+        self.assertEqual(self.store.totals(1, NOW + DAY), {"tab:live": (1, "2026-11-21")})
+        # a cache.dir unset: the working directory, as for the session key and the salt
+        self.assertEqual(usage.folder(configmod.Config({"cache": {"dir": ""}}, {}, None)),
+                         os.path.join(".", "usage"))
+
 
 class Report(unittest.TestCase):
     def setUp(self):
@@ -275,6 +294,21 @@ class CountsKept(Live):
         # a form or plain text is never taken (guard.JsonOnly), so another site's page
         # cannot post here without the browser asking first
         self.assertEqual(self.post({"views": {"tab:live": 1}}, ctype="text/plain")[0], 415)
+
+
+class CountsLost(Live):
+    def test_a_folder_that_cannot_be_written_still_answers_204(self):
+        """A lost count is no failed request: a page posts every minute and on leaving,
+        and a 500 each time would fill the access log for nothing."""
+        f = usage.folder(self.cfg)
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        with open(f, "w") as fh:
+            fh.write("a file where the folder would be")
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(self.post({"views": {"tab:live": 2}})[0], 204)
+            self.assertEqual(self.post({"views": {"tab:live": 1}})[0], 204)
+        self.assertEqual(err.getvalue().count("tab counts cannot be kept"), 1)
 
 
 class CountingOff(Live):
