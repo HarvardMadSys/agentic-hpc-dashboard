@@ -18,18 +18,21 @@ instead. For a public page over made-up data, use [`cloudflare`](cloudflare/READ
 also has the kit's own script, named beside it, for when you want the parts.
 
 ```bash
-deploy/rc-deploy init                 # four questions: Slurm? which nodes? root on the nodes? on the dashboard's host?
+sudo deploy/rc-deploy init            # four questions: Slurm? which nodes? root on the nodes? on the dashboard's host?
 sudo deploy/rc-deploy plan            # what apply would do: every account, file and unit; nothing done
 sudo deploy/rc-deploy apply           # install (single, fleet), or deploy (hpc, as you)
 sudo deploy/rc-deploy password        # make the password and put its hash in place
 sudo deploy/rc-deploy status          # every collector's verdict, and every node's copy
 ```
 
-`init` writes one settings file, `deploy/site.env` (git ignores it), and records the kit in
-it (`KIT=single`, `fleet`, or `hpc`, whose settings are `hpc/deploy/site.env`). Whether the
-page has an HPC tab is asked (`SLURM`), never guessed from root. Edit the file and run
-`apply` again to change a setting. `rc-deploy --help` lists the rest: `add-node`,
-`remove-node`, `upgrade`, `rollback`, `backup`, `uninstall`.
+`init` writes one settings file, `/etc/rc-dashboard/site.env`, with the install's other
+answers, outside the checkout, so another checkout or kit finds it with nothing to copy; it
+records the kit in it
+(`KIT=single` or `fleet`; the `hpc` kit runs as you, without sudo, and keeps its settings
+in `hpc/deploy/site.env`). Whether the page has an HPC tab is asked (`SLURM`), never
+guessed from root. Edit the file and run `apply` again to change a setting.
+`rc-deploy --help` lists the rest: `add-node`, `remove-node`, `upgrade`, `rollback`,
+`backup`, `uninstall`.
 
 ## What each piece is
 
@@ -138,7 +141,7 @@ a second, and the Feeds tab shows the refill's progress.
 
 The same names mean the same setting in every kit, here and in
 [`hpc/deploy`](../hpc/deploy/README.md#settings): give them to the installer (or put them in
-`deploy/site.env` for `rc-deploy`), and it sets them in `dashboard.env`, printing each
+`/etc/rc-dashboard/site.env` for `rc-deploy`), and it sets them in `dashboard.env`, printing each
 change:
 
 | Name | Sets | Default |
@@ -199,7 +202,7 @@ restarts it only when given `--restart`. An install made before `install.env` ex
 its answers read from its units the first time (its folders, its memory cap).
 
 **Rolling back:** `sudo deploy/rc-deploy rollback` checks out the commit the last
-`rc-deploy upgrade` came from (noted in `deploy/.rc-deploy-history`) and applies it; or
+`rc-deploy upgrade` came from (noted in `/etc/rc-dashboard/rc-deploy-history`) and applies it; or
 check out any older commit and run the installer again.
 
 ## What to back up
@@ -233,10 +236,10 @@ the dashboard again on what it had.
 
 1. On the old host: `sudo deploy/rc-deploy backup --to rc.tar` (with `--settings`, as
    `rc-deploy` does). In a fleet with `FLEET_KEEP_DAYS=0`, copy `STATE/mirror` too.
-2. On the new host: clone, `deploy/rc-deploy init` (or copy `deploy/site.env`), then
+2. On the new host: clone, `sudo deploy/rc-deploy init`, then
    `sudo deploy/rc-deploy apply`. Unpack the settings over the new ones,
-   `sudo tar -C /etc -xf rc.tar.settings.tar` (the pull key among them, so the nodes let the
-   new host in), run `sudo deploy/rc-deploy apply` again, which reads them, then
+   `sudo tar -C /etc -xf rc.tar.settings.tar` (rc-deploy's settings and the pull key among
+   them, so the nodes let the new host in), run `sudo deploy/rc-deploy apply` again, which reads them, then
    `sudo deploy/common/backup.sh --restore rc.tar`.
 3. Fleet: if the address changed, on each node give the same key with the new address:
    `sudo deploy/fleet/install-node.sh --no-bootstrap --key "$(cat pull_key.pub)" --from <the new host's address>`

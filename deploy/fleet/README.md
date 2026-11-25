@@ -19,7 +19,7 @@ Clone the repository on every host where any account can read it, such as
 `/opt/agentic-hpc-dashboard`. The dashboard's host first, since it makes the key the nodes
 let in:
 
-1. **The dashboard's host.** `deploy/rc-deploy init` (it picks this kit when you have root
+1. **The dashboard's host.** `sudo deploy/rc-deploy init` (it picks this kit when you have root
    on the nodes and on this host, and asks whether they run Slurm), then
    `sudo deploy/rc-deploy apply`. That is `deploy/fleet/install-dashboard.sh`, which makes
    the dashboard ([What each piece is](../README.md#what-each-piece-is)), `rc-pull`,
