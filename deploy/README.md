@@ -91,6 +91,13 @@ No hash to copy, and no quoting to get right.
 
 The cookie, proxies and scripts: [Password](../dashboard/README.md#password).
 
+- **The site's single sign-on instead:** set `RC_DASH_PROXY_HEADER` (the header your reverse
+  proxy names the user in, such as `X-Forwarded-User`) in `/etc/rc-dashboard/dashboard.env`
+  and run the installer again. It makes `/etc/rc-dashboard/proxy.secret`, which the proxy
+  must send in `X-RC-Proxy-Secret` on every request, and starts the dashboard with no
+  password. A password set too stays a way in. The proxy's side, groups and sign-out:
+  [Single sign-on through a proxy](../dashboard/README.md#single-sign-on-through-a-proxy).
+
 ## Opening the page
 
 The page listens on `127.0.0.1:8080` on the dashboard's host (`RC_DASH_HOST`,

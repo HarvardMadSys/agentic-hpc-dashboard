@@ -18,14 +18,17 @@
 #                  file once there is one. Written on every run.
 #   password.hash  the password's hash, which deploy/common/password.sh writes; the
 #                  dashboard reads it again when it changes.
+#   proxy.secret   with single sign-on (RC_DASH_PROXY_HEADER in dashboard.env), the
+#                  secret the proxy sends on every request, made if missing.
 #   fleet.env      (fleet) the nodes pull.py copies, written only when there is none,
 #   pull_key       (fleet) and the ssh key it logs in to them with, made if missing.
 # Then the units, enabled: rc-dashboard.service, its memory cap in the drop-in
 # rc-dashboard.service.d/50-memory.conf (written when there is none or MEMORY_MAX is
 # given, so `systemctl edit rc-dashboard` stays), rc-dashboard-check.timer (the hourly
 # check, deploy/common/check.sh), and rc-pull.service (fleet). rc-pull starts once
-# fleet.env names your nodes; the dashboard starts once it has a password (or
-# RC_DASH_OPEN=1), and is restarted by a run that finds it running, to pick up the new code.
+# fleet.env names your nodes; the dashboard starts once it has a password (or single
+# sign-on through a proxy, RC_DASH_PROXY_HEADER, or RC_DASH_OPEN=1), and is restarted by a
+# run that finds it running, to pick up the new code.
 #
 # --plan prints what it would do and changes nothing (--help: this text).
 #
@@ -302,6 +305,24 @@ else
   roots="RC_DASH_EBPF_ROOTS=$EBPF_DIR
 RC_DASH_NODE_ROOTS=$NODE_DIR"
 fi
+# Single sign-on through a proxy (RC_DASH_PROXY_HEADER in dashboard.env): the secret the
+# proxy sends on every request, made once, readable by root and the dashboard alone. The
+# dashboard believes the user the proxy names only with it: every account on this host
+# connects from 127.0.0.1 too.
+proxy_on=
+if [ -n "$(env_value "$ETC/dashboard.env" RC_DASH_PROXY_HEADER 2>/dev/null || true)" ]; then
+  proxy_on=1
+  if [ ! -s "$ETC/proxy.secret" ]; then
+    say "$ETC/proxy.secret: the secret the proxy sends the dashboard on every request"
+    if [ "$PLAN" = 1 ]; then
+      echo "    (made from /dev/urandom, mode 640 root:$SERVICE_USER)"
+    else
+      (umask 077 && head -c 48 /dev/urandom | base64 | tr -d '\n/+=' > "$ETC/proxy.secret")
+    fi
+  fi
+  run chown root:"$SERVICE_USER" "$ETC/proxy.secret"
+  run chmod 640 "$ETC/proxy.secret"
+fi
 {
   echo "# Written by deploy/common/install-dashboard.sh ($mode) on every run; your settings"
   echo "# are in dashboard.env. Where the dashboard reads, and where it keeps things:"
@@ -311,6 +332,10 @@ fi
   if [ -s "$ETC/password.hash" ]; then
     echo "# The password's hash (deploy/common/password.sh), read again when it changes."
     echo "RC_DASH_PASSWORD_HASH_FILE=$ETC/password.hash"
+  fi
+  if [ -n "$proxy_on" ]; then
+    echo "# The secret the single sign-on's proxy sends in X-RC-Proxy-Secret."
+    echo "RC_DASH_PROXY_SECRET_FILE=$ETC/proxy.secret"
   fi
 } | put "$ETC/paths.env"
 run chown root:"$SERVICE_USER" "$ETC/paths.env"
@@ -355,7 +380,8 @@ install_env_save MODE SERVICE_USER PULL_USER ETC STATE OPT MEMORY_MAX
 
 set_in() { [ -n "$(env_value "$ETC/dashboard.env" "$1" 2>/dev/null)" ]; }
 open_in() { [ "$(yesno RC_DASH_OPEN "$(env_value "$ETC/dashboard.env" RC_DASH_OPEN 2>/dev/null || true)" 2>/dev/null)" = 1 ]; }
-if set_in RC_DASH_PASSWORD_HASH || [ -s "$ETC/password.hash" ] || { set_in RC_DASH_OPEN && open_in; }; then
+if set_in RC_DASH_PASSWORD_HASH || [ -s "$ETC/password.hash" ] || set_in RC_DASH_PROXY_HEADER \
+    || { set_in RC_DASH_OPEN && open_in; }; then
   if systemctl is-active --quiet rc-dashboard.service; then
     say "restarting the dashboard: it refills its history from the feeds"
     run systemctl restart rc-dashboard.service
@@ -363,11 +389,17 @@ if set_in RC_DASH_PASSWORD_HASH || [ -s "$ETC/password.hash" ] || { set_in RC_DA
     run systemctl start rc-dashboard.service
   fi
   say "the dashboard runs: systemctl status rc-dashboard"
+  if [ -n "$proxy_on" ]; then
+    say "single sign-on: the proxy must send X-RC-Proxy-Secret, with the secret in"
+    echo "    $ETC/proxy.secret, on every request it passes on (dashboard/README.md,"
+    echo "    \"Single sign-on through a proxy\"); without it, no one is signed in"
+  fi
 else
   say "the dashboard starts once it has a password. Make one, as root, with"
   echo "      $repo/deploy/common/password.sh        (or: $repo/deploy/rc-deploy password)"
   echo "    which keeps the password in your ~/.config/rc-dashboard, puts its hash in"
-  echo "    $ETC/password.hash, and starts the dashboard."
+  echo "    $ETC/password.hash, and starts the dashboard. Or let the site's single sign-on"
+  echo "    admit readers through a proxy: RC_DASH_PROXY_HEADER in $ETC/dashboard.env."
 fi
 [ "$PLAN" = 1 ] && say "the plan ends here: nothing was changed"
 exit 0

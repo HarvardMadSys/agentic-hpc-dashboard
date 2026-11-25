@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -298,6 +299,30 @@ class TestSingle(Rig):
             fh.write("RC_DASH_OPEN=1\n")
         self.install("--no-build")
         self.assertIn("systemctl start rc-dashboard.service", self.calls())
+
+    def test_single_sign_on_starts_it_without_a_password(self):
+        out = self.install()
+        self.assertNotIn("systemctl start rc-dashboard.service", self.calls())
+        self.assertIn("RC_DASH_PROXY_HEADER", out)
+        p = os.path.join(self.etc, "dashboard.env")
+        self.assertIn("#RC_DASH_PROXY_HEADER=", self.read(p), "an example, commented out")
+        with open(p, "a") as fh:
+            fh.write("RC_DASH_PROXY_HEADER=X-Forwarded-User\n")
+        out = self.install("--no-build")
+        self.assertIn("systemctl start rc-dashboard.service", self.calls())
+        # the secret the proxy sends: made once, the dashboard's to read, named in paths.env,
+        # and never printed
+        secret = os.path.join(self.etc, "proxy.secret")
+        value = self.read(secret).strip()
+        self.assertRegex(value, r"^[A-Za-z0-9]{32,}$")
+        self.assertEqual(stat.S_IMODE(os.stat(secret).st_mode), 0o640)
+        self.assertIn("chown root:rc-dashboard " + secret, self.calls())
+        self.assertEqual(self.keys(os.path.join(self.etc, "paths.env"))["RC_DASH_PROXY_SECRET_FILE"],
+                         secret)
+        self.assertIn("X-RC-Proxy-Secret", out)
+        self.assertNotIn(value, out)
+        self.install("--no-build")
+        self.assertEqual(self.read(secret).strip(), value)          # kept
 
     def test_a_group_the_collector_already_writes_for_is_kept(self):
         with open(self.default, "w") as fh:
