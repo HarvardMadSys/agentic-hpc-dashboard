@@ -290,6 +290,10 @@ class TestRender(unittest.TestCase):
         self.assertEqual(s["FLEET_MIRROR"], ROOT + "/data/mirror")
         self.assertEqual((s["FLEET_LAYOUT"], s["FLEET_NODE_SOURCE"]), ("flat", ""))
         self.assertEqual(s["FLEET_DAYS"], str(int(example_value("HISTORY_DAYS")) + 1))
+        # the copy keeps what it copies, no more: the stream removed older days too
+        self.assertEqual(s["FLEET_KEEP_DAYS"], s["FLEET_DAYS"])
+        self.assertEqual(s["FLEET_PRIVATE"], "yes")
+        self.assertEqual(env_of(render("fleet.env.in", ["PRIVATE_TREE=false"]))["FLEET_PRIVATE"], "no")
         self.assertEqual(s["FLEET_FREE_MIN_GB"], "300")
         self.assertEqual(env_of(render("fleet.env.in", ["FREE_MIN_GB=50.5"]))["FLEET_FREE_MIN_GB"], "50.5")
         self.assertEqual(env_of(render("fleet.env.in", ["SOURCE_DOMAIN="]))["FLEET_DOMAIN"], "")

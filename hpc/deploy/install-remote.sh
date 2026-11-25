@@ -113,16 +113,17 @@ if [ "$restart" = 1 ] || [ "$again" = 1 ]; then
 else
   systemctl --user start rc-tmux.service || echo "rc-tmux did not start; see check-local.sh"
   # The running copy reads etc/fleet.env again on SIGHUP (pull.py's reload): a node added
-  # starts, one taken out stops, and nothing restarts. Its lock holds its pid; a lock no
-  # process holds names none.
-  lock=$R/data/mirror/.state/pull.lock
-  if [ -s "$lock" ] && ! flock -n "$lock" true 2>/dev/null; then
-    pid=$(head -n 1 "$lock")
-    case $pid in
-      ''|*[!0-9]*) ;;
-      *) kill -HUP "$pid" 2>/dev/null && echo "the copy reads its new settings (pid $pid)" ;;
-    esac
-  fi
+  # starts, one taken out stops, and nothing restarts. Its lock file holds its pid, which
+  # is signalled while it is still a pull.py loop: asked without taking the lock, which a
+  # copy starting this moment would find held and stop at.
+  pid=$(head -n 1 "$R/data/mirror/.state/pull.lock" 2>/dev/null || true)   # none yet: no copy has run
+  case $pid in
+    ''|*[!0-9]*) ;;
+    *)
+      if tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 'pull\.py .*loop'; then
+        kill -HUP "$pid" 2>/dev/null && echo "the copy reads its new settings (pid $pid)"
+      fi ;;
+  esac
 fi
 loginctl enable-linger 2>/dev/null || true
 # pip writes executables and libraries with fixed modes (755, 711) whatever the umask;

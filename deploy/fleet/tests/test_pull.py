@@ -366,6 +366,24 @@ class TestRun(Rig):
             out = self.run_pull(code=3)
         self.assertIn("another pull.py", out)
 
+    def test_the_copy_is_private_unless_told_not(self):
+        """FLEET_PRIVATE=yes, the default, makes the copy 700/600 whatever was there; no
+        leaves its modes to the umask and the folder's default ACL, for a team that reads
+        the copy through one (the HPC kit's PRIVATE_TREE=false)."""
+        self.write("n1", "2026-11-21/n1.exits.jsonl", lines(0, 2))
+        os.makedirs(self.mirror, exist_ok=True)
+        os.chmod(self.mirror, 0o750)
+        self.settings(FLEET_PRIVATE="no")
+        self.run_pull()
+        self.assertEqual(stat.S_IMODE(os.stat(self.mirror).st_mode), 0o750)
+        self.settings()
+        self.run_pull()
+        self.assertEqual(stat.S_IMODE(os.stat(self.mirror).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(self.dst("n1", "2026-11-21/n1.exits.jsonl")).st_mode),
+                         0o600)
+        self.settings(FLEET_PRIVATE="maybe")
+        self.assertIn("FLEET_PRIVATE='maybe' is not one of yes/no", self.run_pull(code=2))
+
     def test_paused_when_the_disk_is_full(self):
         self.write("n1", "2026-11-21/n1.exits.jsonl", lines(0, 2))
         self.settings(FLEET_FREE_MIN_GB="1e12")

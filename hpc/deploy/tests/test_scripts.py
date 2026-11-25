@@ -186,6 +186,22 @@ class TestRollback(Rig):
         self.assertIn("systemctl --user restart rc-tmux.service", calls)
         self.assertIn("current: aaaaaaaaaaaa (was bbbbbbbbbbbb)", out)
 
+    def test_the_nodes_code_goes_back_too_and_a_stream_sender_is_named(self):
+        """SENDER_DIR/current goes back to the release's code where a node keeps it; one
+        from before the copy has the stream's sender alone, which a key line made for the
+        copy (rsync_guard.py) gets no answer from, and the rollback says so."""
+        sender = os.path.join(self.tmp, "sender")
+        for sha, files in (("aaaaaaaaaaaa", ["fleet_stream.py"]),
+                           ("bbbbbbbbbbbb", ["rsync_guard.py", "fleet_stream.py"])):
+            os.makedirs(os.path.join(sender, sha))
+            for f in files:
+                open(os.path.join(sender, sha, f), "w").close()
+        os.symlink("bbbbbbbbbbbb", os.path.join(sender, "current"))
+        out = self.run_script("rollback.sh")
+        self.assertEqual(os.readlink(os.path.join(sender, "current")), "aaaaaaaaaaaa")
+        self.assertIn("the stream's sender from before the copy: a key line that runs "
+                      "rsync_guard.py is not answered now", out)
+
     def globbed_config(self):
         """The settings as this kit renders them: the copy as one pattern over the mirror."""
         mirror = os.path.join(self.root, "data", "mirror")

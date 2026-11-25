@@ -145,9 +145,10 @@ class TestInstall(Rig):
             self.assertEqual(fh.read(), '{"hosts": {}}')
 
     def test_the_running_copy_reads_its_new_settings(self):
-        """A deploy with no restart (add-node's) signals the copy that holds pull.py's lock,
-        whose pid the lock holds: pull.py reads etc/fleet.env again on SIGHUP. With a
-        restart, or no holder, nothing is signalled."""
+        """A deploy with no restart (add-node's) signals the copy whose pid pull.py's lock
+        holds, while that pid is still a pull.py loop: pull.py reads etc/fleet.env again on
+        SIGHUP. With a restart, a gone process, or a pid now another program's, nothing is
+        signalled, and the lock is never taken, so a copy starting then is not stopped."""
         state = os.path.join(self.r, "data", "mirror", ".state")
         os.makedirs(state)
         lock = os.path.join(state, "pull.lock")
@@ -158,7 +159,8 @@ class TestInstall(Rig):
             "fh.truncate(0); fh.write('%d\\n' % os.getpid()); fh.flush()\n"
             "signal.signal(signal.SIGHUP, lambda *a: open(sys.argv[2], 'w').close())\n"
             "print('ready', flush=True)\n"
-            "time.sleep(30)\n"), lock, got], stdout=subprocess.PIPE, universal_newlines=True)
+            "time.sleep(30)\n"), lock, got, "deploy/fleet/pull.py", "--config", "x", "loop"],
+            stdout=subprocess.PIPE, universal_newlines=True)
         self.addCleanup(holder.stdout.close)
         self.addCleanup(holder.kill)
         self.assertEqual(holder.stdout.readline().strip(), "ready")
@@ -176,6 +178,10 @@ class TestInstall(Rig):
         holder.wait()
         self.payload()
         self.assertNotIn("the copy reads", self.install(), "a lock no process holds names none")
+        with open(lock, "w") as fh:
+            fh.write("%d\n" % os.getpid())          # a live pid, but no pull.py
+        self.payload()
+        self.assertNotIn("the copy reads", self.install())
 
     def test_a_trip_left_by_the_stream_is_named(self):
         """The copy reads no TRIPPED file: one the stream left is named once, with where its

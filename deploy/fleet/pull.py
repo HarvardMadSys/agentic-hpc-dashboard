@@ -50,7 +50,8 @@ How a file is copied. The dashboard follows a day-file by its inode and an offse
 
 What is copied: `<day>/<name>.jsonl` and `<day>/<name>.jsonl.gz`, for the FLEET_DAYS newest
 day folders that hold one (0: every one), and nothing else. No link is followed. The copy
-is made 700/600: it names real users and holds their commands. While the copy's volume has
+is made 700/600: it names real users and holds their commands (FLEET_PRIVATE=no leaves its
+modes to the umask and the folder's default ACL). While the copy's volume has
 less than FLEET_FREE_MIN_GB free, nothing is pulled.
 
 Python 3.6 or later, standard library only. Needs rsync here and on each node, and an ssh
@@ -117,8 +118,10 @@ DEFAULTS = {
     "FLEET_RSYNC": "rsync",
     "FLEET_SSH": "ssh",
     "FLEET_LAYOUT": "tiers",
+    "FLEET_PRIVATE": "yes",
 }
 LAYOUTS = ("tiers", "flat")
+YES, NO = ("1", "true", "yes", "on"), ("0", "false", "no", "off")
 
 
 class ConfigError(Exception):
@@ -232,6 +235,15 @@ class Settings(object):
             self.free_min = float(v["FLEET_FREE_MIN_GB"]) * (1 << 30)
         except ValueError:
             raise ConfigError("FLEET_FREE_MIN_GB=%r is not a number" % v["FLEET_FREE_MIN_GB"])
+        # yes: the copy is this account's alone, 700 folders and 600 files whatever the
+        # umask or a default ACL would give; no (the HPC kit's PRIVATE_TREE=false): its
+        # modes are left to the umask and the folder's default ACL, which a team that
+        # reads the copy through one keeps.
+        private = str(v["FLEET_PRIVATE"]).strip().lower()
+        if private not in YES + NO:
+            raise ConfigError("FLEET_PRIVATE=%r is not one of yes/no, 1/0, true/false, on/off"
+                              % v["FLEET_PRIVATE"])
+        self.private = private in YES
         self.layout = v["FLEET_LAYOUT"]
         if self.layout not in LAYOUTS:
             raise ConfigError("FLEET_LAYOUT=%r: tiers (MIRROR/<tier>/NAME) or flat (the eBPF "
@@ -553,7 +565,7 @@ class Puller(object):
 
     def copy(self, source, root, files, append):
         """rsync exactly `files` from the node's `source` into `root`."""
-        args = ["-t", CHMOD, "--files-from=-", "--from0"]
+        args = ["-t"] + ([CHMOD] if self.s.private else []) + ["--files-from=-", "--from0"]
         args += ["--append"] if append else ["--partial-dir=.rsync-partial"]
         rc, _out, err = self.rsync(args + ["%s:%s/" % (self.target, source), root + "/"],
                                    stdin="\0".join(files) + "\0")
@@ -585,7 +597,7 @@ class Puller(object):
 
     def pull_tier(self, tier, source):
         root = self.s.root(tier, self.name)
-        os.makedirs(root, mode=0o700, exist_ok=True)
+        os.makedirs(root, mode=0o700 if self.s.private else 0o777, exist_ok=True)
         remote = self.remote(source)
         todo = plan(remote, local_files(root), self.s.days)
         # A replaced file is fetched as a new one. Its old copy is held aside, its inode with
@@ -784,12 +796,13 @@ def prepare(s):
     held until the process ends."""
     for d in (s.mirror, s.state):
         try:
-            os.makedirs(d, mode=0o700)
+            os.makedirs(d, mode=0o700 if s.private else 0o777)
         except OSError as e:
             if e.errno != errno.EEXIST:
                 raise
-    os.chmod(s.mirror, 0o700)
-    os.chmod(s.state, 0o700)
+    if s.private:
+        os.chmod(s.mirror, 0o700)
+        os.chmod(s.state, 0o700)
     fh = open(os.path.join(s.state, "pull.lock"), "a")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1055,6 +1068,9 @@ def main(argv=None):
             return 2
         return cmd_status(s, stale, args.json)
     os.umask(0o077)
+    # The lock names this process for the HPC kit's deploy to send SIGHUP (prepare); until
+    # the loop takes it as "read the settings again", one must not end the process.
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     lock = prepare(s)
     if lock is None:
         sys.stderr.write("pull.py: another pull.py holds %s; not starting a second\n"

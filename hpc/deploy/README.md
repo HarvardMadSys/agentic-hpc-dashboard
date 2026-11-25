@@ -217,8 +217,10 @@ a view is built again beside the one it replaces. After a deploy that changes wh
 holds (the reducers' code, sessions per view, or days of history), the first build of each
 view reduces its hours again from the copy.
 
-The copy keeps a sealed day as `.gz`, as each node does: about 19 times less disk than
-plain. The dashboard reads a `.gz` through an index of about 0.5% of its plain size, dropped
+The copy holds the days the dashboard reads, `HISTORY_DAYS` + 1, and removes older ones
+(`FLEET_KEEP_DAYS` in `etc/fleet.env`), as the stream before it did: the dashboard keeps
+its own history past them (the Trend tab's roll-up table, the Parquet history). It keeps a
+sealed day as `.gz`, as each node does: about 19 times less disk than plain. The dashboard reads a `.gz` through an index of about 0.5% of its plain size, dropped
 when the file is gone or no reader has used it for 30 minutes. The copy pauses, for every
 node, while its volume has less free space than `FREE_MIN_GB`. The dashboard also keeps each
 sealed day as Parquet in `DASH_ROOT/cache/history`, at about a third of the `.gz`'s disk
@@ -328,7 +330,8 @@ to run: a laptop that sleeps checks nothing.
 example when an ACL lets a teammate's account read the copy (with `true`, the modes the ACL
 changes stop both processes). Modes, owners, and ACLs are then yours: nothing checks or
 audits them, a deploy makes only `etc/`, which holds the secrets, 700, and new folders and
-files in the copy follow its default ACL. A symlink put in the place of `DASH_ROOT` or its
+files in the copy follow its default ACL (the copy runs with `FLEET_PRIVATE=no`, so it
+neither sets 700/600 modes nor narrows the folder's). A symlink put in the place of `DASH_ROOT` or its
 `data` folder still stops both.
 
 ## What to back up

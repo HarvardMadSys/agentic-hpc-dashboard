@@ -132,9 +132,12 @@ to=$(printf '%s\n' "$out" | sed -n 's/^ROLLED_BACK_TO=//p' | tail -n 1)
 if [ -n "$to" ] && [ -n "${SENDER_DIR:-}" ]; then
   for node in $SOURCE_NODES; do
     dest="$SOURCE_USER@$node${SOURCE_DOMAIN:+.$SOURCE_DOMAIN}"
-    if r=$("${ssh_[@]}" "$dest" "if [ -d $SENDER_DIR/$to ]; then ln -sfn $to $SENDER_DIR/current.new && mv -T $SENDER_DIR/current.new $SENDER_DIR/current && echo moved; else echo none; fi" 2>&1); then
+    if r=$("${ssh_[@]}" "$dest" "if [ -d $SENDER_DIR/$to ]; then ln -sfn $to $SENDER_DIR/current.new && mv -T $SENDER_DIR/current.new $SENDER_DIR/current && if [ -e $SENDER_DIR/$to/rsync_guard.py ]; then echo moved; else echo moved-stream; fi; else echo none; fi" 2>&1); then
       case $r in
         moved) echo "  $node: $SENDER_DIR/current is $to again" ;;
+        # A release from before the copy has the stream's sender alone: a key line made
+        # for the copy (rsync_guard.py) is not answered until it runs that sender again.
+        moved-stream) echo "  $node: $SENDER_DIR/current is $to again, the stream's sender from before the copy: a key line that runs rsync_guard.py is not answered now; make it run fleet_stream.py send --root <SOURCE_ROOT> (hpc/deploy/README.md)" ;;
         *) echo "  $node: no $to in $SENDER_DIR; it keeps the code it has" ;;
       esac
       [ "${SHARED_HOME:-yes}" = yes ] && break
