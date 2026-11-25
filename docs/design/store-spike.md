@@ -1,0 +1,96 @@
+# Store spike: could one columnar store replace the cache layers?
+
+*Status: an experiment. Nothing in the service changed.*
+
+An experiment, not a feature: nothing in the service changed. The question was whether the
+dashboard's three cache layers (saved window builds, hours, payloads) could give way to one
+query engine over the store it already keeps: the history store's Parquet replicas of the
+sealed days and the newest day's plain JSONL. The test was one panel family, the Resources
+reducer's payload (the `resources` key of `/api/panels`): the window's series by class, CPU,
+runqueue wait, major faults, disk and network bytes, resident memory, D-state by tool, and the
+per-class totals, distributions and worst processes.
+
+[`dashboard/tools/store_spike.py`](../../dashboard/tools/store_spike.py) runs the whole
+experiment (`uv run --frozen --with duckdb python tools/store_spike.py run --days 8 --hosts 3`,
+the run below, from `dashboard/`;
+DuckDB is a throwaway dependency, and `uv.lock` is left alone).
+
+## Method
+
+One demo feed, 8 days of 3 hosts (`demo --demo-write-only`), every eBPF day but the newest sealed
+as `.gz` and converted by the history store, so the sealed days have Parquet replicas and the
+newest day is plain JSONL, as on a deployment. Each window (60, 1440 and 10080 minutes, at the
+service's bin widths) was computed three ways, each in a fresh process, cold and then warm:
+
+| path | what |
+|---|---|
+| **sql** | DuckDB over the replicas and the newest day's JSONL, every rule restated in SQL: classes, the null gating and impossible waits, the bins, gaps kept as nulls, the own-I/O join with the hour chain's reach and ageing, the quantile sketch. Their constants and regular expressions are read from the service's modules, so the two cannot drift; rows a query returns are masked by `redact.py`, as on every way out of the service. |
+| **service** | `rc-dashboard serve` under a pinned clock: an empty cache that builds only that window, then restarted over what it saved; and once more with all three windows in one cache, the default 24 h first, as a deployment holds them. |
+| **reducer** | the service's own `ResourceReducer` alone, fed by its own window scan: what this one family costs in Python, without the ten other reducers a service build runs. |
+
+Then every value of each payload was compared with the others'.
+
+The feed: 198,418 eBPF records (195,685 sealed, 2,733 plain), 69,052 of them exits; 11.7 MB of
+sealed `.gz` (273 MB inflated), 3.6 MB plain; a Parquet store of 12.7 MB, 8.2 MB of it in the two
+tables read here. One machine: 4 CPUs, 15 GB, Linux 6.18, DuckDB 2.0.1, Python 3.13.
+
+## Results
+
+| window | service cold build | service warm | service RSS cold / warm (peak) | reducer alone cold / warm (peak RSS) | sql cold / warm, 4 threads | sql 1 thread cold | sql peak RSS | DuckDB peak buffer |
+|---|---|---|---|---|---|---|---|---|
+| 60 min | 0.40 s (scan) | 0.30 s (snapshot) | 513 / 650 MB (689 / 665) | 0.11 / 0.02 s (71 MB) | 0.35 / 0.35 s | 0.37 s | 197 MB | 72 MB |
+| 1440 min | 9.50 s (hours) | 0.60 s | 698 / 530 MB (698 / 677) | 0.83 / 0.59 s (100 MB) | 0.46 / 0.46 s | 0.49 s | 226 MB | 105 MB |
+| 10080 min | 54.1 s (hours) | 4.00 s | 356 / 375 MB (718 / 722) | 4.53 / 3.37 s (344 MB) | 1.08 / 1.06 s | 1.41 s | 457 MB | 270 MB |
+
+The service's RSS is the whole process, every reducer and the live tier included; the reducer's
+and the SQL's are this family alone. The service's cache on disk: 0.9 MB for the hour, 1.9 MB for
+the day, 12.6 MB for the week (11.9 MB of it hours); the Parquet store, 12.7 MB, serves both.
+
+**Correctness.** The SQL gives the service's numbers:
+
+| window | sql vs the service | |
+|---|---|---|
+| 60 min | 2,823 equal, 1 tie | |
+| 1440 min | 6,836 equal, 22 ties, 8 other | the 8: two rows of `stall_by_tool` (`node` and `server`) with the same sort key, in the other order |
+| 10080 min | 7,720 equal, 58 ties | |
+
+A tie is a value that differs only in its last rounded digit, the SQL's unrounded value at a
+rounding tie: float sums taken in another order. The SQL matched the reducer alone the same way.
+
+**A finding about the service itself.** Its own week window is not the same in every cache: built
+alone, and built in one cache after the day and the hour windows, it differs in one bin of the
+agent class, bin 148 of the week, about 20 hours back and so inside the day window built first:
+read bytes 77.4 MB alone against 668.6 MB after the others (`rchar_mb`; `rd_mb`, `wchar_mb` and
+`wr_mb` the same way). The SQL agrees with the window built alone. An hour's reduction should not
+depend on which window built it first; it looks like the own-I/O chain of an hour reduced for the
+day window, whose reach and ageing span the hours before it, is kept and reused by the week window.
+That is a research-integrity question (a number that depends on the cache's history), worth its own
+investigation before anything here is acted on.
+
+## What it does not show
+
+- **Scale.** The feed is about a thousandth of a busy site's: 8 login nodes write 35 to 47 GB of
+  JSON a day ([memory and disk](../../hpc/deploy/README.md#memory-and-disk)). Nothing here says
+  how either path grows to that.
+- **The other families.** Resources is a window aggregate, the kind SQL is best at. Ten other
+  reducers build the page; the session chains, cascades and phases carry state from one record to
+  the next, which the SQL would have to restate as window functions or not at all.
+- **The page's filters** (class, user, agent type) and the live tier's newest minutes as they
+  arrive were not exercised: the SQL reads the files as they are when it runs.
+- **The cost of a dependency**: DuckDB is a 66 MB native library once installed, one more thing
+  every install carries and every Python the dashboard supports must have a wheel for.
+
+## What to do with it
+
+Nothing in production yet. The evidence says a query engine over the store the service already
+keeps computes a window aggregate exactly, 20 to 50 times faster on a cold build of a long window,
+in less memory than the service's whole process, with no cache to keep or invalidate. That is
+enough to justify the next experiment and not enough to replace anything:
+
+1. Find out why the service's week window depends on what its cache built before (above), and fix
+   it; until then, any comparison is against a moving target.
+2. Run the spike on a captured feed at a site's scale (`--reuse` over a copy of real day-files),
+   with the history store converted, for the long windows only.
+3. If it holds, move the long-window aggregate families (Resources, the Trend tab's daily sums) to
+   queries over the store, keep the chain reducers as they are, and drop the hours layer for those
+   families: the part of the cache that costs the most to build and to keep consistent.
