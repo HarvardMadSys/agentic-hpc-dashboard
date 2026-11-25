@@ -228,6 +228,8 @@ def run(cmd, env=None, check=True):
         shown = " ".join("%s=%s" % (k, shlex.quote(v)) for k, v in extra) + " " + shown
     if os.environ.get("RC_DEPLOY_ECHO"):
         sys.stdout.write("RUN %s\n" % shown)
+        if os.path.basename(cmd[0]) == os.environ.get("RC_DEPLOY_ECHO_FAIL"):
+            raise Refused("%s ended with exit 1" % os.path.basename(cmd[0]))   # the tests
         return 0
     say("running: %s" % shown)
     e = dict(os.environ)
@@ -409,8 +411,12 @@ def cmd_which(args):
     return 0
 
 
-def cmd_apply(args, plan=None):
+def cmd_apply(args, plan=None, release=None):
+    """`release`: the release to install instead of the one the settings name, for an
+    upgrade or a rollback, which write it to the settings only once it is installed."""
     kit, path, vals = site_file(args)
+    if release:
+        vals = dict(vals, RELEASE=release)
     plan = args.plan if plan is None else plan
     extra = ["--plan"] if plan else []
     if kit == "hpc":
@@ -669,14 +675,19 @@ def cmd_upgrade(args):
         if args.to:
             raise Refused("this kit is release %s, with no git: unpack the kit of %s and run its "
                           "rc-deploy upgrade" % (mine, args.to))
-        before = vals.get("RELEASE") or installed("RELEASE", "") or "(none)"
+        # What is installed: the installer's own record, else the settings.
+        before = installed("RELEASE", "") or vals.get("RELEASE") or "(none)"
+        say("release %s -> %s" % (before, mine) if before != mine else
+            "already release %s: installing it again" % mine)
+        rc = cmd_apply(args, plan=False, release=mine)
+        # Only once it is installed (a failed apply raises before this): a failed upgrade
+        # leaves the settings and the history naming the release still running, so its
+        # retry and a rollback start from that one. Installing the same release again is
+        # no transition to go back from.
         if before != mine:
             set_line(path, "RELEASE", mine)
-            vals["RELEASE"] = mine
-        with open(HISTORY, "a") as fh:
-            fh.write("%s %s %s\n" % (before, mine, time.strftime("%Y-%m-%d %H:%M:%S")))
-        say("release %s -> %s" % (before, mine))
-        rc = cmd_apply(args, plan=False)
+            with open(HISTORY, "a") as fh:
+                fh.write("%s %s %s\n" % (before, mine, time.strftime("%Y-%m-%d %H:%M:%S")))
         if kit == "fleet":
             say("then on each node, from this kit: sudo deploy/fleet/install-node.sh --no-bootstrap")
         return rc
@@ -689,8 +700,9 @@ def cmd_upgrade(args):
     after = _head() if not os.environ.get("RC_DEPLOY_ECHO") else "(new)"
     if after == before:
         say("already at %s" % before[:12])
-    with open(HISTORY, "a") as fh:
-        fh.write("%s %s %s\n" % (before, after, time.strftime("%Y-%m-%d %H:%M:%S")))
+    else:
+        with open(HISTORY, "a") as fh:
+            fh.write("%s %s %s\n" % (before, after, time.strftime("%Y-%m-%d %H:%M:%S")))
     if kit == "hpc":
         return run([kit_script(kit, "deploy.sh"), "--restart"], env={"SITE_ENV": path})
     rc = cmd_apply(args, plan=False)
@@ -716,13 +728,18 @@ def cmd_rollback(args):
                     rows = [l.split() for l in fh if l.strip()]
             except OSError:
                 rows = []
-            target = next((r[0] for r in reversed(rows) if RELEASE_RE.match(r[0])), None)
+            # the newest release an upgrade replaced that is not the one running now (a
+            # history written before upgrades skipped a same-release retry may hold one)
+            current = installed("RELEASE", "") or vals.get("RELEASE")
+            target = next((r[0] for r in reversed(rows)
+                           if RELEASE_RE.match(r[0]) and r[0] != current), None)
         if not target or not RELEASE_RE.match(target):
             raise Refused("give the release to go back to (vX.Y.Z): a release's kit rolls the "
                           "dashboard back to an earlier release's wheel")
-        set_line(path, "RELEASE", target)
         say("the dashboard back to release %s" % target)
-        return cmd_apply(args, plan=False)
+        rc = cmd_apply(args, plan=False, release=target)
+        set_line(path, "RELEASE", target)       # once it is installed
+        return rc
     if args.sha:
         target = args.sha
     else:

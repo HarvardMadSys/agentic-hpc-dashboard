@@ -435,6 +435,34 @@ class TestRelease(Rig):
         self.assertRegex(out, r"RUN .*RELEASE=v1\.2\.3 .*install-dashboard\.sh\n")
         self.assertIn("vX.Y.Z", self.tool("rollback", "abc1234", code=1))
 
+    def test_a_failed_or_repeated_upgrade_keeps_the_release_to_go_back_to(self):
+        """The release is written to the settings and the history only once installed: a
+        failed upgrade leaves both naming the release still running, and installing the
+        same release again records no transition, so rollback still finds the one before."""
+        hist = os.path.join(self.tmp, "history")
+        self.release("v1.2.3")
+        self.init_fleet()
+        self.release("v1.3.0")
+        out = self.tool("upgrade", code=1, RC_DEPLOY_ECHO_FAIL="install-dashboard.sh")
+        self.assertIn("install-dashboard.sh ended with exit 1", out)
+        self.assertEqual(self.keys()["RELEASE"], "v1.2.3")
+        self.assertFalse(os.path.exists(hist))
+        self.tool("upgrade")                                  # the retry, which works
+        self.assertIn("already release v1.3.0", self.tool("upgrade"))
+        with open(hist) as fh:
+            self.assertEqual([l.split()[:2] for l in fh], [["v1.2.3", "v1.3.0"]])
+        out = self.tool("rollback")
+        self.assertEqual(self.keys()["RELEASE"], "v1.2.3")
+        self.assertRegex(out, r"RUN .*RELEASE=v1\.2\.3 .*install-dashboard\.sh\n")
+
+    def test_a_failed_rollback_leaves_the_settings(self):
+        self.release("v1.2.3")
+        self.init_fleet()
+        self.release("v1.3.0")
+        self.tool("upgrade")
+        self.tool("rollback", code=1, RC_DEPLOY_ECHO_FAIL="install-dashboard.sh")
+        self.assertEqual(self.keys()["RELEASE"], "v1.3.0")
+
     def test_a_release_that_is_no_release_is_refused(self):
         out = self.tool("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes",
                         "--set", "RELEASE=latest", code=1)
