@@ -1129,7 +1129,10 @@ prints each tab and how many times readers opened it, most opened first, so a si
 which tabs earn their place on its own use. The page counts a tab each time it opens it and
 posts the counts at most once a minute, and when it is put away (`src/lib/usage.ts`,
 `POST /api/usage`); the service keeps them a day at a time in `<cache.dir>/usage/<day>.json`
-(UTC days, 400 of them; `rc_dashboard/usage.py`). **Nothing else is kept**: no user, address,
+(UTC days by the wall clock, even while `clock.as_of` pins the feed's present; 400 of them;
+`rc_dashboard/usage.py`). An instance pinned before that rule filed its counts under the
+capture's day, which `usage` reads past and pruning removes: those few counts are lost once.
+**Nothing else is kept**: no user, address,
 window, filter or time of day. A view is one of the page's own tabs (`usage.TABS`, which a test
 holds to the page's): any other key a post holds is dropped, so nothing a client writes is kept
 but a count, and a refused post's error never repeats what it sent. A count is worth losing, not

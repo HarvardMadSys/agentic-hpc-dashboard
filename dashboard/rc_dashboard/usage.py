@@ -9,7 +9,8 @@ sends is written but a count. No user, address, window, filter or time of day is
 only a count a day. The counts are
 kept per day (UTC) in <cache.dir>/usage/<YYYY-MM-DD>.json, and a day older than
 KEEP_DAYS is removed. `ui.count_views` (RC_DASH_COUNT_VIEWS=0) turns it off: the page
-sends nothing, and the route takes nothing.
+sends nothing, and the route takes nothing. A day is the wall clock's (`clock.wall`), even
+while `clock.as_of` pins the feed's present: a reader opens a tab today.
 """
 import datetime
 import json
@@ -17,7 +18,8 @@ import os
 import re
 import sys
 import threading
-import time
+
+from . import clock
 
 # A view: a tab's key, as the page writes it in `?tab=`.
 VIEW = re.compile(r"tab:[a-z][a-z0-9_-]{0,31}\Z")
@@ -55,7 +57,7 @@ def parse(body):
 
 
 def _day(now=None):
-    return datetime.datetime.fromtimestamp(time.time() if now is None else now,
+    return datetime.datetime.fromtimestamp(clock.wall() if now is None else now,
                                            datetime.timezone.utc).strftime("%Y-%m-%d")
 
 

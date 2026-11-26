@@ -83,6 +83,8 @@ from collections import namedtuple
 
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 
+from . import clock
+
 # string.punctuation without what breaks a shell line, a netrc, or a copy out
 # of a terminal: quotes, backslash, #, $, !, &, |, ;, <, >, and parentheses.
 # With both cases and the digits that is 80 characters, so 16 of them carry
@@ -178,9 +180,9 @@ def verify_password(password, stored):
 
 
 def wall():
-    """The real time. clock.py pins `time.time` to a capture's end on a frozen
-    instance, and a cookie must still run out there."""
-    return time.clock_gettime(time.CLOCK_REALTIME)
+    """The real time (clock.wall). clock.py pins `time.time` to a capture's end on a
+    frozen instance, and a cookie must still run out there."""
+    return clock.wall()
 
 
 def read_hash_file(path):

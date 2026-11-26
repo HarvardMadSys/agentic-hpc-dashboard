@@ -39,6 +39,10 @@ says the clock is pinned, and the page's own "now" follows the server's.
 An explicit `as_of` before the newest record is a clock, not a filter: the live
 tier drops what comes after it as clock skew, while a window build still reads
 it. Pin at or after the end of the capture.
+
+What happens now outside the feed is timed on `wall()`, the clock the pin leaves
+alone: a reader opening a tab (`usage.py`) opens it today, whatever present the
+feed is pinned to, and `rc-dashboard usage`, which pins nothing, reads it there.
 """
 import os
 import time
@@ -47,7 +51,6 @@ from . import gz
 from .export import dated_dirs
 from .normalize import epoch_of
 
-_wall = time.time
 _state = {"pinned": False, "as_of": None, "source": "wall clock"}
 
 
@@ -118,6 +121,15 @@ def install(cfg, roots):
     return status()
 
 
+def wall():
+    """The wall clock, which a pin leaves alone: for what happens now, outside the
+    feed (a reader's tab count, a cookie's expiry, auth.wall), never for what a window
+    or a record is measured against. Read from the C clock rather than `time.time`, so
+    neither the pin nor a test's patch of `time.time` reaches it, however this module
+    was imported or reloaded."""
+    return time.clock_gettime(time.CLOCK_REALTIME)
+
+
 def status():
     """What every live frame says about the present it was computed at."""
     now = time.time()
@@ -126,4 +138,4 @@ def status():
             "as_of": (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(_state["as_of"]))
                       if _state["as_of"] is not None else None),
             "source": _state["source"],
-            "behind_wall_s": (round(_wall() - now, 1) if _state["pinned"] else 0.0)}
+            "behind_wall_s": (round(wall() - now, 1) if _state["pinned"] else 0.0)}
