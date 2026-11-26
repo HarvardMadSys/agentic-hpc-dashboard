@@ -9,8 +9,10 @@
     rc-deploy remove-node NAME [--purge-copy]
     rc-deploy password [--rotate]           make the password and put its hash in place
     rc-deploy status                        every collector's verdict and every node's copy
-    rc-deploy upgrade [--to REF]            the checkout to REF (default: git pull), then apply
-    rc-deploy rollback [SHA]                back to what ran before
+    rc-deploy upgrade [--to REF]            the checkout to REF (default: git pull), then apply;
+                                            from a release's kit, that release (no git)
+    rc-deploy rollback [SHA|vX.Y.Z]         back to what ran before; from a release's kit, the
+                                            dashboard of an earlier release
     rc-deploy backup [--to FILE]            what cannot be rebuilt (the Trend table, the salt)
     rc-deploy uninstall [--purge] [--plan]  take it all off; --purge takes the data too
 
@@ -63,7 +65,11 @@ YES, NO = ("1", "true", "yes", "on", "y"), ("0", "false", "no", "off", "n")
 # The settings the deploy/ installers take from their environment, under the names every
 # kit uses (deploy/common/install-dashboard.sh --help).
 INSTALLER_KEYS = ("SITE_NAME", "SITE_DESCRIPTION", "SLURM", "NODE_NOUN", "ANONYMIZE",
-                  "MEMORY_MAX", "EBPF_DIR", "NODE_DIR", "NODES", "FREE_MIN_GB")
+                  "MEMORY_MAX", "EBPF_DIR", "NODE_DIR", "NODES", "FREE_MIN_GB", "RELEASE")
+# A release's kit (agentic-hpc-dashboard-X.Y.Z.tar.gz, made by dashboard-image.yml) says
+# which release it is here; a checkout has no such file.
+VERSION_FILE = os.environ.get("RC_DEPLOY_VERSION_FILE", os.path.join(HERE, "VERSION"))
+RELEASE_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -294,6 +300,8 @@ def run(cmd, env=None, check=True):
         shown = " ".join("%s=%s" % (k, shlex.quote(v)) for k, v in extra) + " " + shown
     if os.environ.get("RC_DEPLOY_ECHO"):
         sys.stdout.write("RUN %s\n" % shown)
+        if os.path.basename(cmd[0]) == os.environ.get("RC_DEPLOY_ECHO_FAIL"):
+            raise Refused("%s ended with exit 1" % os.path.basename(cmd[0]))   # the tests
         return 0
     say("running: %s" % shown)
     e = dict(os.environ)
@@ -314,8 +322,24 @@ def kit_script(kit, name):
         os.path.join(REPO, "deploy", name)
 
 
+def kit_release():
+    """The release this kit is (vX.Y.Z, from deploy/VERSION), or None in a checkout."""
+    try:
+        with open(VERSION_FILE) as fh:
+            v = fh.read().strip()
+    except OSError:
+        return None
+    return v if RELEASE_RE.match(v) else None
+
+
 def installer_env(vals):
-    return dict((k, vals[k]) for k in INSTALLER_KEYS if vals.get(k))
+    """The settings the installers take, and the release they install: the settings
+    file's RELEASE, else this kit's own. A checkout with neither builds its own code."""
+    env = dict((k, vals[k]) for k in INSTALLER_KEYS if vals.get(k))
+    rel = vals.get("RELEASE") or kit_release()
+    if rel:
+        env["RELEASE"] = rel
+    return env
 
 
 # ------------------------------------------------------------------ init
@@ -406,6 +430,13 @@ def cmd_init(args):
             raise Refused("%s keeps its settings with the install, in %s, which only root "
                           "writes: run `sudo %s init %s`" % (kit, ROOT_SITE, sys.argv[0], given))
         settings = list(common)
+        # A release's kit installs that release (its wheel; install-dashboard.sh
+        # --release); a checkout builds its own code, unless RELEASE names one.
+        release = answers.get("RELEASE") or kit_release()
+        if release:
+            if not RELEASE_RE.match(release):
+                raise Refused("RELEASE=%s is not a release: vX.Y.Z" % release)
+            settings.append(("RELEASE", release))
         if kit == "fleet":
             settings.append(("NODES", nodes))
             addr = ask("The dashboard host's address, as the nodes see it (install-node.sh "
@@ -471,8 +502,12 @@ def cmd_which(args):
     return 0
 
 
-def cmd_apply(args, plan=None):
+def cmd_apply(args, plan=None, release=None):
+    """`release`: the release to install instead of the one the settings name, for an
+    upgrade or a rollback, which write it to the settings only once it is installed."""
     kit, path, vals = site_file(args)
+    if release:
+        vals = dict(vals, RELEASE=release)
     plan = args.plan if plan is None else plan
     extra = ["--plan"] if plan else []
     if kit == "hpc":
@@ -489,7 +524,7 @@ def cmd_apply(args, plan=None):
             pub = os.path.join(installed("ETC", "/etc/rc-dashboard"), "pull_key.pub")
             key = open(pub).read().strip() if os.path.exists(pub) else "<%s>" % pub
             frm = vals.get("DASH_ADDRESS")
-            say("on each node, from a checkout of this repository (it prints the node's line):")
+            say("on each node, from this kit (a release's, or a checkout; it prints the node's line):")
             print("    sudo deploy/fleet/install-node.sh --key '%s'%s" % (key, " --from %s" % frm if frm else ""))
             print("  then add each node with: sudo deploy/rc-deploy add-node '<the line it prints>'")
     return rc
@@ -724,6 +759,29 @@ def cmd_upgrade(args):
     kit, path, vals = site_file(args)
     if kit != "hpc":
         need_root("upgrade")
+    mine = kit_release()
+    if mine and kit != "hpc":
+        # A release's kit has no git to pull: it is the upgrade. Unpack the newer
+        # release's kit and run its rc-deploy upgrade, which installs that release.
+        if args.to:
+            raise Refused("this kit is release %s, with no git: unpack the kit of %s and run its "
+                          "rc-deploy upgrade" % (mine, args.to))
+        # What is installed: the installer's own record, else the settings.
+        before = installed("RELEASE", "") or vals.get("RELEASE") or "(none)"
+        say("release %s -> %s" % (before, mine) if before != mine else
+            "already release %s: installing it again" % mine)
+        rc = cmd_apply(args, plan=False, release=mine)
+        # Only once it is installed (a failed apply raises before this): a failed upgrade
+        # leaves the settings and the history naming the release still running, so its
+        # retry and a rollback start from that one. Installing the same release again is
+        # no transition to go back from.
+        if before != mine:
+            set_line(path, "RELEASE", mine)
+            with open(history_file(path), "a") as fh:
+                fh.write("%s %s %s\n" % (before, mine, time.strftime("%Y-%m-%d %H:%M:%S")))
+        if kit == "fleet":
+            say("then on each node, from this kit: sudo deploy/fleet/install-node.sh --no-bootstrap")
+        return rc
     before = _head()
     if args.to:
         run(["git", "-C", REPO, "fetch", "--tags", "--quiet"])
@@ -733,8 +791,9 @@ def cmd_upgrade(args):
     after = _head() if not os.environ.get("RC_DEPLOY_ECHO") else "(new)"
     if after == before:
         say("already at %s" % before[:12])
-    with open(history_file(path), "a") as fh:
-        fh.write("%s %s %s\n" % (before, after, time.strftime("%Y-%m-%d %H:%M:%S")))
+    else:
+        with open(history_file(path), "a") as fh:
+            fh.write("%s %s %s\n" % (before, after, time.strftime("%Y-%m-%d %H:%M:%S")))
     if kit == "hpc":
         return run([kit_script(kit, "deploy.sh"), "--restart"], env={"SITE_ENV": path})
     rc = cmd_apply(args, plan=False)
@@ -750,6 +809,24 @@ def cmd_rollback(args):
         return run([kit_script(kit, "rollback.sh")] + ([args.sha] if args.sha else []),
                    env={"SITE_ENV": path})
     need_root("rollback")
+    if kit_release():
+        # From a release's kit: the dashboard of an earlier release, its wheel (the collector
+        # and this kit's scripts stay as they are).
+        target = args.sha
+        if not target:
+            rows = history_rows(path)
+            # the newest release an upgrade replaced that is not the one running now (a
+            # history written before upgrades skipped a same-release retry may hold one)
+            current = installed("RELEASE", "") or vals.get("RELEASE")
+            target = next((r[0] for r in reversed(rows)
+                           if RELEASE_RE.match(r[0]) and r[0] != current), None)
+        if not target or not RELEASE_RE.match(target):
+            raise Refused("give the release to go back to (vX.Y.Z): a release's kit rolls the "
+                          "dashboard back to an earlier release's wheel")
+        say("the dashboard back to release %s" % target)
+        rc = cmd_apply(args, plan=False, release=target)
+        set_line(path, "RELEASE", target)       # once it is installed
+        return rc
     if args.sha:
         target = args.sha
     else:

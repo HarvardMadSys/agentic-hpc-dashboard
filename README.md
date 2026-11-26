@@ -169,8 +169,13 @@ and an image with the page built in, needing no Node ([`docker`](docker/README.m
 Three layouts, the same collector and dashboard in each, the dashboard behind a password on
 127.0.0.1:
 
-One front door picks the layout from four questions (Slurm? which nodes? root on the nodes?
-root on the dashboard's host?) and runs its scripts:
+Start from a release's kit, `agentic-hpc-dashboard-X.Y.Z.tar.gz` on the
+[releases page](https://github.com/HarvardMadSys/agentic-hpc-dashboard/releases), unpacked
+where any account can read it and it can stay (`/opt/agentic-hpc-dashboard`): it installs
+that release's wheel, checked against the release's checksums, with nothing to build. A
+checkout works the same way and builds its own code. One front door picks the layout from
+four questions (Slurm? which nodes? root on the nodes? root on the dashboard's host?) and
+runs its scripts:
 
 ```bash
 sudo deploy/rc-deploy init      # writes the settings file, and records the layout in it (hpc: no sudo)
@@ -294,4 +299,5 @@ made once.
   only `/proc`, `/sys` and standard tools (procps-ng, sysstat, nfs-utils, iproute); a missing
   tool blanks only its own section. The RPM pulls in everything.
 - **Dashboard:** Python 3.11 or later with what [`dashboard/pyproject.toml`](dashboard/pyproject.toml)
-  lists, installed by `uv`; Node.js and npm to build the page.
+  lists, installed by `uv`. A release's wheel has the page built in; from a checkout, Node.js
+  and npm build it.

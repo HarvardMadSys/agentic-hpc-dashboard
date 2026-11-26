@@ -15,9 +15,10 @@ node (each)                                     the dashboard's host
 
 ## Install
 
-Clone the repository on every host where any account can read it, such as
-`/opt/agentic-hpc-dashboard`. The dashboard's host first, since it makes the key the nodes
-let in:
+Unpack the release's kit (or clone the repository) on every host, where any account can
+read it and it can stay, such as `/opt/agentic-hpc-dashboard`
+([What each piece is](../README.md#what-each-piece-is)). The dashboard's host first, since
+it makes the key the nodes let in:
 
 1. **The dashboard's host.** `sudo deploy/rc-deploy init` (it picks this kit when you have root
    on the nodes and on this host, and asks whether they run Slurm), then

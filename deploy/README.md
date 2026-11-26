@@ -41,8 +41,8 @@ prints the `sudo` command to run, with every answer given.
 
 | Unit | Runs | As | Made by |
 |---|---|---|---|
-| `ebpfm.service` | the collector's eBPF tier, `collector/ebpf_trace.py` | root | [`common/install-collector.sh`](common/install-collector.sh) (`ebpfm.sh install-unit`) |
-| `ebpfm-node.service` | the collector's node tier, a snapshot every 5 minutes | root | the same |
+| `ebpfm.service` | the collector's eBPF tier, `collector/ebpf_trace.py`; starting, stopping or restarting it does the same to the node tier's unit | root | [`common/install-collector.sh`](common/install-collector.sh) (`ebpfm.sh install-unit`) |
+| `ebpfm-node.service` | the collector's node tier, a snapshot every 5 minutes; part of `ebpfm.service`, and alone where the eBPF tier cannot run | root | the same |
 | `rc-dashboard.service` | `rc_dashboard serve`, on `127.0.0.1:8080` behind a password; its memory cap in `rc-dashboard.service.d/50-memory.conf` | `rc-dashboard` | [`common/install-dashboard.sh`](common/install-dashboard.sh) |
 | `rc-dashboard-check.timer` | [`common/check.sh`](common/check.sh) every hour: `rc-dashboard status` ([Watching it](#watching-it)) | `rc-dashboard` | the same |
 | `rc-pull.service` (fleet) | [`fleet/pull.py`](fleet/pull.py) `loop`, the copy of every node | `rc-dashboard` | the same, `fleet` |
@@ -64,14 +64,22 @@ installer adds `rc-dashboard` to it), or reads the copy, which is its own accoun
 | `/etc/rc-dashboard/slack_webhook` | (yours, optional) a Slack webhook URL the hourly check posts to |
 | `/etc/rc-dashboard/fleet.env`, `pull_key` | (fleet) the nodes, and the key the copy logs in to them with |
 | `/var/lib/rc-dashboard/` | the dashboard's cache and history store, the Trend tab's roll-up table and the anonymization salt (`cache/`: [What to back up](#what-to-back-up)), and (fleet) the copy, `mirror/` |
-| `/opt/rc-dashboard/venv` | the dashboard's Python packages; the code runs from the checkout |
+| `/opt/rc-dashboard/venv` | the dashboard's Python packages: a release's wheel and the dependencies it pins, or, from a checkout, the dependencies alone (the code runs from the checkout) |
+| `/opt/rc-dashboard/kit` | (a release) the three scripts the units run: `check.sh`, `lib.sh` and `pull.py` |
 
-The installers run from a checkout of this repository, and the units run the code in it,
-so clone it where any account can read it, such as `/opt/agentic-hpc-dashboard`. They need
-`systemd`; the dashboard's host needs [uv](https://docs.astral.sh/uv/) and Node.js 20 or
-later to build (uv brings its own Python 3.11 or later where the host has none), and every
-host of a fleet needs `rsync`. Every installer prints what it does as it goes; `--plan`
-prints what it would do and changes nothing, and `--help` says what it is for.
+Install from a release: unpack its kit, `agentic-hpc-dashboard-X.Y.Z.tar.gz` from the
+[releases page](https://github.com/HarvardMadSys/agentic-hpc-dashboard/releases), where any
+account can read it and it can stay, such as `/opt/agentic-hpc-dashboard` (the collector's
+units run the collector in it), and run `deploy/rc-deploy` from there. The kit knows its
+release (`deploy/VERSION`): the dashboard's installer downloads that release's wheel and the
+dependencies it pins, checks each file against the release's checksums, and installs nothing
+that differs; nothing is built. A checkout of this repository works the same way, for a
+branch or a change of your own: the installer then builds the page and the units run the
+checkout's code. The installers need `systemd`; the dashboard's host needs
+[uv](https://docs.astral.sh/uv/) (which brings its own Python 3.11 or later where the host
+has none) and `curl`, and from a checkout Node.js 20 or later; every host of a fleet needs
+`rsync`. Every installer prints what it does as it goes; `--plan` prints what it would do
+and changes nothing, and `--help` says what it is for.
 
 ## The password
 
@@ -153,7 +161,7 @@ change:
 | `NODE_NOUN` | what every page calls the hosts (`RC_DASH_NODE_NOUN`) | "servers", or "login nodes" with `SLURM=yes` |
 | `SITE_NAME`, `SITE_DESCRIPTION` | the name every page shows, and a few words on what it watches (`RC_DASH_SITE_NAME`, `RC_DASH_SITE_DESC`) | "servers · live" |
 | `ANONYMIZE` | an alias for every user name (`RC_DASH_ANONYMIZE`) | off |
-| `MEMORY_MAX` (or `DASH_MEMORY_MAX`) | the dashboard's hard memory cap (the drop-in) | 8G |
+| `MEMORY_MAX` (or `DASH_MEMORY_MAX`) | the dashboard's hard memory cap (the drop-in) | half the host's memory, from 2G to 32G |
 | `FREE_MIN_GB` | (fleet) nothing copied below this much free space (`FLEET_FREE_MIN_GB`) | 10 |
 | `NODES` | (fleet) the nodes of the `fleet.env` the first install makes; after it, `add-node` and `remove-node` (a fleet emptied by `remove-node` stays empty) | |
 
@@ -173,21 +181,28 @@ The installers' own answers come from their environment, else from
 | `COLLECTOR_GROUP` | `ebpfm` | the group that may read it (saved as `EBPFM_GROUP`) |
 | `SERVICE_USER`, `PULL_USER` | `rc-dashboard`, `rc-pull` | the dashboard's account; the account the copy logs in to the nodes as |
 | `ETC`, `STATE`, `OPT` | `/etc/rc-dashboard`, `/var/lib/rc-dashboard`, `/opt/rc-dashboard` | the folders above (`install.env` stays at `/etc/rc-dashboard/install.env`, so a run finds it whatever `ETC` is) |
-| `MEMORY_MAX` | `8G` | the dashboard's hard memory cap, in `rc-dashboard.service.d/50-memory.conf`: written when there is none, or when `MEMORY_MAX` is given; a plain rerun leaves it, so `systemctl edit rc-dashboard` stays |
+| `MEMORY_MAX` | half the host's memory (to the nearest gigabyte), from 2G to 32G; 8G where `/proc/meminfo` cannot be read | the dashboard's hard memory cap, in `rc-dashboard.service.d/50-memory.conf`: written when there is none, or when `MEMORY_MAX` is given; a plain rerun leaves it, so `systemctl edit rc-dashboard` stays. The first install's choice is saved, and kept; a run says when the cap is more than the host has, which then caps nothing |
 
-Raise `MEMORY_MAX` with the fleet: [Memory and disk](../hpc/deploy/README.md#memory-and-disk)
+Past 32G, raise `MEMORY_MAX` with the fleet: [Memory and disk](../hpc/deploy/README.md#memory-and-disk)
 has measurements over 8 busy login nodes, and the settings that trade history for memory.
 
 ## Upgrading
 
+From a release's kit, unpack the new release's kit beside the old one, move your settings
+across, and apply:
+
 ```bash
-sudo deploy/rc-deploy upgrade               # git pull, then apply; --to v0.4.0 for a tag
+sudo tar -C /opt -xzf agentic-hpc-dashboard-1.1.0.tar.gz
+sudo cp /opt/agentic-hpc-dashboard-1.0.0/deploy/site.env /opt/agentic-hpc-dashboard-1.1.0/deploy/
+sudo /opt/agentic-hpc-dashboard-1.1.0/deploy/rc-deploy upgrade      # installs 1.1.0's wheel, rewrites the units
 ```
 
-or by hand:
+`upgrade` from a release's kit runs no git: it installs the kit's release and notes the one
+it replaced in `deploy/.rc-deploy-history`. From a checkout, it runs `git pull` first
+(`--to v1.1.0` for a tag) and builds what it pulled. By hand, the installer is the same
+command as the first install:
 
 ```bash
-cd /opt/agentic-hpc-dashboard && git pull
 sudo deploy/single/install.sh --no-bootstrap     # or, in a fleet: deploy/fleet/install-dashboard.sh,
                                                  # and install-node.sh --no-bootstrap on each node
 ```
@@ -195,18 +210,21 @@ sudo deploy/single/install.sh --no-bootstrap     # or, in a fleet: deploy/fleet/
 Every answer the first install was given is read back (install.env, `/etc/default/ebpfm`,
 the memory drop-in): an upgrade is the same command, with nothing to repeat.
 `--no-bootstrap` skips installing the collector's packages again; run it with bootstrap
-after a kernel upgrade, which needs matching headers. The dashboard is rebuilt and
+after a kernel upgrade, which needs matching headers. The dashboard is installed again and
 restarted. The collector's units are written again, but a running collector keeps
 running: its restart flushes every live process as `truncated`, so choose the moment,
-`sudo systemctl restart ebpfm ebpfm-node`. The exception is a collector started before its
+`sudo systemctl restart ebpfm` (both tiers: `ebpfm-node` is part of it). The exception is a collector started before its
 output had a group: it reads the group only at start, and would make every new file
 root's alone, the dashboard's reads included. The installer refuses to leave it so, and
 restarts it only when given `--restart`. An install made before `install.env` existed has
 its answers read from its units the first time (its folders, its memory cap).
 
-**Rolling back:** `sudo deploy/rc-deploy rollback` checks out the commit the last
-`rc-deploy upgrade` came from (noted in `/etc/rc-dashboard/rc-deploy-history`) and applies it; or
-check out any older commit and run the installer again.
+**Rolling back:** `sudo deploy/rc-deploy rollback` goes back to what the last `upgrade`
+replaced (noted in `/etc/rc-dashboard/rc-deploy-history`) and applies it. From a release's
+kit, that is the dashboard of the earlier release (or of the one `rollback v1.0.0` names),
+while the collector stays this kit's; the old kit's own `rc-deploy apply` takes both back.
+From a checkout, it is the earlier commit, or check out any older one and run the installer
+again.
 
 ## What to back up
 
@@ -239,7 +257,7 @@ the dashboard again on what it had.
 
 1. On the old host: `sudo deploy/rc-deploy backup --to rc.tar` (with `--settings`, as
    `rc-deploy` does). In a fleet with `FLEET_KEEP_DAYS=0`, copy `STATE/mirror` too.
-2. On the new host: clone, `sudo deploy/rc-deploy init`, then
+2. On the new host: unpack the release's kit (or clone), `sudo deploy/rc-deploy init`, then
    `sudo deploy/rc-deploy apply`. Unpack the settings over the new ones,
    `sudo tar -C /etc -xf rc.tar.settings.tar` (rc-deploy's settings and the pull key among
    them, so the nodes let the new host in), run `sudo deploy/rc-deploy apply` again, which reads them, then
@@ -284,7 +302,7 @@ when the installer's bootstrap wrote it (the two kernel settings stay on until t
 boot). `--purge` also takes `/etc/rc-dashboard`, `/var/lib/rc-dashboard`, the accounts, and
 the group and `/etc/default/ebpfm` when the installer made them. Run it on each node of a
 fleet too. It says what stays: always the collector's day-files (`/var/log/ebpfm*`,
-research data, yours to remove), the packages bootstrap installed, the checkout, and your
+research data, yours to remove), the packages bootstrap installed, the kit or checkout, and your
 `~/.config/rc-dashboard`. Take a backup first.
 
 ## Troubleshooting

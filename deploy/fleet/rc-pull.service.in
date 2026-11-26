@@ -7,7 +7,7 @@
 
 [Unit]
 Description=rc dashboard: copy each fleet node's collector files (deploy/fleet/pull.py)
-Documentation=file://@REPO@/deploy/fleet/README.md
+Documentation=@DOCS@/deploy/fleet/README.md
 After=network-online.target
 Wants=network-online.target
 
@@ -15,7 +15,7 @@ Wants=network-online.target
 Type=simple
 User=@USER@
 Group=@USER@
-ExecStart=@VENV@/bin/python @REPO@/deploy/fleet/pull.py --config @ETC@/fleet.env loop
+ExecStart=@VENV@/bin/python @KIT@/deploy/fleet/pull.py --config @ETC@/fleet.env loop
 # `systemctl reload rc-pull` reads fleet.env again: a node added starts, one taken out
 # stops, and no other node, nor the dashboard, restarts.
 ExecReload=/bin/kill -HUP $MAINPID

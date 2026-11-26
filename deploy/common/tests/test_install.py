@@ -1,6 +1,7 @@
 """The installers, run for real against a copy of the repository and folders here in place
 of /etc, /var/lib, /opt and the units' folder. `id` says root; systemctl, the account tools,
 chown, uv, npm and ssh-keygen are stand-ins that log their calls."""
+import hashlib
 import json
 import os
 import re
@@ -59,9 +60,25 @@ case "$1" in
 esac
 exit 0
 ''',
+    # uv sync (a checkout's venv), uv venv PATH (a release's), uv pip install (logged)
     "uv": STUB + r'''
-mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"
-ln -sf "$STUB_PYTHON" "$UV_PROJECT_ENVIRONMENT/bin/python"
+case "$1" in
+  venv) for last in "$@"; do :; done
+        mkdir -p "$last/bin"; ln -sf "$STUB_PYTHON" "$last/bin/python" ;;
+  pip) exit 0 ;;
+  *) mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"
+     ln -sf "$STUB_PYTHON" "$UV_PROJECT_ENVIRONMENT/bin/python" ;;
+esac
+''',
+    # a release's files, from STUB_RELEASE: curl ... -o OUT URL
+    "curl": STUB + r'''
+out= url=
+while [ $# -gt 0 ]; do
+  case $1 in -o) out=$2; shift 2 ;; -*) shift ;; *) url=$1; shift ;; esac
+done
+f="$STUB_RELEASE/$(basename "$url")"
+[ -n "${STUB_RELEASE:-}" ] && [ -f "$f" ] || exit 22
+cp "$f" "$out"
 ''',
     "npm": STUB + r'''
 [ "$1" = run ] && mkdir -p dist && echo "<html>" > dist/index.html
@@ -125,8 +142,10 @@ class Rig(unittest.TestCase):
             EBPFM_PACKAGED_UNIT=os.path.join(t, "no-package"), EBPF_DIR=self.ebpf,
             NODE_DIR=self.node, EBPFM_PID_DIR=os.path.join(t, "run"), HOME=t,
             INSTALL_ENV=os.path.join(t, "etc", "rc-dashboard-install", "install.env"),
-            EBPFM_SYSCTL_CONF=os.path.join(t, "etc", "sysctl.d", "99-ebpfm.conf"))
+            EBPFM_SYSCTL_CONF=os.path.join(t, "etc", "sysctl.d", "99-ebpfm.conf"),
+            RC_MEMINFO=os.path.join(t, "meminfo"))
         self.install_env = self.env["INSTALL_ENV"]
+        self.host_memory(16)        # half of it, 8G, is the dashboard's cap unless told
         for k in ("SLURM", "SITE_NAME", "SITE_DESCRIPTION", "NODE_NOUN", "ANONYMIZE", "MEMORY_MAX",
                   "DASH_MEMORY_MAX", "NODES", "FREE_MIN_GB", "SERVICE_USER", "PULL_USER",
                   "COLLECTOR_GROUP", "SUDO_USER", "PLAN"):
@@ -162,6 +181,12 @@ class Rig(unittest.TestCase):
             if m:
                 out[m.group(1)] = m.group(2)
         return out
+
+    def host_memory(self, gib, kb=None):
+        """The memory this host has, as /proc/meminfo says it: `gib` whole, or `kb` as a
+        real host says it, a little under its nominal size."""
+        with open(self.env["RC_MEMINFO"], "w") as fh:
+            fh.write("MemTotal:       %d kB\nMemFree:         1024 kB\n" % (kb or gib * 1048576))
 
     def memory(self):
         """The dashboard's cap, from its drop-in."""
@@ -368,6 +393,95 @@ class TestSingle(Rig):
         self.assertIn("usage", out)
 
 
+class TestRelease(Rig):
+    """--release vX.Y.Z: the dashboard as that release published it. Its wheel and pinned
+    requirements are each checked against the release's checksums before anything is
+    installed; no Node, npm or build runs here; and the service reads nothing from the
+    folder the kit was unpacked in, since the scripts its units run are copied to
+    OPT/kit."""
+
+    VER = "1.2.3"
+
+    def setUp(self):
+        super().setUp()
+        # a release's kit holds no dashboard code for the service to read
+        shutil.rmtree(os.path.join(self.repo, "dashboard"))
+        self.rel = os.path.join(self.tmp, "release")
+        os.makedirs(self.rel)
+        self.wheel = "rc_dashboard-%s-py3-none-any.whl" % self.VER
+        self.reqs = "rc_dashboard-%s-requirements.txt" % self.VER
+        for name, body in ((self.wheel, b"a wheel"), (self.reqs, b"fastapi==1 --hash=sha256:00\n")):
+            with open(os.path.join(self.rel, name), "wb") as fh:
+                fh.write(body)
+        self.sums()
+
+    def sums(self, leave_out=None, **wrong):
+        lines = []
+        for name in (self.wheel, self.reqs):
+            if name == leave_out:
+                continue
+            with open(os.path.join(self.rel, name), "rb") as fh:
+                digest = hashlib.sha256(fh.read()).hexdigest()
+            lines.append("%s  %s\n" % (wrong.get(name, digest), name))
+        with open(os.path.join(self.rel, "rc_dashboard-%s.sha256" % self.VER), "w") as fh:
+            fh.writelines(lines)
+
+    def install(self, *args, code=0, **env):
+        return self.run_script("deploy/fleet/install-dashboard.sh", *args, code=code,
+                               STUB_RELEASE=self.rel, **env)
+
+    def test_the_release_is_installed_and_no_unit_points_into_the_kit(self):
+        self.install("--release", "v" + self.VER)
+        calls = self.calls()
+        url = "https://github.com/HarvardMadSys/agentic-hpc-dashboard/releases/download/v1.2.3/"
+        for name in (self.wheel, self.reqs, "rc_dashboard-1.2.3.sha256"):
+            self.assertIn(url + name, calls)
+        self.assertIn("uv venv --allow-existing", calls)
+        self.assertRegex(calls, r"uv pip install .*--require-hashes -r \S+/%s" % re.escape(self.reqs))
+        self.assertRegex(calls, r"uv pip install .*--no-deps --reinstall \S+/%s" % re.escape(self.wheel))
+        self.assertNotIn("npm", calls)
+        self.assertNotIn("uv sync", calls)
+        kit = os.path.join(self.opt, "kit")
+        for f in ("deploy/common/check.sh", "deploy/common/lib.sh", "deploy/fleet/pull.py"):
+            self.assertTrue(os.path.isfile(os.path.join(kit, f)), f)
+        for unit in ("rc-dashboard.service", "rc-dashboard-check.service",
+                     "rc-dashboard-check.timer", "rc-pull.service"):
+            self.assertNotIn(self.repo, self.read(os.path.join(self.units, unit)), unit)
+        self.assertEqual(self.unit("rc-pull.service")["ExecStart"],
+                         ["%s/venv/bin/python %s/deploy/fleet/pull.py --config %s/fleet.env loop"
+                          % (self.opt, kit, self.etc)])
+        self.assertEqual(self.unit("rc-dashboard-check.service")["ExecStart"],
+                         ["%s/deploy/common/check.sh" % kit])
+        self.assertEqual(self.unit("rc-dashboard.service")["WorkingDirectory"], [self.state])
+        self.assertIn("https://github.com/HarvardMadSys/agentic-hpc-dashboard/blob/v1.2.3/"
+                      "deploy/README.md", self.read(os.path.join(self.units, "rc-dashboard.service")))
+        # the wheel carries the page: the service finds it in the package
+        self.assertNotIn("RC_DASH_STATIC_DIR", self.keys(os.path.join(self.etc, "paths.env")))
+        self.assertEqual(self.keys(self.install_env)["RELEASE"], "v1.2.3")
+
+    def test_a_file_the_release_did_not_publish_installs_nothing(self):
+        self.sums(**{self.wheel: "0" * 64})
+        out = self.install("--release", "1.2.3", code=1)
+        self.assertIn("is not the one it published", out)
+        self.assertNotIn("uv pip install", self.calls())
+        self.sums(leave_out=self.reqs)
+        out = self.install("--release", "1.2.3", code=1)
+        self.assertIn("names no %s" % self.reqs, out)
+        self.assertNotIn("uv pip install", self.calls())
+
+    def test_the_release_kept_in_install_env_is_installed_again(self):
+        self.install("--release", "v" + self.VER)
+        with open(self.log, "w"):
+            pass
+        self.install()                      # an upgrade, told nothing
+        self.assertIn("/v1.2.3/%s" % self.wheel, self.calls())
+        self.assertNotIn("npm", self.calls())
+
+    def test_a_name_that_is_no_release_is_refused(self):
+        out = self.install("--release", "latest", code=1)
+        self.assertIn("is not a release", out)
+
+
 class TestFleet(Rig):
     def install(self, *args, **env):
         return self.run_script("deploy/fleet/install-dashboard.sh", *args, **env)
@@ -500,6 +614,37 @@ class TestAnswersStay(Rig):
         self.install("--no-build")
         self.assertEqual(self.memory(), "20G")
         self.assertEqual(self.keys(self.install_env)["MEMORY_MAX"], "20G")
+
+    def test_the_cap_follows_the_host_unless_given(self):
+        """Untold, the cap is half the host's memory, from 2G to 32G, said as it is chosen;
+        a host whose memory cannot be read gets 8G, said too. MemTotal is a little under a
+        host's nominal size, so it is rounded to the nearest gigabyte first: a "16 GB" host
+        that says 15.5 GiB gets 8G, not 7G. Once chosen the cap is saved, so the next run
+        keeps it, and says when it is more than the host has."""
+        for gib, kb, said, cap in ((3, None, 3, "2G"), (24, None, 24, "12G"),
+                                   (16, 16265000, 16, "8G"), (15, 15400000, 15, "8G"),
+                                   (64, 65700000, 63, "32G"), (512, None, 512, "32G")):
+            with self.subTest(gib=gib, kb=kb):
+                for p in (self.install_env, os.path.join(self.units, "rc-dashboard.service.d",
+                                                         "50-memory.conf")):
+                    if os.path.exists(p):
+                        os.remove(p)
+                self.host_memory(gib, kb)
+                out = self.install()
+                self.assertIn("MEMORY_MAX=%s: half this host's %dG" % (cap, said), out)
+                self.assertEqual(self.memory(), cap)
+                self.assertNotIn("caps nothing", out)
+        self.host_memory(8)
+        out = self.install("--no-build")
+        self.assertNotIn("half this host's", out)
+        self.assertEqual(self.memory(), "32G")                   # saved, not chosen again
+        self.assertIn("warning: MEMORY_MAX=32G is more than this host's 8G, so it caps nothing", out)
+        os.remove(self.install_env)
+        os.remove(os.path.join(self.units, "rc-dashboard.service.d", "50-memory.conf"))
+        os.remove(self.env["RC_MEMINFO"])
+        out = self.install("--no-build")
+        self.assertEqual(self.memory(), "8G")
+        self.assertIn("MEMORY_MAX=8G: could not read %s" % self.env["RC_MEMINFO"], out)
 
     def test_a_folder_moved_by_hand_is_refused_not_followed(self):
         """Told another folder than the one the collector writes, a run stops: following
@@ -811,6 +956,27 @@ class TestCheck(Rig):
         self.assertNotIn("login01", out)
         out = self.check(dict(doc, level="warn", hosts=[]), rc=1, code=1)
         self.assertIn("warn: a collector is silent", out)
+
+    def test_the_status_runs_the_code_the_unit_runs(self):
+        """The status command runs in the unit's WorkingDirectory, so it imports what the
+        dashboard runs: a checkout's dashboard/ folder, or a release's state folder, where
+        only the venv's wheel imports. Not this script's own kit, which after a rollback is
+        another release's code."""
+        venv = os.path.join(self.tmp, "fake-venv")
+        os.makedirs(os.path.join(venv, "bin"))
+        py = os.path.join(venv, "bin", "python")
+        with open(py, "w") as fh:
+            fh.write('#!/bin/sh\nprintf \'{"level": "ok", "why": [], "hosts": [], "cwd": "%s"}\\n\' "$PWD"\n')
+        os.chmod(py, 0o755)
+        unit = os.path.join(self.units, "rc-dashboard.service")
+        out = self.run_script("deploy/common/check.sh", "--print", RC_CHECK_VENV=venv)
+        self.assertIn('"cwd": "%s/dashboard"' % self.repo, out)          # a checkout's
+        with open(unit) as fh:
+            text = fh.read()
+        with open(unit, "w") as fh:
+            fh.write(re.sub(r"(?m)^WorkingDirectory=.*$", "WorkingDirectory=%s" % self.state, text))
+        out = self.run_script("deploy/common/check.sh", "--print", RC_CHECK_VENV=venv)
+        self.assertIn('"cwd": "%s"' % self.state, out)                     # a release's
 
     def test_no_status_at_all_is_said(self):
         out = self.check("Traceback (most recent call last)", rc=1, code=3)
