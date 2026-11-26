@@ -94,6 +94,38 @@ class TestInstall(Rig):
         for d in (self.r, os.path.join(self.r, "releases"), os.path.join(self.r, "etc")):
             self.assertEqual(stat.S_IMODE(os.stat(d).st_mode), 0o700, d)
 
+    def test_the_tree_is_private_before_the_session_starts(self):
+        """Each window's start checks judge the copy's folders (check-local.sh copy_ok):
+        a node folder an earlier release left open is closed before the session starts,
+        not after it, when both windows would already have stopped at their first check."""
+        self.payload()
+        node = os.path.join(self.r, "data", "mirror", "n1")
+        os.makedirs(node)
+        os.chmod(node, 0o755)
+        with open(os.path.join(self.bin, "systemctl"), "w") as fh:
+            fh.write('#!/bin/bash\necho "systemctl $*" >> "$STUB_LOG"\n'
+                     'case "$*" in *start*) stat -c "node folder %%a" "%s" >> "$STUB_LOG" ;; esac\n'
+                     'exit 0\n' % node)
+        self.install(windows="no")
+        self.assertIn("systemctl --user restart rc-tmux.service", self.calls())
+        self.assertIn("node folder 700", self.calls())
+        self.assertNotIn("node folder 755", self.calls())
+
+    def test_a_chmod_that_does_not_finish_does_not_stop_the_deploy(self):
+        """The running copy can remove a file while chmod -R walks the copy (a sealed day's
+        plain twin), and GNU chmod then exits 1. Under set -e that stopped the deploy
+        before the start, the copy's SIGHUP and linger; it is said, and the deploy goes on."""
+        self.payload()
+        with open(os.path.join(self.bin, "chmod"), "w") as fh:
+            fh.write('#!/bin/bash\nreal=$(PATH=/usr/bin:/bin command -v chmod)\n'
+                     '"$real" "$@"; rc=$?\n[ "$1" = -R ] && exit 1\nexit $rc\n')
+        os.chmod(os.path.join(self.bin, "chmod"), 0o700)
+        out = self.install(windows="no")
+        self.assertIn("chmod -R did not finish", out)
+        self.assertIn("systemctl --user restart rc-tmux.service", self.calls())
+        self.assertIn("loginctl enable-linger", self.calls())
+        self.assertIn("installed %s" % SHA, out)
+
     def test_modes_are_left_alone_when_not_private(self):
         """PRIVATE_TREE=false: a deploy keeps the modes and ACLs the user set (an ACL that
         lets one more account read the copy, say). etc/, which holds the secrets, is still

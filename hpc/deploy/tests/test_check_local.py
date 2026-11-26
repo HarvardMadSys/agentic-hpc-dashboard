@@ -96,6 +96,80 @@ class TestStartChecks(unittest.TestCase):
         os.symlink(real, self.tmpd)
         self.assertEqual(self.run_check("--dirs-only"), 13)
 
+    def test_the_copys_folders_are_judged_where_they_are(self):
+        """data/mirror and its .state are pull.py's to make, as PRIVATE_TREE says, so a
+        start check does not make them; where they are, a link is refused, as for data/:
+        pull.py would take it for the folder, and the copy and its chmod would land
+        outside the deployment's folder. The message names the folder."""
+        self.assertEqual(self.run_check("--dirs-only"), 0)
+        mirror = os.path.join(self.tmpd, "data", "mirror")
+        self.assertFalse(os.path.exists(mirror))
+        self.assertEqual(self.run_check("--base-ok"), 0)
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        os.mkdir(elsewhere, 0o700)
+        os.symlink(elsewhere, mirror)
+        for flag in ("--dirs-only", "--base-ok"):
+            self.assertEqual(self.run_check(flag), 13, flag)
+            self.assertIn("UNSAFE %s " % mirror, self.err)
+        os.unlink(mirror)
+        os.mkdir(mirror, 0o700)
+        os.symlink(elsewhere, os.path.join(mirror, ".state"))
+        self.assertEqual(self.run_check("--base-ok"), 13)
+        self.assertIn("UNSAFE %s/.state " % mirror, self.err)
+        os.unlink(os.path.join(mirror, ".state"))
+        os.mkdir(os.path.join(mirror, ".state"), 0o755)
+        self.assertEqual(self.run_check("--base-ok"), 13, "an open .state")
+        os.chmod(os.path.join(mirror, ".state"), 0o700)
+        self.assertEqual(self.run_check("--base-ok"), 0)
+        self.assertEqual(self.run_check("--dirs-only"), 0)
+        self.not_private()
+        os.chmod(os.path.join(mirror, ".state"), 0o750)
+        self.assertEqual(self.run_check("--base-ok"), 0, "open is the user's business then")
+        os.rmdir(os.path.join(mirror, ".state"))
+        os.symlink(elsewhere, os.path.join(mirror, ".state"))
+        self.assertEqual(self.run_check("--base-ok"), 13, "a link is not, even then")
+
+    def test_a_link_at_a_nodes_folder_is_refused(self):
+        """In the flat layout each node's copy goes to data/mirror/<node>, rsync's
+        destination, which it follows: a link there would take that node's copy outside
+        the deployment's folder. A plain file there redirects nothing, and is left alone."""
+        self.assertEqual(self.run_check("--dirs-only"), 0)
+        mirror = os.path.join(self.tmpd, "data", "mirror")
+        os.mkdir(mirror, 0o700)
+        os.mkdir(os.path.join(mirror, "node01"), 0o700)
+        with open(os.path.join(mirror, "notes.txt"), "w") as fh:
+            fh.write("a file\n")
+        self.assertEqual(self.run_check("--base-ok"), 0)
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        os.mkdir(elsewhere, 0o700)
+        os.symlink(elsewhere, os.path.join(mirror, "node02"))
+        for flag in ("--dirs-only", "--base-ok"):
+            self.assertEqual(self.run_check(flag), 13, flag)
+            self.assertIn("UNSAFE %s " % os.path.join(mirror, "node02"), self.err)
+        os.unlink(os.path.join(mirror, "node02"))
+        os.chmod(os.path.join(mirror, "node01"), 0o755)
+        self.assertEqual(self.run_check("--base-ok"), 13, "an open node folder")
+        self.assertIn("UNSAFE %s " % os.path.join(mirror, "node01"), self.err)
+
+    def test_the_copys_folders_are_judged_by_both_checks_and_when_not_private(self):
+        """A linked .state stops --dirs-only as it stops --base-ok; and with
+        PRIVATE_TREE=false a linked data/mirror is still refused."""
+        self.assertEqual(self.run_check("--dirs-only"), 0)
+        mirror = os.path.join(self.tmpd, "data", "mirror")
+        elsewhere = os.path.join(self.tmp, "elsewhere")
+        os.mkdir(elsewhere, 0o700)
+        os.mkdir(mirror, 0o700)
+        os.symlink(elsewhere, os.path.join(mirror, ".state"))
+        self.assertEqual(self.run_check("--dirs-only"), 13)
+        self.assertIn("UNSAFE %s/.state " % mirror, self.err)
+        os.unlink(os.path.join(mirror, ".state"))
+        os.rmdir(mirror)
+        self.not_private()
+        os.symlink(elsewhere, mirror)
+        for flag in ("--dirs-only", "--base-ok"):
+            self.assertEqual(self.run_check(flag), 13, flag)
+            self.assertIn("UNSAFE %s " % mirror, self.err)
+
     def not_private(self):
         """site.env's PRIVATE_TREE=false, as deploy.sh renders it into etc/kit.env."""
         with open(os.path.join(self.etc, "kit.env"), "w") as fh:

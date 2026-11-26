@@ -181,6 +181,19 @@ class TestFullRun(Rig):
         self.assertNotIn("systemctl --user start", calls)
         self.assertNotIn("respawn-pane", calls)
 
+    def test_a_linked_copy_folder_is_unsafe_and_named(self):
+        """The hourly check judges the copy's folders as the start checks do (copy_ok),
+        and names the one that failed: here a node's folder linked out of DASH_ROOT."""
+        self.listeners(OURS)
+        real = os.path.join(self.tmp, "elsewhere")
+        os.mkdir(real, 0o700)
+        link = os.path.join(self.base, "mirror", "node02")
+        os.symlink(real, link)
+        code, out, calls = self.run_check(active="", panes="copy=1 dashboard=1")
+        self.assertEqual(code, 13)
+        self.assertIn("UNSAFE %s " % link, out)
+        self.assertNotIn("systemctl --user start", calls)
+
     def test_foreign_listener_while_dashboard_down(self):
         self.listeners("LISTEN 0 128 127.0.0.1:28090 0.0.0.0:*")
         code, out, calls = self.run_check(active="rc-tmux.service rc-fleet-copy.scope",
