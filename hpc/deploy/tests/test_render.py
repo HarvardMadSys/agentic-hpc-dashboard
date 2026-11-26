@@ -157,7 +157,7 @@ class TestRender(unittest.TestCase):
             code = ("import json, sys\nfrom rc_dashboard import config\n"
                     "c = config.load(config_path=sys.argv[1])\n"
                     "print(json.dumps([c.get('feeds.ebpf_node.roots'), c.get('site.name'),"
-                    " c.get('panels.day_cache'), c.get('ask.enabled')]))\n")
+                    " c.get('panels.day_cache'), 'ask' in c.tree]))\n")
             p = subprocess.run([sys.executable, "-c", code, fh.name], cwd=dash,
                                env=dict(os.environ, PYTHONPATH=dash), stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, universal_newlines=True)
@@ -168,17 +168,15 @@ class TestRender(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(json.loads(p.stdout), [[], "Login nodes · live", True, False])
 
-    def test_ask_follows_codex(self):
-        c = config()
-        self.assertIs(c["ask"]["enabled"], False)
-        self.assertEqual(c["ask"]["command"][7], "codex")
-        c = config(["CODEX=/opt/agents/bin/codex"])
-        self.assertIs(c["ask"]["enabled"], True)
-        self.assertEqual(c["ask"]["command"][0:7],
-                         ["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=1G"])
-        self.assertEqual(c["ask"]["command"][7], "/opt/agents/bin/codex")
+    def test_codex_from_an_older_site_env_is_ignored_and_said(self):
+        """Ask LLM is removed: an older site.env's CODEX deploys, with a warning that says
+        why, and renders no ask section and no agent's folder on the dashboard's PATH."""
+        p = run_render("dashboard.config.json.in", ["CODEX=/opt/agents/bin/codex"])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("CODEX is ignored: Ask LLM, which ran it, is removed", p.stderr)
+        self.assertNotIn("ask", json.loads(p.stdout))
         env = unit(render("rc-tmux.service.in", ["CODEX=/opt/agents/bin/codex"]))["Environment"]
-        self.assertEqual(env[0], "RC_DASH_PATH=/opt/agents/bin:/usr/local/bin:/usr/bin:/bin")
+        self.assertEqual(env[0], "RC_DASH_PATH=/usr/local/bin:/usr/bin:/bin")
 
     def test_site_name_profile_and_anonymize(self):
         c = config(['SITE_NAME=Cluster "A" · live', "RISK_PROFILE=risk-profiles/example.json",
@@ -238,7 +236,7 @@ class TestRender(unittest.TestCase):
         self.assertEqual(c["reducers"]["trajectories"]["max_sessions"], 150000)
         self.assertEqual(c["ingest"], {"workers": 2})        # one node
         self.assertEqual(c["site"], {"name": "", "description": ""})
-        self.assertIs(c["ask"]["enabled"], False)
+        self.assertNotIn("ask", c)
         self.assertEqual(s["free_min_gb"], 300)
 
     def test_values_are_checked(self):
@@ -246,7 +244,7 @@ class TestRender(unittest.TestCase):
                     "DASH_MEMORY_MAX=lots", "MEMORY_MAX=lots", "HISTORY_DAYS=abc", "DASH_PORT=eighty",
                     "DASH_PORT=99999", "MAX_WINDOWS=five", "PREWARM_MIN=1h", "FREE_MIN_GB=lots",
                     "DASH_ROOT=", "DASH_ROOT=rel/path", "DASH_SSH=", "DASH_SSH=a b@host",
-                    "SENDER_DIR=/a b", "SENDER_DIR=rel/dir", "CODEX=codex", "DASH_PYTHON=python 3",
+                    "SENDER_DIR=/a b", "SENDER_DIR=rel/dir", "DASH_PYTHON=python 3",
                     "SOURCE_USER=", "SOURCE_NODES=", "SOURCE_NODES=a -oProxyCommand=x",
                     "SOURCE_NODES=a a", "SOURCE_NODES=a b'c", "SOURCE_DOMAIN=a b",
                     "RISK_PROFILE=a b.json", "FREE_MIN_GB=-1", "HISTORY_DAYS=0",

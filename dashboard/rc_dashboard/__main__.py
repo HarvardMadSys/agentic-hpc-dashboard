@@ -108,7 +108,7 @@ class CLI(argparse.ArgumentParser):
         return False
 
 
-def _settings(p, serve=True):
+def _settings(p, serve=True, all_flag=True):
     """The flags of a command that reads the config: --config, and each setting
     that has a flag of its own, each also a config key and an RC_DASH_* variable."""
     g = p.add_argument_group("settings", textwrap.fill(
@@ -156,6 +156,8 @@ def _settings(p, serve=True):
     # (config.RETIRED_CLI: taken, named in a warning and ignored, so a unit or a
     # wrapper that still passes one starts).
     p.add_argument("--print-config", action="store_true", help=H)
+    if all_flag:     # print-config's own --all is its listed flag
+        p.add_argument("--all", action="store_true", dest="all_settings", help=H)
     p.add_argument("--check-feeds", action="store_true", help=H)
     p.add_argument("--sacct-dir", default=None, help=H)
     p.add_argument("--jobs-csv", default=None, help=H)
@@ -186,8 +188,8 @@ def build_parser():
 
     p = _cmd(sub, "serve", "the service (the default command)",
              "Serve the page and its API over the collector's files. Refuses to start without "
-             "a password (server.auth.password_hash_file or server.auth.password_hash) unless "
-             "--open.",
+             "a password (server.auth.password_hash_file or server.auth.password_hash) or the "
+             "site's single sign-on through a proxy (server.auth.proxy_header) unless --open.",
              "  rc-dashboard serve\n"
              "  rc-dashboard serve --config /etc/rc-dashboard/dashboard.toml --port 8081\n"
              "  RC_DASH_EBPF_ROOTS=/var/log/ebpfm rc-dashboard serve\n"
@@ -274,15 +276,21 @@ def build_parser():
     _settings(p, serve=False)
 
     p = _cmd(sub, "print-config", "the resolved settings, each with where it came from",
-             "Print every setting as JSON, each {_value, _origin}: a flag, a variable, the "
-             "config file, or the default; a path also lists what exists of it (_existing). "
-             "--reference prints every setting with its built-in default as TOML instead.",
+             "Print the settings a site chooses as JSON, each {_value, _origin}: a flag, a "
+             "variable, the config file, or the default; a path also lists what exists of it "
+             "(_existing). An internal setting (one that tunes the reducers, caches and "
+             "workers) is printed only when it is not at its default; --all prints every one. "
+             "--reference prints the settings a site chooses with their built-in defaults "
+             "and a line of help each, as TOML, instead.",
              "  rc-dashboard print-config\n"
-             "  rc-dashboard print-config --reference > dashboard.full.toml")
+             "  rc-dashboard print-config --reference\n"
+             "  rc-dashboard print-config --reference --all > dashboard.reference.toml")
     p.add_argument("--reference", action="store_true",
-                   help="every setting with its built-in default, as a TOML config file, with "
-                        "the RC_DASH_* variable of each")
-    _settings(p)
+                   help="the settings a site chooses with their built-in defaults, as a TOML "
+                        "config file, with a line of help and the RC_DASH_* variable of each")
+    p.add_argument("--all", action="store_true", dest="all_settings",
+                   help="every setting, the internal ones too")
+    _settings(p, all_flag=False)
 
     p = _cmd(sub, "new-password", "a password for the page, and its hash",
              "Make a 16-character password, write it and a netrc for curl to --dir (both "
@@ -306,8 +314,7 @@ def build_parser():
     p = _cmd(sub, "backup", "the state that cannot be rebuilt, into a tar",
              "Copy into one tar what is not rebuilt from the collector's files: the Trend "
              "tab's roll-up table (with SQLite's backup, so a running service is fine), the "
-             "anonymize salt, the session key, the config file, the password hash file, and "
-             "Ask's suggestions marked done.",
+             "anonymize salt, the session key, the config file and the password hash file.",
              "  rc-dashboard backup --to /backups/rc-dashboard-$(date +%F).tar")
     p.add_argument("--to", required=True, metavar="FILE.tar", help="the tar to write (0600)")
     p.add_argument("--force", action="store_true", help="replace a tar already there")
@@ -361,8 +368,9 @@ def build_parser():
 # What `serve` says when it will not start open (`refusal`).
 NO_PASSWORD = """\
 refusing to serve: there is no password (neither server.auth.password_hash_file nor
-server.auth.password_hash is set), so anyone who reaches port %(port)s -- on a login
-node, every user of it -- would read every user's commands. Either:
+server.auth.password_hash is set) and no single sign-on (server.auth.proxy_header is
+not set), so anyone who reaches port %(port)s -- on a login node, every user of it --
+would read every user's commands. Either:
   - make one: `rc-dashboard new-password --install ~/.config/rc-dashboard/password.hash`
     writes it to a file only you can read and its hash to that hash file. Name the hash
     file in the config, "server": {"auth": {"password_hash_file": "<file>"}} (in TOML,
@@ -370,16 +378,21 @@ node, every user of it -- would read every user's commands. Either:
     start again: the service reads the file again when it changes, so a new password
     needs no restart. Or put the hash itself in the config as
     "server": {"auth": {"password_hash": "<hash>"}} (or in RC_DASH_PASSWORD_HASH); or
+  - let the site's single sign-on sign readers in, through a reverse proxy in front of
+    the service: name the header it sets in "server": {"auth": {"proxy_header":
+    "X-Forwarded-User"}} (or in RC_DASH_PROXY_HEADER), and see dashboard/README.md,
+    "Single sign-on through a proxy"; or
   - serve it open anyway, on a machine only you can reach: --open (RC_DASH_OPEN=1,
     or "server": {"auth": {"open": true}}).
 """
 
 
 def refusal(cfg):
-    """Why the service must not start, or None. With no password it starts only
-    when told to (`server.auth.open`); a demo is (demo.configure)."""
+    """Why the service must not start, or None. With no password and no proxy
+    sign-in it starts only when told to (`server.auth.open`); a demo is
+    (demo.configure)."""
     from . import auth
-    if auth.has_password(cfg) or cfg.get("server.auth.open"):
+    if auth.has_password(cfg) or auth.has_proxy(cfg) or cfg.get("server.auth.open"):
         return None
     return NO_PASSWORD % {"port": cfg.get("server.port")}
 
@@ -478,7 +491,7 @@ def main(argv=None):
         from . import init_cmd
         return init_cmd.main(args)
     if cmd == "print-config" and getattr(args, "reference", False):
-        sys.stdout.write(configmod.reference_toml())
+        sys.stdout.write(configmod.reference_toml(getattr(args, "all_settings", False)))
         return 0
     if cmd == "restore" and not (args.print_config or args.check_feeds):
         # before the config is read: the config it reads may be the one it restores
@@ -510,7 +523,13 @@ def main(argv=None):
                 return 0
 
     if args.print_config or cmd == "print-config":
-        print(json.dumps(cfg.as_dict(with_origins=True), indent=1, default=str))
+        tree = cfg.as_dict(with_origins=True)
+        if not getattr(args, "all_settings", False):
+            tree, left = configmod.public_view(tree)
+            if left:
+                sys.stderr.write("print-config: %d internal settings at their defaults are left "
+                                 "out; --all prints them\n" % left)
+        print(json.dumps(tree, indent=1, default=str))
         return 0
     if args.check_feeds or cmd == "check-feeds":
         return check_feeds(cfg)
@@ -552,7 +571,7 @@ def main(argv=None):
 
     import uvicorn
     from . import clock
-    from .app import create_app
+    from .app import SERVER_OPTIONS, create_app
     # Before anything reads the time: the window registry starts building the
     # default window as the app is created.
     if cfg.get("clock.as_of"):
@@ -565,7 +584,13 @@ def main(argv=None):
         sys.stderr.write("demo: serving synthetic data on http://%s:%s\n"
                          % (cfg.get("server.host"), cfg.get("server.port")))
     app = create_app(cfg)
+    # Each way in that is on, a line each: the site's single sign-on, the password.
     gate = app.state.auth
+    proxy = getattr(app.state, "proxy", None)
+    if proxy is not None:
+        sys.stderr.write("sign-in on: single sign-on through a proxy, %s%s\n" % (
+            proxy.describe(), "" if gate is not None else
+            "; no password, so a request the proxy did not sign in is refused"))
     if gate is not None:
         sys.stderr.write("sign-in on: %s; a session lasts %g days\n" % (
             "the password's hash is read from %s, again when it changes and on SIGHUP"
@@ -575,14 +600,15 @@ def main(argv=None):
             # SIGHUP reads the hash file again (auth.Gate.reload). Only with a
             # hash file: otherwise SIGHUP still ends the service, as it did.
             signal.signal(signal.SIGHUP, lambda *_a: _hup(gate))
-    else:
+    elif proxy is None:
         sys.stderr.write("sign-in off (server.auth.open, set by %s): anyone who reaches port "
                          "%s reads the page\n" % (cfg.origin("server.auth.open"),
                                                   cfg.get("server.port")))
     # An open websocket (every page holds one) must not hold a restart hostage.
+    # SERVER_OPTIONS: `client` stays the connection's own address (auth.Peer).
     try:
         uvicorn.run(app, host=cfg.get("server.host"), port=int(cfg.get("server.port")),
-                    log_level="info", timeout_graceful_shutdown=3)
+                    log_level="info", timeout_graceful_shutdown=3, **SERVER_OPTIONS)
         code = 0
     except SystemExit as e:              # uvicorn's own exit, e.g. a failed bind
         code = e.code if isinstance(e.code, int) else 1

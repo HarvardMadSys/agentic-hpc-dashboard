@@ -11,8 +11,7 @@
 # start: RC_DASH_DEMO_DAYS (2 here) is how much history that is, and so how long
 # a cold start takes before the service listens. Every window is then built
 # from it, also before the port opens (panels.preprocess, set by `demo`). TZ is whose working day the
-# fictional people keep. Ask LLM is off: there is no agent CLI in the image, and
-# a public demo must not spend anyone's model budget.
+# fictional people keep.
 
 # ---- the page: built once, served by the service as static files
 FROM node:22-bookworm-slim AS web
@@ -49,7 +48,6 @@ ENV RC_DASH_HOST=0.0.0.0 \
     RC_DASH_PORT=8080 \
     RC_DASH_ALLOWED_HOSTS=* \
     RC_DASH_DEMO_DIR=/tmp/demo \
-    RC_DASH_DEMO_DAYS=2 \
-    RC_DASH_ASK=0
+    RC_DASH_DEMO_DAYS=2
 EXPOSE 8080
 CMD ["/app/dashboard/.venv/bin/python", "-m", "rc_dashboard", "demo"]

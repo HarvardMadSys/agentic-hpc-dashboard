@@ -9,7 +9,7 @@
  * Also here (user, 2026-11-17): the resource and I/O panels an operator does
  * not act on -- per-class quantiles, kernel delay accounting, the page-cache
  * series -- each a researcher's table or a repeat of a Live chart. They keep
- * their titles, so a citation of one still lands on it (lib/cites.ts).
+ * their titles, so a link to one still lands on it (lib/cites.ts).
  */
 import { memo } from 'react';
 import type { Cls } from '../api/types';

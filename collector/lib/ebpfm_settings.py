@@ -469,8 +469,8 @@ _HEADER = """\
 # script (no export, no $VAR expansion, no command substitution). `#` starts a
 # comment. Every setting is listed, commented out at its default, except
 # EBPFM_MIN_UID (see its note). Each tier reads its settings when it starts:
-# after an edit, `systemctl restart ebpfm ebpfm-node` (the eBPF tier writes every
-# live process as `truncated` when it stops). `ebpfm config` shows what applies
+# after an edit, `systemctl restart ebpfm`, which restarts both tiers (the eBPF tier
+# writes every live process as `truncated` when it stops). `ebpfm config` shows what applies
 # and where each value came from, and refuses a value a tier cannot use.
 #
 # Generated from collector/lib/ebpfm_settings.py

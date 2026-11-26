@@ -27,6 +27,7 @@
     "check:hpc": "node --test mock/check_hpc.mjs",
     "check:io": "node --test mock/check_io.mjs",
     "check:tabs": "node --test mock/check_tabs.mjs",
+    "check:summary": "node --test mock/check_summary.mjs",
     "check:internal": "node --test mock/check_internal.mjs",
     "check:ux": "node --test mock/check_ux.mjs"
   },

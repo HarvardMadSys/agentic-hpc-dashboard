@@ -11,14 +11,11 @@ import type {
   FeedsResponse,
   LiveResponse,
   LiveUserDetail,
-  AskContext,
-  AskInfo,
-  AskJob,
-  DoneList,
   IoCmdJob,
   IoSort,
   LiveUsers,
   PanelsResponse,
+  StatusDoc,
   TrajOrder,
   TrajRank,
   Trajectories,
@@ -85,6 +82,8 @@ function win(minutes: number | null | undefined, sep = '?'): string {
 export const getConfig = (s?: AbortSignal) => get<ConfigTree>('/config', { signal: s });
 export const getFeeds = (s?: AbortSignal) => get<FeedsResponse>('/feeds', { signal: s });
 export const getCollectors = (s?: AbortSignal) => get<CollectorsResponse>('/collectors', { signal: s });
+/** Is the collection working: each host's verdict and the level they roll up to (Summary). */
+export const getStatus = (s?: AbortSignal) => get<StatusDoc>('/status', { signal: s });
 export const getWindows = (s?: AbortSignal) => get<WindowsResponse>('/windows', { signal: s });
 
 /** `&user=..&agent_type=..`, or nothing when the filter is empty -- so an
@@ -111,64 +110,6 @@ export const getLiveUsers = (q: string, minutes?: number | null, s?: AbortSignal
     `/live/users?q=${encodeURIComponent(q)}&limit=500${running ? `&running=${encodeURIComponent(running)}` : ''}${win(minutes, '&')}`,
     { signal: s },
   );
-export const getAskInfo = (s?: AbortSignal) => get<AskInfo>('/ask', { signal: s });
-export const getAskJob = (id: string, s?: AbortSignal) =>
-  get<AskJob>(`/ask/${encodeURIComponent(id)}`, { signal: s });
-/** Start a question; the answer is polled with getAskJob. `context` narrows it
- *  to one panel or one session; `w`, the page's filter, rides in the query
- *  string as on /panels, so a panel's question reads the view on screen. */
-export async function postAsk(
-  question: string,
-  minutes: number | null | undefined,
-  history: { q: string; a: string }[],
-  context?: AskContext,
-  w?: Who | null,
-): Promise<AskJob> {
-  const q = who(w).replace(/^&/, '');
-  const r = await fetch(API_BASE + '/ask' + (q ? '?' + q : ''), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ question, window_min: minutes ?? null, history, context: context ?? null }),
-  });
-  if (!r.ok) {
-    signInAgain(r.status);
-    let detail = r.statusText;
-    try {
-      detail = ((await r.json()) as { detail?: string }).detail ?? detail;
-    } catch {
-      /* not JSON: the status is the message */
-    }
-    throw new ApiError(API_BASE + '/ask', r.status, detail);
-  }
-  return (await r.json()) as AskJob;
-}
-
-/** The operator's suggestions marked done: the service keeps them for
- *  everyone, until undone. A mark names an answer and a suggestion in it.
- *  JSON either way, body or not: the service takes nothing else on a call
- *  that changes something (rc_dashboard/guard.py, `JsonOnly`). */
-export const getDone = (s?: AbortSignal) => get<DoneList>('/suggestions/done', { signal: s });
-async function doneCall(path: string, method: 'POST' | 'DELETE', body?: unknown): Promise<DoneList> {
-  const r = await fetch(API_BASE + path, {
-    method,
-    headers: { 'content-type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!r.ok) {
-    signInAgain(r.status);
-    let detail = r.statusText;
-    try {
-      detail = ((await r.json()) as { detail?: string }).detail ?? detail;
-    } catch {
-      /* not JSON: the status is the message */
-    }
-    throw new ApiError(API_BASE + path, r.status, detail);
-  }
-  return (await r.json()) as DoneList;
-}
-export const markDone = (job: string, index: number) => doneCall('/suggestions/done', 'POST', { job, index });
-export const undoDone = (id: string) => doneCall(`/suggestions/done/${encodeURIComponent(id)}`, 'DELETE');
-
 export const getLiveUser = (name: string, minutes?: number | null, s?: AbortSignal, n = 25) =>
   get<LiveUserDetail>(`/live/user?name=${encodeURIComponent(name)}&n=${n}${win(minutes, '&')}`, { signal: s });
 

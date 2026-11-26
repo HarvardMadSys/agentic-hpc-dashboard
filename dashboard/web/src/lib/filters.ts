@@ -68,9 +68,11 @@ export interface UrlState extends Filters {
 }
 
 /** The value at which each UI key is left out of the URL, so a default-valued
- *  view produces a clean query string instead of `?tab=live&rank=recent`. */
+ *  view produces a clean query string instead of `?rank=recent&torder=oldest`.
+ *  The tab is always written: every link the page writes carries its classes,
+ *  and one with no tab was written while Live was the first tab (`parseUrl`). */
 const UI_OMIT_AT: { readonly [K in UiKey]: UrlState[K] } = {
-  tab: 'live',
+  tab: '',
   rank: 'recent',
   win: null,
   traj: null,
@@ -97,6 +99,16 @@ const TAB_ALIAS: Record<string, string> = table({
   hpc: 'slurm',
 });
 
+/** The first tab: the bare address opens it, and so does a tab that is not
+ *  there (App.tsx). */
+export const FIRST_TAB = 'summary';
+
+/** The page's own query keys besides `tab`. Every link the page writes holds
+ *  some (its classes, at least), and until Summary was the first tab one that
+ *  showed Live held no `tab`: such a link opens Live, as it always did. The
+ *  bare address, with none of them, opens the first tab. */
+const PAGE_KEYS = ['class', 'user', 'atype', 'agent_type', 'rank', 'win', 'traj', 'tfrom', 'tuser', 'torder', 'portrait'];
+
 /** How a filter asks for the processes the collector gave no agent type. */
 export const UNTAGGED = 'none';
 const UNTAGGED_ALIAS = new Set(['none', 'None', 'null', 'untagged']);
@@ -121,6 +133,10 @@ export function parseUrl(search: string): UrlState {
   const rank = p.get('rank');
   const win = Number(p.get('win'));
   const tfrom = Number(p.get('tfrom'));
+  // a tab by its name, an old name by the tab it is now; no name at all, Live
+  // for a link the page wrote before Summary was first, else the first tab
+  const named = p.get('tab') || '';
+  const opened = named ? TAB_ALIAS[named] ?? named : PAGE_KEYS.some((k) => p.has(k)) ? 'live' : FIRST_TAB;
   return {
     // At least one class is always selected: an empty selection would silently
     // render an all-zero dashboard, which reads as "no activity".
@@ -134,9 +150,7 @@ export function parseUrl(search: string): UrlState {
     // A link to the Agents tab that opened a session, or narrowed the list to
     // one user's, was a link to its sessions, the tab's last part then: it
     // opens the Sessions sub-tab they are now.
-    tab: ((t) => (t === 'agents' && (p.get('traj') || p.get('tuser')) ? 'sessions' : t))(
-      TAB_ALIAS[p.get('tab') ?? ''] ?? (p.get('tab') || 'live'),
-    ),
+    tab: ((t) => (t === 'agents' && (p.get('traj') || p.get('tuser')) ? 'sessions' : t))(opened),
     rank: (rank && RANKS.has(rank) ? rank : 'recent') as TrajRank,
     // Nonsense in the query string falls back to the default rather than being
     // clamped to a number nobody asked for. The backend clamps what it is sent.

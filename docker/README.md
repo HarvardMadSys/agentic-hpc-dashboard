@@ -99,8 +99,7 @@ docker run --rm -p 8080:8080 rc-dashboard-demo          # http://127.0.0.1:8080
 No collector, no cluster, no root. The feed is written afresh inside the container at each
 start, two days of it, and every window is built from it before the port opens, so a cold
 start takes a while. The page is built in a Node 22 stage, and the service runs on
-Python 3.13. Ask LLM is off: the image has no agent CLI, and a public demo must not spend
-anyone's model budget. It serves without a password and answers under any host name, since
+Python 3.13. It serves without a password and answers under any host name, since
 its data is made up; the public copy's Cloudflare Worker asks for a password of its own.
 
 ## The dashboard
