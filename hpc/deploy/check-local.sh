@@ -4,8 +4,9 @@
 #
 #   check-local.sh --dirs-only   the folder and its cache/, logs/, and data/ are real 700
 #                                folders owned by this account (created if missing), and
-#                                so are the copy's data/mirror and data/mirror/.state
-#                                where they are (pull.py makes them); exit 0 or 13
+#                                so are the copy's data/mirror, data/mirror/.state and
+#                                each node's folder in it where they are (pull.py makes
+#                                them); exit 0 or 13
 #   check-local.sh --base-ok     the folder and its data/ (where the copy goes) are real
 #                                700 folders owned by this account, and the copy's
 #                                folders where they are; exit 0 or 13
@@ -91,14 +92,23 @@ own_dir() {      # the same, made if missing
   fi
   private_dir "$1"
 }
-# The copy's folder and its state (fleet.env's FLEET_MIRROR, under data/), which pull.py
-# makes as PRIVATE_TREE says, so they are not made here: where they are, they are judged
-# as data/ is. pull.py takes a link there for the folder, so the copy, and the chmod it
-# gives a private one, would land outside the deployment's folder.
+# The copy's folder, its state, and each node's folder in it (fleet.env's FLEET_MIRROR,
+# under data/), which pull.py makes as PRIVATE_TREE says, so they are not made here: where
+# they are, they are judged as data/ is. pull.py and its rsync take a link at any of them
+# for the folder, so the copy, its lock, and the chmod a private copy gets would land
+# outside the deployment's folder. A link one level further down (a node's day folder)
+# rsync replaces with a real folder, as it runs without --keep-dirlinks; a plain file in
+# the copy's folder redirects nothing (pull.py cannot make a node's folder there, and says
+# so), so files are left alone. This is checked before each start of either window and
+# every hour: a link made while the copy runs is found then, not refused as it is made. It
+# keeps a mistake from moving the copy; it is no guard against this account itself.
 copy_ok() {
   local d
   for d in "$BASE/mirror" "$BASE/mirror/.state"; do
     if [ -e "$d" ] || [ -L "$d" ]; then private_dir "$d" || return 1; fi
+  done
+  for d in "$BASE"/mirror/*; do        # each node's folder; .state is judged above
+    if [ -L "$d" ] || [ -d "$d" ]; then private_dir "$d" || return 1; fi
   done
 }
 dirs_ok() { own_dir "$RUN" && own_dir "$RUN/cache" && own_dir "$RUN/logs" && own_dir "$BASE" && copy_ok; }
@@ -355,7 +365,8 @@ fi
 # a node whose passes have failed for over an hour, one never copied well, or one with no
 # good pass for an hour (pull.py status's STALE, which a stopped copy leaves).
 # RC_PULL_CMD stands in for the command (tests).
-if base_ok && [ -d "$BASE/mirror/.state" ] && [ ! -L "$BASE/mirror/.state" ]; then
+# base_ok has judged .state where it is (copy_ok): this asks only whether it is there yet.
+if base_ok && [ -d "$BASE/mirror/.state" ]; then
   if [ -n "${RC_PULL_CMD:-}" ]; then
     pulled=$(bash -c "$RC_PULL_CMD" 2>/dev/null)
   else

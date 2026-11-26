@@ -106,6 +106,13 @@ again=0
 for w in copy dashboard; do
   tmux -L rc-dashboard list-panes -t "rc-dashboard:$w" >/dev/null 2>&1 || again=1
 done
+# pip writes executables and libraries with fixed modes (755, 711) whatever the umask;
+# owner-only everywhere keeps the hourly audit quiet and the tree private. Done before the
+# session starts: each window's start checks judge the folders (check-local.sh), and one
+# that an earlier release left open would stop both until the next hourly check.
+if [ "$private" = yes ]; then
+  chmod -R go-rwx "$R"
+fi
 # Start the session (a no-op when it runs), then turn linger on, so it outlives this
 # login.
 if [ "$restart" = 1 ] || [ "$again" = 1 ]; then
@@ -126,10 +133,5 @@ else
   esac
 fi
 loginctl enable-linger 2>/dev/null || true
-# pip writes executables and libraries with fixed modes (755, 711) whatever the umask;
-# owner-only everywhere keeps the hourly audit quiet and the tree private.
-if [ "$private" = yes ]; then
-  chmod -R go-rwx "$R"
-fi
 rm -rf "$inc" 2>/dev/null || echo "note: could not remove $inc yet (NFS); harmless"
 echo "installed $sha"

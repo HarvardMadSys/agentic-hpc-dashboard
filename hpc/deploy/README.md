@@ -167,8 +167,8 @@ from `~/.config/rc-dashboard/password` over a channel you trust.
 
 With `PRIVATE_TREE=true` (the default), everything is mode 700 or 600. Before each start of
 either process, its window checks that `DASH_ROOT` and its `data` folder are this account's
-own 700 folders, not symlinks, and the copy's `data/mirror` and `data/mirror/.state` too where
-they are, and stops until they are (`check-local.sh --base-ok`;
+own 700 folders, not symlinks, and the copy's `data/mirror`, its `.state` and each node's
+folder in it too where they are, and stops until they are (`check-local.sh --base-ok`;
 [Troubleshooting](#troubleshooting)). A link there would take the copy out of `DASH_ROOT`: to
 keep the copy on another disk, move all of `DASH_ROOT` there.
 
