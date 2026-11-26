@@ -1,14 +1,14 @@
 # Rendered by deploy/common/install-dashboard.sh into /etc/systemd/system/rc-dashboard.service.
 # Edit the template and run the installer again, so the two never diverge.
 #
-# The dashboard (rc_dashboard serve), as its own account, from the checkout at @REPO@. Its
-# settings are dashboard.env (yours) and paths.env (the installer's, which wins: where it
-# reads and keeps things, and the password's hash file). Each start refills its history
-# from the feeds it reads.
+# The dashboard (rc_dashboard serve), as its own account: a release's wheel installed in
+# @VENV@, or the checkout's code (its WorkingDirectory). Its settings are dashboard.env
+# (yours) and paths.env (the installer's, which wins: where it reads and keeps things, and
+# the password's hash file). Each start refills its history from the feeds it reads.
 
 [Unit]
 Description=rc dashboard: what coding agents do on the watched servers
-Documentation=file://@REPO@/deploy/README.md
+Documentation=@DOCS@/deploy/README.md
 After=network-online.target
 Wants=network-online.target
 # A dashboard that cannot start (no password hash, a feed path it may not read) stops
@@ -22,7 +22,7 @@ User=@USER@
 Group=@USER@
 # The group the collector writes for, on a host whose own collector it reads (single).
 SupplementaryGroups=@GROUP@
-WorkingDirectory=@REPO@/dashboard
+WorkingDirectory=@WORKDIR@
 EnvironmentFile=@ETC@/dashboard.env
 EnvironmentFile=@ETC@/paths.env
 ExecStart=@VENV@/bin/python -m rc_dashboard serve
