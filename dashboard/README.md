@@ -586,8 +586,11 @@ nothing older. A wider window's run, begun further back, reduces every one of th
 its own join state, not only the first (each saved hour says where its join state began), and a run
 stopped part-way resumes where it stopped. So the saved hours are one chain, begun at the edge hour
 of the widest window built so far: a 7 d window built after the 24 h one is the 7 d window built
-alone, and a narrower window is its slice of that chain from its next build after a wider one. It
-costs the narrower window's hours once more, once. Before, only the first of them was reduced again,
+alone. A narrower window is not the same in every cache: its joins reach back to its own edge hour
+until a wider window is built, and from its next build after that it is its slice of the wider
+chain, its figures moved once. A parent whose children exited before its edge then has them taken
+off, and their bytes, counted in the wider window at the children's own exits, are in no bin of the
+narrower one. Its hours are reduced once more, once. Before, only the first of them was reduced again,
 and a parent that exited in the others kept the bytes of children that exited before the day began,
 which a 7 d window built after the 24 h one then counted twice (the
 [store spike](../docs/design/store-spike.md#results) found it). An hour closes once the newest record

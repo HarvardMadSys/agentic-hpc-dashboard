@@ -40,8 +40,14 @@ its hours begins (its edge hour), afresh, so a narrower window's hours,
 saved first, were reduced from a join state that began later than a wider
 window's run that reaches them. Each hour says where its join state began
 (`began`), and that run reduces every one of them again with its own
-(`HourStore.ensure`): the saved hours are one chain, whichever window was
-built first, and a window's figures do not depend on its cache's history.
+(`HourStore.ensure`). So the saved hours are one chain, begun at the edge
+hour of the widest window built so far, and the widest window (retention's)
+is the same whichever window was built first. A narrower window is not: its
+joins reach back to its own edge hour until a wider window is built, and from
+its next build after that it is its slice of the wider chain, its figures
+moved once. A parent whose children exited before its edge then has them
+taken off, and their bytes, counted at their own exits in the wider window,
+are in no bin of the narrower one.
 
 **Own figures.** The one join a reader that skips records cannot make is the
 one that takes a process's reaped children's disk bytes off its own
@@ -2035,8 +2041,9 @@ def build(reg, view):
 
     def reducing(i, n, records=0, bytes=0):
         # `n` is every hour the call reduces, as far as it knows them: the missing ones,
-        # and the saved ones after a run that it reduces again (`ensure`)
-        weight["total"] = max(weight["total"], n + 2 + 0.1 * len(parts))
+        # and the saved ones after a run that it reduces again (`ensure`), less those it
+        # counted twice
+        weight["total"] = n + 2 + 0.1 * len(parts)
         step(1, records, bytes)
 
     again = store.stats["hours_reduced_again"]

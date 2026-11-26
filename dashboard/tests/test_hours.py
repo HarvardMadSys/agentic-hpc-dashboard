@@ -597,8 +597,10 @@ class BuildOrderTest(HourCase):
 
     alice's `claude` 100 read 5 MB itself, and the `cat` 111 it ran read 1000 MB and exited in
     the hour before the day window's edge hour; claude exits two hours into the day, so the
-    kernel's figure on its exit is 1005 MB. Its own is 5 MB however the week's hours came to be
-    saved."""
+    kernel's figure on its exit is 1005 MB. Its own is 5 MB in the week however the week's
+    hours came to be saved. The saved hours are one chain, begun at the widest window built so
+    far: the day built first reads 1005 MB, its joins reaching back to its own edge hour only,
+    and from its next build after the week 5 MB, its slice of the week's chain."""
 
     WEEK, DAY_W, HOUR_W = 10080, 1440, 60
 
@@ -651,11 +653,22 @@ class BuildOrderTest(HourCase):
         self.same(want, week)
         # its own hours, then every one of the day's again, from the week's join state
         self.assertIn("reducing 144 new hour(s) and 24 again", week.cache["note"])
-        # a restart over that cache: the saved build resumed, then the saved hours merged
-        self.same(want, self.build(self.registry(cfg), self.WEEK))
-        merged = self.build(self.registry(self.cfg(cache_windows=False)), self.WEEK)
+        # The day's next build is its slice of the week's chain: the cat is taken off claude
+        # in it now, and its 1000 MB, counted in the week at its own exit, is in no bin of the
+        # day. The day's figures moved once, when the week was built, and stay there.
+        day = self.build(reg, self.DAY_W)
+        self.assertEqual(self.own_rd(day, self.t_claude), 5.0)
+        series = day.payload["resources"]["series"]
+        self.assertNotIn(self.t_cat // series["bin_s"] * series["bin_s"], series["t"])
+        # a restart over that cache: the saved builds resumed, then the saved hours merged
+        again = self.registry(cfg)
+        self.same(want, self.build(again, self.WEEK))
+        self.assertEqual(self.own_rd(self.build(again, self.DAY_W), self.t_claude), 5.0)
+        hours_only = self.registry(self.cfg(cache_windows=False))
+        merged = self.build(hours_only, self.WEEK)
         self.assertIn("reducing 0 new hour", merged.cache["note"])
         self.same(want, merged)
+        self.assertEqual(self.own_rd(self.build(hours_only, self.DAY_W), self.t_claude), 5.0)
 
     def stopped_week(self, cfg):
         """The day built, then the week, stopped once it has reduced its own hours and the day's

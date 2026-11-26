@@ -85,6 +85,16 @@ restart equals its cold build, and the SQL still gives the service's numbers (th
 equal, 60 ties). The cost is the day's hours once more: built after the day, the week reduces 168
 hours, as many as it does built alone, where it reduced 145 before the fix.
 
+What is left: the saved hours are one chain, begun at the edge hour of the widest window built so
+far, so the week (retention's) holds still and a narrower window moves once. Built first, the day
+takes off only the children that exited after its own edge hour; from its next build after a week
+it is the week's slice, and a parent whose children exited before the day's edge has them taken
+off, their bytes then in no bin of the day (in `BuildOrderTest`, the `claude` reads 1005 MB in the
+day built first and 5 MB in every build after the week). Beginning every chain at retention's edge,
+as `panels.preprocess` does, would leave no window moving with what was built before it, at the
+cost of reducing all of retention before the first window shows: seven times the day's hours, and
+here 45.9 s against the day's 7.8 s.
+
 ## What it does not show
 
 - **Scale.** The feed is about a thousandth of a busy site's: 8 login nodes write 35 to 47 GB of
@@ -114,9 +124,10 @@ in less memory than the service's whole process, with no cache to keep or invali
 enough to justify the next experiment and not enough to replace anything:
 
 1. Find out why the service's week window depends on what its cache built before (above), and fix
-   it; until then, any comparison is against a moving target. Done: a wider window's run reduced
-   again only the first of the hours a narrower window had saved, and now reduces them all (above),
-   so the target holds still.
+   it; until then, any comparison is against a moving target. Done for the week: a wider window's
+   run reduced again only the first of the hours a narrower window had saved, and now reduces them
+   all (above), so the week holds still. A narrower window still moves once, when a wider one is
+   first built, unless every chain begins at retention's edge (above): compare it after the week.
 2. Run the spike on a captured feed at a site's scale (`--reuse` over a copy of real day-files),
    with the history store converted, for the long windows only.
 3. If it holds, move the long-window aggregate families (Resources, the Trend tab's daily sums) to
