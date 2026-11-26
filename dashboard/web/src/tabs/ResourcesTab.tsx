@@ -307,8 +307,8 @@ function FaultTable({
  * The per-class quantile and kernel-accounting tables answer a researcher's
  * question, so they sit on Internal (`part="internal"`), with the I/O panels
  * that are the same kind of table. A chart that repeated one of the window's
- * series is not drawn here or there. Same payloads, same titles, so a citation lands on
- * whichever tab draws the panel (lib/cites.ts). */
+ * series is not drawn here or there. Same payloads, same titles, so a link to a panel
+ * lands on whichever tab draws it (lib/cites.ts). */
 export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', live = null }: {
   P: Panels;
   cls: Cls[];
@@ -357,7 +357,6 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', 
       <div className="grid wide">
         <Panel
           title="Per-process distributions"
-          ask={[{ panel: 'resources', keys: ['by_class', 'top', 'oncpu_set_aside', 'scope', 'cpu_basis'] }]}
           id="sec-per-event-distributions"
           p={r}
           span
@@ -370,7 +369,6 @@ export const ResourcesTab = memo(function ResourcesTab({ P, cls, part = 'main', 
 
         <Panel
           title="Faults, delays, and D-state"
-          ask={[{ panel: 'resources', keys: ['by_class', 'stall_by_tool', 'impossible_waits', 'impossible_basis'] }]}
           p={r}
           empty={!have.some((c) => byClass[c]?.faults || byClass[c]?.delays || byClass[c]?.dstate)}
           emptyWhat="delay accounting was not readable for the selection"
@@ -392,7 +390,6 @@ function WorstPanel({ r }: { r: Resources }) {
   return (
     <Panel
       title="Worst individual processes"
-      ask={[{ panel: 'resources', keys: ['worst_stall', 'worst_fault', 'worst_wait'] }]}
       p={r}
       span
       empty={

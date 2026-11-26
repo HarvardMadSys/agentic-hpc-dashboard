@@ -34,7 +34,6 @@ from . import status as statusmod
 from . import windows as winmod
 from .aggregator import Aggregator
 from .anonymize import Verbatim
-from .ask import unmasked_refusal
 from .export import parse_filters
 from .iocmds import PAGE_MAX as iocmd_page_max, IoCommands, agent_keys
 from .reducers import phase_names, phase_rules
@@ -83,33 +82,6 @@ def view_filter(request, anon=None):
         return winmod.ViewFilter.from_params(dealias(query_lists(request), anon))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
-# The largest body a route that changes something reads: a question, the last
-# turns with their answers, and what it is about.
-MAX_BODY = 1 << 20
-
-
-async def json_body(request, limit=MAX_BODY):
-    """The request's body as a JSON object (guard.JsonOnly has seen it say it is
-    JSON): a 413 past `limit` bytes, before they are all read, and a 400 for
-    anything that is not an object -- never a 500."""
-    size = request.headers.get("content-length") or ""
-    if size.isdigit() and int(size) > limit:
-        raise HTTPException(413, "the body is over %d bytes" % limit)
-    chunks, n = [], 0
-    async for chunk in request.stream():
-        n += len(chunk)
-        if n > limit:
-            raise HTTPException(413, "the body is over %d bytes" % limit)
-        chunks.append(chunk)
-    try:
-        body = json.loads(b"".join(chunks))
-    except (ValueError, RecursionError):
-        raise HTTPException(400, "the body is not JSON")
-    if not isinstance(body, dict):
-        raise HTTPException(400, "the body is not a JSON object")
-    return body
 
 
 # The per-record memos (each a pure function of its text, memoized up to a
@@ -591,75 +563,6 @@ def create_app(cfg):
     def api_feeds(request: Request):
         return respond(agg.refresh_feeds(), request=request)
 
-    # Chat with an LLM: the agent this service would run, a question, a job.
-    @app.get("/api/ask")
-    def api_ask_info():
-        return agg.ask_info()
-
-    # `context` narrows a question to one panel or one session (Aggregator.ask);
-    # the page's `user` / `agent_type` filter rides in the query string, as on
-    # /api/panels, so a panel's question reads the view the reader is looking at.
-    @app.post("/api/ask")
-    async def api_ask(request: Request):
-        body = await json_body(request)
-        question, minutes, ctx = body.get("question"), body.get("window_min"), body.get("context")
-        history = body.get("history") or []
-        turns = [h for h in history if isinstance(h, dict)][-3:] if isinstance(history, list) else None
-        text = (str, type(None))
-        if (not isinstance(question, text) or type(minutes) not in (int, type(None))
-                or turns is None or not isinstance(ctx, (dict, type(None)))
-                or any(not isinstance(h.get(k), text) for h in turns for k in ("q", "a"))):
-            raise HTTPException(400, "question is text, window_min a number of minutes, "
-                                     "history a list of {q, a} texts, and context an object")
-        flt = view_filter(request, anon)
-        if ctx is not None and ctx.get("session") is not None:
-            ctx = dict(ctx, session=dealias_sid(ctx["session"], anon))
-        try:
-            return await asyncio.to_thread(agg.ask, question or "", minutes, turns, ctx, flt)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-
-    # The operator's suggestions marked done: kept by the service for everyone
-    # until undone, and left out of the next "suggest actions" (ask.Asker). A
-    # mark names a job and an index; the text is the service's own.
-    def kept_answers():
-        """The suggestions marked done are Ask's answers, kept: refused as Ask
-        is while names are anonymized and `ask.unmasked_answers` is off."""
-        why = unmasked_refusal(cfg)
-        if why:
-            raise HTTPException(400, why)
-
-    @app.get("/api/suggestions/done")
-    def api_done():
-        kept_answers()
-        return agg.asker.done_list()
-
-    @app.post("/api/suggestions/done")
-    async def api_mark_done(request: Request):
-        kept_answers()
-        body = await json_body(request)
-        try:
-            return agg.asker.mark_done(str(body.get("job") or ""), body.get("index"))
-        except LookupError as e:
-            raise HTTPException(404, str(e))
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-
-    @app.delete("/api/suggestions/done/{did}")
-    def api_undo_done(did: str):
-        kept_answers()
-        try:
-            return agg.asker.undo_done(did)
-        except LookupError as e:
-            raise HTTPException(404, str(e))
-
-    @app.get("/api/ask/{jid}")
-    def api_ask_job(jid: str):
-        j = agg.ask_job(jid)
-        if j is None:
-            raise HTTPException(404, "no such question")
-        return j
-
     @app.get("/api/collectors")
     def api_collectors(request: Request):
         """Per host: is its collector OK, read from what it wrote (health.py), and
@@ -712,8 +615,8 @@ def create_app(cfg):
     # response's `filter` names it. The live tier is not narrowed (`/api/live`).
     @app.get("/api/panels")
     def api_panels(request: Request, window_min: int = Query(None)):
-        # The basis notes, here and on the routes below, are left to Ask LLM, which
-        # reads `agg` in process: the page shows none (`jsonout.strip_basis`).
+        # The basis notes are left out, here and on the routes below: the page
+        # shows none (`jsonout.strip_basis`).
         return respond(jsonout.strip_basis(agg.panels(window_min, view_filter(request, anon))),
                        "panels", request)
 

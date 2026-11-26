@@ -613,7 +613,6 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goResources = () 
             which; a service that judges no rule says that */}
         <Panel
           title="Abnormal Slurm activity"
-          ask={[{ panel: 'slurm', keys: ['abnormal', 'sessions', 'by_class'] }]}
           p={sp}
           span
           header={
@@ -643,7 +642,6 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goResources = () 
       <div className="grid wide">
         <Panel
           title="Sessions at the scheduler"
-          ask={[{ panel: 'slurm', keys: ['sessions', 'sessions_total', 'basis'] }]}
           p={sp}
           span
           empty={!sessions.length}
@@ -657,13 +655,11 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goResources = () 
           />
         </Panel>
 
-        <Panel title="How each class uses the scheduler" p={sp} span empty={!have.length} emptyWhat="no class block for the selection"
-          ask={[{ panel: 'slurm', keys: ['by_class', 'basis'] }]}>
+        <Panel title="How each class uses the scheduler" p={sp} span empty={!have.length} emptyWhat="no class block for the selection">
           <ByClass by={by} have={have} tm={tm} />
         </Panel>
 
-        <Panel title="Submissions the scheduler refused" p={sp} span empty={!rej.length} emptyWhat="the scheduler refused nothing in the window"
-          ask={[{ panel: 'slurm', keys: ['rejections', 'by_class'] }]}>
+        <Panel title="Submissions the scheduler refused" p={sp} span empty={!rej.length} emptyWhat="the scheduler refused nothing in the window">
           <div className="scroller">
             <table className="roomy">
               <thead>
@@ -693,8 +689,7 @@ export const SlurmTab = memo(function SlurmTab({ P, live, cls, goResources = () 
           </div>
         </Panel>
 
-        <Panel title="Latest submissions" span live feed="live" empty={!submits.length} emptyWhat="no submission in the window"
-          ask={[{ panel: 'live', keys: ['submits'] }]}>
+        <Panel title="Latest submissions" span live feed="live" empty={!submits.length} emptyWhat="no submission in the window">
           <Latest rows={submits} />
         </Panel>
       </div>

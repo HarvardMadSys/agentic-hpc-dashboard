@@ -179,9 +179,6 @@ class Live(unittest.TestCase):
         tree["server"]["port"] = cls.port
         tree["server"]["rdns"]["enabled"] = False
         tree["panels"]["prewarm_min"] = []
-        # Ask on, with a stand-in agent: only the password decides whether it runs
-        tree["ask"]["enabled"] = True
-        tree["ask"]["command"] = [sys.executable, "-c", "import sys; sys.stdin.read(); print('ok')"]
         if cls.PASSWORD:
             tree["server"]["auth"]["password_hash"] = auth.hash_password(cls.PASSWORD, n=16, r=1, p=1)
         with warnings.catch_warnings():
@@ -260,10 +257,10 @@ class LiveOpen(Live):
 
     def test_another_origins_json_post_is_never_sent(self):
         # The browser asks first (a CORS preflight) before a JSON POST from another
-        # origin, and is never told yes: the POST routes need no Origin check.
+        # origin, and is never told yes: a POST route would need no Origin check.
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
         try:
-            c.request("OPTIONS", "/api/ask", headers={
+            c.request("OPTIONS", "/api/panels", headers={
                 "Origin": "http://localhost:8888", "Access-Control-Request-Method": "POST",
                 "Access-Control-Request-Headers": "content-type"})
             r = c.getresponse()
@@ -273,42 +270,21 @@ class LiveOpen(Live):
         self.assertGreaterEqual(r.status, 400)
         self.assertIsNone(r.getheader("access-control-allow-origin"))
 
-    def test_ask_does_not_run_with_no_password(self):
-        status, info = self.req("GET", "/api/ask")
-        self.assertEqual(status, 200)
-        self.assertTrue(info["enabled"])
-        self.assertFalse(info["available"])
-        self.assertIn("no password", info["error"])
-        status, body = self.req("POST", "/api/ask", json.dumps({"question": "q"}), JSON)
-        self.assertEqual(status, 400)
-        self.assertIn("no password", body["detail"])
-
     def test_what_changes_something_takes_json_only(self):
-        # what another site's page can send without the browser asking first
+        # What another site's page can send without the browser asking first. No
+        # route under /api takes any of it; the guard turns it away before a route
+        # is looked for, as it will for one added later.
         for ctype in ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data",
                       None):
-            for path in ("/api/ask", "/api/suggestions/done"):
-                with self.subTest(ctype=ctype, path=path):
-                    status, _ = self.req("POST", path, '{"question": "q"}', ctype,
-                                         origin="https://evil.example")
+            for method, path in (("POST", "/api/panels"), ("POST", "/api/nope"),
+                                 ("DELETE", "/api/panels"), ("PUT", "/api/live")):
+                with self.subTest(ctype=ctype, method=method, path=path):
+                    status, _ = self.req(method, path, "{}", ctype, origin="https://evil.example")
                     self.assertEqual(status, 415)
-        self.assertEqual(self.req("DELETE", "/api/suggestions/done/x")[0], 415)
-        self.assertEqual(self.req("DELETE", "/api/suggestions/done/x", ctype=JSON)[0], 404)
-        self.assertEqual(self.req("POST", "/api/ask", '{"question": "q"}',
-                                  "application/json; charset=utf-8")[0], 400)   # no password
-
-    def test_a_malformed_body_is_a_400_never_a_500(self):
-        for body in ("not json", "[1]", "{", '"q"', '{"question": 5}', '{"question": ["q"]}',
-                     '{"history": "x"}', '{"history": [{"q": 1, "a": "x"}]}',
-                     '{"window_min": "60"}', '{"window_min": 1e999}', '{"context": "risk"}',
-                     "[" * 100000, b"\xff\xfe"):
-            with self.subTest(body=str(body)[:40]):
-                self.assertEqual(self.req("POST", "/api/ask", body, JSON)[0], 400)
-        for body in ("[]", "nope"):
-            for path in ("/api/suggestions/done",):
-                with self.subTest(path=path, body=body):
-                    self.assertEqual(self.req("POST", path, body, JSON)[0], 400)
-        self.assertEqual(self.req("POST", "/api/ask", b"{" + b" " * (1 << 20) + b"}", JSON)[0], 413)
+        # said to be JSON, it reaches the routes, and none takes it
+        self.assertEqual(self.req("POST", "/api/panels", "{}",
+                                  "application/json; charset=utf-8")[0], 405)
+        self.assertEqual(self.req("DELETE", "/api/nope", ctype=JSON)[0], 404)
 
 
 class LiveSigned(Live):
@@ -327,19 +303,20 @@ class LiveSigned(Live):
         self.assertEqual(self.ws("http://127.0.0.1:%d" % (self.port + 1)), 403)
         self.assertEqual(self.ws("http://127.0.0.1:%d" % self.port), "live")
 
-    def test_ask_runs_behind_the_password_and_takes_a_short_question(self):
-        status, info = self.req("GET", "/api/ask")
-        self.assertEqual((status, info["available"]), (200, True), info)
-        status, job = self.req("POST", "/api/ask", json.dumps({"question": "q"}), JSON)
-        self.assertEqual(status, 200, job)
-        deadline = time.time() + 30
-        while job["state"] not in ("done", "error") and time.time() < deadline:
-            time.sleep(0.1)
-            job = self.req("GET", "/api/ask/%s" % job["id"])[1]
-        self.assertEqual((job["state"], job["answer"]), ("done", "ok"), job)
-        status, body = self.req("POST", "/api/ask", json.dumps({"question": "x" * 4001}), JSON)
-        self.assertEqual(status, 400)
-        self.assertIn("at most 4000 characters", body["detail"])
+    def test_ask_llm_is_gone(self):
+        """Ask LLM was removed: the app holds none of its routes, and signed in, a
+        request to one finds nothing (a 404 here, where no page is served)."""
+        paths = [r.path for r in self.app.routes if hasattr(r, "path")]
+        self.assertEqual([p for p in paths if p.startswith(("/api/ask", "/api/suggestions"))], [])
+        for method, path, body in (("GET", "/api/ask", None),
+                                   ("POST", "/api/ask", '{"question": "q"}'),
+                                   ("GET", "/api/ask/x", None),
+                                   ("GET", "/api/suggestions/done", None),
+                                   ("POST", "/api/suggestions/done", '{"job": "x", "index": 0}'),
+                                   ("DELETE", "/api/suggestions/done/x", None)):
+            with self.subTest(method=method, path=path):
+                ctype = None if method == "GET" else JSON
+                self.assertEqual(self.req(method, path, body, ctype)[0], 404)
 
 
 class SaidAtStart(unittest.TestCase):

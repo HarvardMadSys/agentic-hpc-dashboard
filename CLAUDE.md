@@ -26,10 +26,11 @@ module; `docs/README.md` indexes the rest.
     `*.md` alone) builds the dashboard's wheel and image; a push to `develop` also pushes the
     image to GHCR as `edge`.
   - A `v*.*.*` tag runs all four whatever it changes: it publishes the collector's and the
-    dashboard's `X.Y.Z`, `X.Y` and `latest` images and attaches the RPM and the dashboard's
-    wheel to the tag's GitHub Release, creating the release if there is none (the dashboard
-    takes only `vX.Y.Z`, whose version it stamps into the wheel and image). Push a tag only
-    when a release is asked for.
+    dashboard's `X.Y.Z`, `X.Y` and `latest` images and attaches the RPM, the dashboard's
+    wheel, its pinned requirements, their checksums and the deploy kit's tarball to the tag's
+    GitHub Release, creating the release if there is none (the dashboard takes only
+    `vX.Y.Z`, whose version it stamps into the wheel, image and kit; the kits' installers
+    download from that release). Push a tag only when a release is asked for.
 
 ## Commands
 

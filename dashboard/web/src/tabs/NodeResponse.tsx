@@ -89,7 +89,6 @@ export function NodeResponse({ P, win, view, onView }: {
     <Panel
       title={`${nodes.One} response over the ${win}`}
       id="sec-node-response"
-      ask={[{ panel: 'node', keys: ['hosts'] }]}
       p={n}
       span
       empty={!s || !hosts.length}

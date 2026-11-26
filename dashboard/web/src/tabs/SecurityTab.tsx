@@ -18,7 +18,7 @@
  *
  * The sandbox panels were Internal's while their takeaway was open; they are
  * this tab's confinement half now, under their old titles and anchors, so a
- * citation of one still lands on it (lib/cites.ts). Credentials on command
+ * link to one still lands on it (lib/cites.ts). Credentials on command
  * lines stay a section of Risks, which the site's risk profile lays out
  * (`risk.sections`): checked here, listed there.
  */
@@ -306,7 +306,7 @@ function CheckLine({ c, cls }: { c: Check; cls: Cls[] }) {
         {c.what}
       </span>
       {c.to ? (
-        <button className="linkbtn attn-go" onClick={() => go(c.to!, c.where ?? '')} data-tip={`open ${c.where}`}>
+        <button className="linkbtn attn-go" onClick={() => go(c.to!)} data-tip={`open ${c.where}`}>
           see {'→'}
         </button>
       ) : (
@@ -515,7 +515,6 @@ export function OutsideWrites({ P, cls }: { P: Panels; cls: Cls[] }) {
       title={OUTSIDE_TITLE}
       p={cas}
       span
-      ask={[{ panel: 'cascades', keys: ['workspace.summary', 'workspace.agents'] }]}
       empty={!agentOn || (ws != null && !writers.length)}
       emptyWhat={!agentOn ? OFF : 'no agent wrote outside its start folder in this window'}
     >
