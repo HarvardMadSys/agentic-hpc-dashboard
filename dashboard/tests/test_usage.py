@@ -151,7 +151,8 @@ class Store(unittest.TestCase):
         days = os.listdir(self.dir)             # the wall clock's day, not 2020-01-02
         self.assertEqual(len(days), 1)
         self.assertIn(days[0], (before + ".json", after + ".json"))
-        self.assertEqual(sum(n for n, _d in self.store.totals(1).values()), 1)
+        # two days, so a UTC midnight between the add and this line still finds it
+        self.assertEqual(sum(n for n, _d in self.store.totals(2).values()), 1)
 
     def test_a_folder_that_cannot_be_written_loses_the_counts_not_the_request(self):
         """A read-only or full cache.dir: the post's counts are dropped, said once, and no

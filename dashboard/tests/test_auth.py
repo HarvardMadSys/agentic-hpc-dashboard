@@ -41,6 +41,7 @@ from websockets.sync.client import connect           # noqa: E402
 from rc_dashboard import __main__ as cli             # noqa: E402
 from rc_dashboard import app as appmod               # noqa: E402
 from rc_dashboard import auth                        # noqa: E402
+from rc_dashboard import clock as clockmod           # noqa: E402
 from rc_dashboard import config as configmod         # noqa: E402
 from rc_dashboard import hours, snapshots            # noqa: E402
 
@@ -174,6 +175,7 @@ class Session(unittest.TestCase):
         time.time = lambda: 0.0
         try:
             self.assertGreater(auth.wall(), real - 60)
+            self.assertGreater(clockmod.wall(), real - 60)
         finally:
             time.time = saved
 
