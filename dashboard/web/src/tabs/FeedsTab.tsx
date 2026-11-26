@@ -182,11 +182,11 @@ function Collectors({ hosts, now }: { hosts: CollectorHost[]; now: number }) {
                       is not a collector that stopped, though its files stop growing */}
                   {h.transport && (
                     h.transport.ok ? (
-                      <div className="nm" style={{ fontSize: '12px' }} data-tip={`copied to the dashboard by ${h.transport.kind === 'rsync' ? 'rsync' : 'the ssh stream'}`}>
+                      <div className="nm" style={{ fontSize: '12px' }} data-tip="copied to the dashboard by rsync">
                         copied {ago(h.transport.last_ok_age_s)}
                       </div>
                     ) : (
-                      <div className="copy-bad" data-tip={`the ${h.transport.kind === 'rsync' ? 'rsync pull' : 'ssh stream'} of this ${nodes.one}'s files failed: the collector may be fine`}>
+                      <div className="copy-bad" data-tip={`the rsync copy of this ${nodes.one}'s files failed: the collector may be fine`}>
                         copy failed{h.transport.last_ok_age_s != null ? ` · last good ${ago(h.transport.last_ok_age_s)}` : ''}
                         {h.transport.error ? <div className="mono">{h.transport.error}</div> : null}
                       </div>

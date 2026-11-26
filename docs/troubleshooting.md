@@ -44,9 +44,10 @@ where the files are copied, the copy's own state. From a shell, `rc-dashboard st
 same for every host and exits 0 (ok), 1 (warn) or 2 (crit), so a timer or a monitoring system can
 run it; `GET /api/status` and `GET /metrics` serve it to a scraper.
 
-- **`copy FAILED`**: the node is fine; the copy is not. For an rsync fleet, `deploy/fleet/pull.py
-  status` names the node and the error (a key that no longer works, or pulling paused below the
-  free-space floor); for the ssh stream, the hourly check in [hpc/deploy](../hpc/deploy/README.md).
+- **`copy FAILED`**: the node is fine; the copy is not. `deploy/rc-deploy status`, or
+  `deploy/fleet/pull.py status` on the dashboard's host, names the node and the error (a key
+  that no longer works, or pulling paused below the free-space floor); the HPC kit's hourly
+  check reports it too ([hpc/deploy](../hpc/deploy/README.md#the-hourly-check)).
 - **`silent` with no copy in between**: on the node, `sudo ebpfm status` (exit 3: not running).
   Its log is named there; under systemd, `journalctl -u ebpfm -u ebpfm-node`.
 - **`degraded`**: running, but losing events or missing a probe: the Feeds tab's row says which,

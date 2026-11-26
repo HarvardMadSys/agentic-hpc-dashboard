@@ -12,18 +12,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 KIT = os.path.dirname(HERE)
 REPO = os.path.dirname(os.path.dirname(KIT))
 KIT_REL = os.path.relpath(KIT, REPO)
-# The fleet stream is the kit's sibling (hpc/fleet beside hpc/deploy), as deploy.sh has it.
-STREAM_REL = os.path.relpath(os.path.join(os.path.dirname(KIT), "fleet"), REPO)
+# The nodes' guard is in the kit's sibling folder (hpc/fleet beside hpc/deploy), as deploy.sh
+# has it; the copy itself is the fleet kit's pull.py.
+GUARD_REL = os.path.relpath(os.path.join(os.path.dirname(KIT), "fleet"), REPO)
 RENDER = os.path.join(KIT, "render.py")
 EXAMPLE = os.path.join(KIT, "site.env.example")
 OVERRIDES = ["SOURCE_USER=alice", "SOURCE_NODES=node01 node02 node03",
              "DASH_ROOT=/data/alice/rc-dashboard", "SENDER_DIR=/home/alice/rc-fleet-sender"]
 ROOT = "/data/alice/rc-dashboard"
 SOURCES = ["node01", "node02", "node03"]
-SSH_OPTS = ["-T", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "Compression=no",
-            "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=4",
-            "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "LogLevel=ERROR"]
 
 
 def run_render(name, extra=()):
@@ -93,23 +90,25 @@ class TestRender(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(REPO, KIT_REL, "tmux-session.sh")))
         self.assertEqual(re.search(r"^KIT=(\S+)$", read("check.sh"), re.M).group(1), KIT_REL)
         self.assertIn('kit=${here#"$repo"/}', read("deploy.sh"))
-        self.assertIn('stream=$(dirname "$kit")/fleet', read("deploy.sh"))
-        self.assertIn('"$stream" "$kit" > "$work/release.tar"', read("deploy.sh"))
+        self.assertIn('guard=$(dirname "$kit")/fleet', read("deploy.sh"))
+        self.assertIn('deploy/fleet/pull.py "$guard" "$kit" > "$work/release.tar"', read("deploy.sh"))
 
-    def test_the_stream_is_where_the_release_and_the_loop_look(self):
-        """deploy.sh archives the stream from the kit's sibling folder, and the stream's
-        loop runs it from there in the release: a move of either breaks the other."""
-        self.assertTrue(os.path.exists(os.path.join(REPO, STREAM_REL, "fleet_stream.py")))
-        self.assertIn('"release/$stream/fleet_stream.py"', read("deploy.sh"))
-        self.assertIn('"$R/current/%s/fleet_stream.py"' % STREAM_REL, read("keep-running.sh"))
+    def test_the_copy_and_the_guard_are_where_the_release_and_the_loop_look(self):
+        """deploy.sh archives pull.py and the nodes' guard, the copy's loop runs pull.py from
+        the release, and the guard goes to the nodes from it: a move of either breaks."""
+        self.assertTrue(os.path.exists(os.path.join(REPO, GUARD_REL, "rsync_guard.py")))
+        self.assertTrue(os.path.exists(os.path.join(REPO, "deploy", "fleet", "pull.py")))
+        self.assertIn('"release/$guard/rsync_guard.py"', read("deploy.sh"))
+        self.assertIn('"$R/current/deploy/fleet/pull.py" --config "$ETC/fleet.env" loop',
+                      read("keep-running.sh"))
 
     def test_caps_live_in_the_loop(self):
-        """The stream and the dashboard run in scopes keep-running.sh starts: their caps,
+        """The copy and the dashboard run in scopes keep-running.sh starts: their caps,
         start checks, and restart rules are there."""
         keep = read("keep-running.sh")
-        stream = re.search(r"^  stream\)\n(.*?);;", keep, re.M | re.S).group(1)
+        stream = re.search(r"^  copy\)\n(.*?);;", keep, re.M | re.S).group(1)
         dash = re.search(r"^  dashboard\)\n(.*?);;", keep, re.M | re.S).group(1)
-        for part, scope, pause, burst, within in ((stream, "rc-fleet-stream", "10", "5", "600"),
+        for part, scope, pause, burst, within in ((stream, "rc-fleet-copy", "10", "5", "600"),
                                                   (dash, "rc-dashboard", "30", "4", "21600")):
             for k, v in (("scope", scope), ("pause", pause), ("burst", burst), ("within", within)):
                 self.assertRegex(part, r"\b%s=%s\b" % (k, re.escape(v)), scope)
@@ -226,9 +225,9 @@ class TestRender(unittest.TestCase):
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
             self.assertEqual(p.returncode, 0, p.stderr)
             c = json.loads(p.stdout)
-            p = subprocess.run([sys.executable, RENDER, os.path.join(KIT, "stream.json.in"), fh.name],
+            p = subprocess.run([sys.executable, RENDER, os.path.join(KIT, "fleet.env.in"), fh.name],
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-            s = json.loads(p.stdout)
+            s = env_of(p.stdout)
         finally:
             os.unlink(fh.name)
         self.assertEqual(c["live"]["retention_min"], 10080)
@@ -237,7 +236,8 @@ class TestRender(unittest.TestCase):
         self.assertEqual(c["ingest"], {"workers": 2})        # one node
         self.assertEqual(c["site"], {"name": "", "description": ""})
         self.assertNotIn("ask", c)
-        self.assertEqual(s["free_min_gb"], 300)
+        self.assertEqual(s["FLEET_FREE_MIN_GB"], "300")
+        self.assertEqual(s["FLEET_EBPF_SOURCE"], "/scratch/ebpfm")
 
     def test_values_are_checked(self):
         for bad in ("DAY_CACHE=maybe", "ANONYMIZE=maybe", "SLURM=maybe", "SHARED_HOME=maybe",
@@ -249,13 +249,14 @@ class TestRender(unittest.TestCase):
                     "SOURCE_NODES=a a", "SOURCE_NODES=a b'c", "SOURCE_DOMAIN=a b",
                     "RISK_PROFILE=a b.json", "FREE_MIN_GB=-1", "HISTORY_DAYS=0",
                     "INGEST_WORKERS=-1", "INGEST_WORKERS=four", "INGEST_WORKERS=257",
-                    "DROP_USERS=a'b", "DROP_AGENT_USERS=-x"):
-            p = run_render("stream.json.in", [bad])
+                    "DROP_USERS=a'b", "DROP_AGENT_USERS=-x", "SOURCE_ROOT=rel/ebpfm",
+                    "SOURCE_ROOT=/a b"):
+            p = run_render("fleet.env.in", [bad])
             self.assertEqual(p.returncode, 2, bad)
 
     def test_nothing_under_tmp_or_on_the_nodes(self):
         """The dashboard's host keeps everything in DASH_ROOT: no /tmp, and nothing of the
-        deployment on the nodes, where only the sender lives."""
+        deployment on the nodes, where only the guard lives."""
         for path in glob.glob(os.path.join(KIT, "*.in")):
             text = render(os.path.basename(path))
             self.assertNotIn("/tmp", text, path)
@@ -267,36 +268,45 @@ class TestRender(unittest.TestCase):
         self.assertEqual(c["live"]["retention_min"], 2880)
 
     def test_private_tree_from_site(self):
-        """PRIVATE_TREE goes into stream.json, where the stream, the start checks, the hourly
-        check, and install-remote.sh read it; anything but true or false is refused."""
-        self.assertIs(json.loads(render("stream.json.in"))["private"], True)
-        self.assertIs(json.loads(render("stream.json.in", ["PRIVATE_TREE=false"]))["private"], False)
+        """PRIVATE_TREE goes into kit.env, where the start checks, the hourly check and
+        install-remote.sh read it; anything but yes or no (or true, false, 1, 0...) is
+        refused."""
+        self.assertEqual(env_of(render("kit.env.in"))["PRIVATE_TREE"], "yes")
+        self.assertEqual(env_of(render("kit.env.in", ["PRIVATE_TREE=false"]))["PRIVATE_TREE"], "no")
         with self.assertRaises(AssertionError):
-            render("stream.json.in", ["PRIVATE_TREE=maybe"])
+            render("kit.env.in", ["PRIVATE_TREE=maybe"])
 
-    def test_stream_config(self):
-        s = json.loads(render("stream.json.in"))
-        self.assertEqual(s["days"], int(example_value("HISTORY_DAYS")) + 1)
-        self.assertEqual(s["base"], ROOT + "/data")
-        self.assertEqual(s["base_parents"], 1)
-        self.assertEqual(s["trip_marker"], ROOT + "/TRIPPED")
-        # Sealed days stay .gz in the copy, as on each node's disk: about 19 times less.
-        self.assertIs(s["keep_gz"], True)
-        self.assertEqual(s["free_min_gb"], 300)
-        self.assertEqual(sorted(s["hosts"]), SOURCES)
-        for host, argv in s["hosts"].items():
-            self.assertEqual(argv[0], "ssh")
-            joined = " ".join(argv)
-            self.assertIn(" ".join(SSH_OPTS), joined)
-            self.assertIn("-i %s/etc/rc_fleet_stream" % ROOT, joined)
-            self.assertIn("alice@%s.cluster.example.org" % host, argv)
-            self.assertEqual(argv[-1], "send")
-        self.assertEqual(json.loads(render("stream.json.in", ["FREE_MIN_GB=50.5"]))["free_min_gb"], 50.5)
-
-    def test_no_domain_reaches_each_node_by_its_name(self):
-        s = json.loads(render("stream.json.in", ["SOURCE_DOMAIN="]))
-        for host, argv in s["hosts"].items():
-            self.assertIn("alice@" + host, argv)
+    def test_the_copys_settings(self):
+        """pull.py's settings: each node's eBPF tier, in the flat layout (data/mirror/<node>,
+        where the stream before it kept the copy), through the key the nodes' guard lets in,
+        and pull.py takes them as they are."""
+        s = env_of(render("fleet.env.in"))
+        self.assertEqual(s["FLEET_HOSTS"], " ".join(SOURCES))
+        self.assertEqual((s["FLEET_USER"], s["FLEET_DOMAIN"]), ("alice", "cluster.example.org"))
+        self.assertEqual(s["FLEET_SSH_KEY"], ROOT + "/etc/rc_fleet_stream")
+        self.assertEqual(s["FLEET_SSH_OPTS"], "-o Compression=yes")   # as the stream compressed
+        self.assertEqual(s["FLEET_MIRROR"], ROOT + "/data/mirror")
+        self.assertEqual((s["FLEET_LAYOUT"], s["FLEET_NODE_SOURCE"]), ("flat", ""))
+        self.assertEqual(s["FLEET_DAYS"], str(int(example_value("HISTORY_DAYS")) + 1))
+        # the copy keeps what it copies, no more: the stream removed older days too
+        self.assertEqual(s["FLEET_KEEP_DAYS"], s["FLEET_DAYS"])
+        self.assertEqual(s["FLEET_PRIVATE"], "yes")
+        self.assertEqual(env_of(render("fleet.env.in", ["PRIVATE_TREE=false"]))["FLEET_PRIVATE"], "no")
+        self.assertEqual(s["FLEET_FREE_MIN_GB"], "300")
+        self.assertEqual(env_of(render("fleet.env.in", ["FREE_MIN_GB=50.5"]))["FLEET_FREE_MIN_GB"], "50.5")
+        self.assertEqual(env_of(render("fleet.env.in", ["SOURCE_DOMAIN="]))["FLEET_DOMAIN"], "")
+        # pull.py reads it as written: the nodes, and the dashboard's roots in its copy
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as fh:
+            fh.write(render("fleet.env.in"))
+        try:
+            p = subprocess.run([sys.executable, os.path.join(REPO, "deploy", "fleet", "pull.py"),
+                                "--config", fh.name, "roots"], stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, universal_newlines=True)
+        finally:
+            os.unlink(fh.name)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("RC_DASH_EBPF_ROOTS=%s/data/mirror/*\n" % ROOT, p.stdout)
+        self.assertEqual(config()["feeds"]["ebpf"]["roots"], [ROOT + "/data/mirror/*"])
 
     def test_every_unit_is_shipped(self):
         """Each unit template is rendered by deploy.sh, shipped, installed and enabled by
@@ -321,20 +331,20 @@ class TestRender(unittest.TestCase):
             self.assertIn('"$inc/%s"' % name, install, "install-remote.sh does not install %s" % name)
 
     def test_names_agree(self):
-        """The windows tmux-session.sh makes are the ones the hourly check looks after and
-        keep-running.sh knows; the dashboard's scope is the one the stream stops on a trip."""
+        """The windows tmux-session.sh makes are the ones the hourly check looks after,
+        install-remote.sh asks for and keep-running.sh knows."""
         session, check, keep = read("tmux-session.sh"), read("check-local.sh"), read("keep-running.sh")
         made = re.findall(r" -n (\w+) ", session)
-        self.assertEqual(made, ["stream", "dashboard"])
+        self.assertEqual(made, ["copy", "dashboard"])
         self.assertEqual(re.search(r'^WINDOWS="(.*)"$', check, re.M).group(1).split(), made)
         self.assertEqual(re.findall(r"^  (\w+)\)$", keep, re.M), made)
-        self.assertEqual(json.loads(render("stream.json.in"))["dashboard_unit"], "rc-dashboard.scope")
+        self.assertIn("for w in copy dashboard; do", read("install-remote.sh"))
         self.assertIn("rc-dashboard.scope", check)
-        self.assertIn("rc-fleet-stream.scope", check)
 
     def test_no_placeholder_left(self):
         names = sorted(os.path.basename(p) for p in glob.glob(os.path.join(KIT, "*.in")))
-        self.assertEqual(names, ["dashboard.config.json.in", "rc-tmux.service.in", "stream.json.in"])
+        self.assertEqual(names, ["dashboard.config.json.in", "fleet.env.in", "kit.env.in",
+                                 "rc-tmux.service.in"])
         for name in names:
             self.assertIsNone(re.search(r"@[A-Z][A-Z0-9_]*@", render(name)), name)
 
@@ -350,7 +360,20 @@ class TestRender(unittest.TestCase):
             os.unlink(fh.name)
 
 
-def render_site(text, name="stream.json.in", strict=False):
+def env_of(text):
+    """KEY=VALUE lines as {KEY: VALUE}, one pair of quotes off."""
+    out = {}
+    for line in text.splitlines():
+        m = re.match(r"^([A-Z_]+)=(.*)$", line)
+        if m:
+            v = m.group(2)
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                v = v[1:-1]
+            out[m.group(1)] = v
+    return out
+
+
+def render_site(text, name="fleet.env.in", strict=False):
     """render.py over a site.env of its own: (exit, stdout, stderr)."""
     with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as fh:
         fh.write(text)

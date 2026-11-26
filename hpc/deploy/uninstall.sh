@@ -6,9 +6,10 @@
 #   the dashboard's host  the session stops and its unit goes (rc-tmux.service); the
 #                         releases, the venv, and `current` go. --purge: all of DASH_ROOT
 #                         (the copy, the history, the Trend tab's roll-up table, the
-#                         settings, the password's hash, the stream key).
-#   the nodes             the sender goes (SENDER_DIR), and the stream key's line in
+#                         settings, the password's hash, the copy's key).
+#   the nodes             the guard goes (SENDER_DIR), and the copy key's line in
 #                         SOURCE_USER's ~/.ssh/authorized_keys (the one that runs
+#                         SENDER_DIR's rsync_guard.py, or a key from before's
 #                         fleet_stream.py send); every other line stays.
 #   this machine          the hourly check's crontab line. --purge: WORK_DIR too, and
 #                         ~/.config/rc-dashboard (the password and its netrc).
@@ -68,8 +69,8 @@ remote "$DASH_SSH" "systemctl --user disable --now rc-tmux.service 2>/dev/null; 
 if [ -n "${SENDER_DIR:-}" ]; then
   for node in $SOURCE_NODES; do
     dest="$SOURCE_USER@$node${SOURCE_DOMAIN:+.$SOURCE_DOMAIN}"
-    say "$node: the sender, and the stream key's line"
-    if remote "$dest" "rm -rf $SENDER_DIR; ak=\$HOME/.ssh/authorized_keys; if [ -f \$ak ]; then grep -v 'fleet_stream.py send' \$ak > \$ak.new; chmod 600 \$ak.new; mv -f \$ak.new \$ak; fi"; then
+    say "$node: the guard, and the copy key's line"
+    if remote "$dest" "rm -rf $SENDER_DIR; ak=\$HOME/.ssh/authorized_keys; if [ -f \$ak ]; then grep -v -e 'fleet_stream.py send' -e '$SENDER_DIR/current/rsync_guard.py' \$ak > \$ak.new; chmod 600 \$ak.new; mv -f \$ak.new \$ak; fi"; then
       [ "${SHARED_HOME:-yes}" = yes ] && break
     else
       echo "  $node: FAILED" >&2

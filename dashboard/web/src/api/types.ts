@@ -150,10 +150,10 @@ export interface CollectorRun {
 }
 
 /** How a host's files reach the dashboard where they are copied (rc_dashboard
- *  status: deploy/fleet/pull.py's state, or the ssh stream's status.json):
- *  a copy that failed is not a collector that stopped. */
+ *  status: deploy/fleet/pull.py's state, which both kits copy with): a copy that
+ *  failed is not a collector that stopped. */
 export interface CollectorTransport {
-  kind: 'rsync' | 'stream';
+  kind: 'rsync';
   ok: boolean;
   last_ok_age_s: number | null;
   error: string | null;

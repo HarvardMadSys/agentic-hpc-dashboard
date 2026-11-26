@@ -1,10 +1,12 @@
 #!/bin/bash
 # install-sender.sh SHA DIR: run on a source node by ship-sender.sh (as `bash -s` over
-# ssh), after it copied the release's hpc/fleet/fleet_stream.py to DIR/.incoming-SHA. DIR
-# (site.env's SENDER_DIR) is the one thing the deployment keeps on the nodes: the stream
-# key's forced command runs DIR/current/fleet_stream.py send there. Installs the file as
-# DIR/SHA/fleet_stream.py, moves DIR/current to it, keeps the release it replaced for a
-# rollback, and removes older ones (a sender that runs has its code loaded already).
+# ssh), after it copied the release's hpc/fleet/rsync_guard.py to DIR/.incoming-SHA. DIR
+# (site.env's SENDER_DIR) is the one thing the deployment keeps on the nodes: the copy
+# key's forced command runs DIR/current/rsync_guard.py there. Installs the file as
+# DIR/SHA/rsync_guard.py, and as DIR/SHA/fleet_stream.py too, the name a key from the
+# earlier stream runs it by (`fleet_stream.py send --root ROOT`, which the guard takes), so
+# such a key keeps working; moves DIR/current to it, keeps the release it replaced for a
+# rollback, and removes older ones (a guard that runs has its code loaded already).
 # When DIR/current is SHA already (a home the nodes share, or a deploy of the same
 # commit), nothing else changes, so the release kept for a rollback stays.
 set -euo pipefail
@@ -27,13 +29,14 @@ else
   fi
   rm -rf "$dir/$sha.tmp"
   mkdir "$dir/$sha.tmp"
-  mv "$inc" "$dir/$sha.tmp/fleet_stream.py"
-  chmod 600 "$dir/$sha.tmp/fleet_stream.py"
+  mv "$inc" "$dir/$sha.tmp/rsync_guard.py"
+  chmod 600 "$dir/$sha.tmp/rsync_guard.py"
+  ln -s rsync_guard.py "$dir/$sha.tmp/fleet_stream.py"
   mv -T "$dir/$sha.tmp" "$dir/$sha"
 fi
 prev=$(readlink "$dir/current" 2>/dev/null || true)
 if [ "$prev" = "$sha" ]; then
-  echo "sender $sha already current in $dir"
+  echo "guard $sha already current in $dir"
   exit 0
 fi
 ln -sfn "$sha" "$dir/current.new"
@@ -47,4 +50,4 @@ for d in "$dir"/*; do
     *) [[ $n =~ ^[0-9a-f]{12}$ ]] && rm -rf "$d" ;;
   esac
 done
-echo "sender $sha installed in $dir"
+echo "guard $sha installed in $dir"

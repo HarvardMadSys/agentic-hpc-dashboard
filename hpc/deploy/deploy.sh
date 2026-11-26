@@ -1,19 +1,20 @@
 #!/bin/bash
-# deploy.sh [--first] [--restart] [--plan] [--help]: ship HEAD's dashboard and fleet
-# stream to the dashboard's host, and the stream's sender to the source nodes. Run on this
-# machine, from a tree with no uncommitted changes to tracked files.
+# deploy.sh [--first] [--restart] [--plan] [--help]: ship HEAD's dashboard and the copy
+# (deploy/fleet/pull.py) to the dashboard's host, and the copy's guard to the source nodes.
+# Run on this machine, from a tree with no uncommitted changes to tracked files.
 #
 # Builds the web bundle here, takes the runtime files from `git archive HEAD`, renders
 # the tmux unit and the settings from site.env, and installs them on the dashboard's
-# host (DASH_SSH) under DASH_ROOT/releases/<sha>, with `current` moved to it. The sender
-# (hpc/fleet/fleet_stream.py) goes first, to SENDER_DIR on the nodes (ship-sender.sh); the
-# stream key's forced command runs it there. Only code moves; no capture data passes
-# through this machine. --first also makes the venv; --restart restarts the tmux
-# session, and with it the stream and the dashboard (whose history then refills). It
+# host (DASH_SSH) under DASH_ROOT/releases/<sha>, with `current` moved to it. The guard
+# (hpc/fleet/rsync_guard.py) goes first, to SENDER_DIR on the nodes (ship-sender.sh); the
+# copy key's forced command runs it there, and it lets that key read the collector's
+# folder and nothing else. Only code moves; no capture data passes through this machine.
+# --first also makes the venv; --restart restarts the tmux session, and with it the copy
+# and the dashboard (whose history then refills). It
 # also installs check.sh and site.env into $WORK_DIR/bin for the hourly check. When the
 # dashboard's host has no password hash yet, password.sh makes one and puts it there
 # before the session starts. A deploy that adds a node to SOURCE_NODES needs no
-# --restart: the stream reads its new stream.json, and the dashboard its copy by a glob.
+# --restart: the copy reads its new fleet.env, and the dashboard the copy by a glob.
 # --plan checks site.env and prints what it would ship, where, and changes nothing.
 #
 # Needs here: git, python3, uv (to pin the dashboard's requirements), node and npm (the
@@ -23,7 +24,7 @@ umask 077
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 kit=${here#"$repo"/}                 # this kit's folder in the repository
-stream=$(dirname "$kit")/fleet       # the fleet stream's: the kit's sibling, as keep-running.sh has it
+guard=$(dirname "$kit")/fleet        # the nodes' guard's folder: the kit's sibling
 first=0 restart=0 plan=0
 for a in "$@"; do
   case $a in
@@ -71,13 +72,19 @@ echo "==> render"
 # (DASH_SSH, DASH_ROOT, DASH_PYTHON, SENDER_DIR, the nodes): set, and with no quotes,
 # spaces, or backslashes, and none still site.env.example's own (--strict). A bad
 # site.env stops here, before anything is shipped.
-for t in rc-tmux.service dashboard.config.json stream.json; do
+for t in rc-tmux.service dashboard.config.json fleet.env kit.env; do
   python3 "$here/render.py" --strict "$here/$t.in" "$site" > "$work/$t"
 done
+# The copy's settings as the copy itself will read them, which also names the nodes.
+if ! nodes=$(python3 "$repo/deploy/fleet/pull.py" --config "$work/fleet.env" check 2>&1); then
+  echo "deploy.sh: the copy's settings that $site renders do not load: $nodes" >&2
+  rm -rf "$work"
+  exit 1
+fi
 if [ "$plan" = 1 ]; then
-  echo "    site.env renders: $(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["hosts"]))' "$work/stream.json") node(s)"
+  echo "    site.env renders: $nodes"
   echo "    would build the page's bundle, and the release $sha (git archive HEAD)"
-  [ -n "${SENDER_DIR:-}" ] && echo "    would install the sender $sha in $SENDER_DIR on $SOURCE_NODES (SHARED_HOME=${SHARED_HOME:-yes})"
+  [ -n "${SENDER_DIR:-}" ] && echo "    would install the guard $sha in $SENDER_DIR on $SOURCE_NODES (SHARED_HOME=${SHARED_HOME:-yes})"
   echo "    would ship it to $DASH_SSH:$DASH_ROOT/releases/$sha, move current to it, and install the settings"
   echo "    would make a password (password.sh) if the dashboard's host has none"
   if [ "$restart" = 1 ]; then echo "    would restart the session"; else echo "    would start the session if it is down"; fi
@@ -99,21 +106,21 @@ fi
 
 echo "==> release $sha"
 git archive --format=tar --prefix=release/ HEAD dashboard/rc_dashboard dashboard/risk-profiles \
-  dashboard/pyproject.toml dashboard/uv.lock "$stream" "$kit" > "$work/release.tar"
+  dashboard/pyproject.toml dashboard/uv.lock deploy/fleet/pull.py "$guard" "$kit" > "$work/release.tar"
 (cd dashboard && uv export --frozen --no-dev --no-emit-project --format requirements-txt \
   --quiet) > "$work/requirements.txt"
 git show "HEAD:$kit/install-remote.sh" > "$work/install-remote.sh"
 
 if [ -n "${SENDER_DIR:-}" ]; then
-  echo "==> sender to $SENDER_DIR"
-  tar -xOf "$work/release.tar" "release/$stream/fleet_stream.py" > "$work/fleet_stream.py"
-  SITE_ENV="$site" "$here/ship-sender.sh" "$sha" "$work/fleet_stream.py"
+  echo "==> guard to $SENDER_DIR"
+  tar -xOf "$work/release.tar" "release/$guard/rsync_guard.py" > "$work/rsync_guard.py"
+  SITE_ENV="$site" "$here/ship-sender.sh" "$sha" "$work/rsync_guard.py"
 fi
 
 ssh_=(ssh -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 -o LogLevel=ERROR)
 echo "==> ship to $DASH_NODE"
 tar -C "$work" -czf - dist release.tar requirements.txt rc-tmux.service dashboard.config.json \
-  stream.json | "${ssh_[@]}" "$DASH_SSH" \
+  fleet.env kit.env | "${ssh_[@]}" "$DASH_SSH" \
   "umask 077; mkdir -p $DASH_ROOT/incoming/$sha && tar -C $DASH_ROOT/incoming/$sha -xzf -"
 # A host with no password hash gets one before the session starts, so the dashboard's
 # first start passes its check.

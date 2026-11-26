@@ -5,9 +5,8 @@
 #   check-local.sh --dirs-only   the folder and its cache/, logs/, and data/ are real 700
 #                                folders owned by this account (created if missing);
 #                                exit 0 or 13
-#   check-local.sh --base-ok     the folder and its data/ (the stream's base) are real 700
-#                                folders owned by this account, and the stream has not
-#                                tripped (no TRIPPED in the folder); exit 0, 11, or 13
+#   check-local.sh --base-ok     the folder and its data/ (where the copy goes) are real
+#                                700 folders owned by this account; exit 0 or 13
 #   check-local.sh --auth-set    etc/password.hash (or etc/auth.env) holds a password
 #                                hash that parses; exit 0 or 15
 #   check-local.sh --port-free   nothing listens on the dashboard's port yet; exit 0 or 14
@@ -15,21 +14,20 @@
 #   check-local.sh               the hourly check (check.sh runs it over ssh): all of the
 #                                above, linger, the tmux session and its two windows (a
 #                                window whose loop ended is started again), a dashboard
-#                                that stopped answering, every stream's health, the
+#                                that stopped answering, each node's copy, the
 #                                dashboard's own verdict (rc-dashboard status), log
 #                                rotation, and the privacy audit. One line out.
 #
 # keep-running.sh also runs the start checks before each start of its process.
 #
-# With site.env's PRIVATE_TREE=false (etc/stream.json's "private"), "a 700 folder owned by
-# this account" below reads "a real folder", and there is no privacy audit.
+# With site.env's PRIVATE_TREE=false (etc/kit.env), "a 700 folder owned by this account"
+# below reads "a real folder", and there is no privacy audit.
 #
-# Exit codes, most severe first when several apply: 11 TRIPPED (the stream stopped on a
-# swapped base folder; nothing is restarted), 13 UNSAFE (a folder is not this account's
-# 700 folder), 14 PORT (someone else listens on the port, or who listens cannot be
-# told), 15 AUTH (no password hash, one that does not parse, or a start failed), 16
-# STREAM (a source node down over an hour, one connected with nothing from it for an
-# hour, or a stale status), 17 STATUS (rc-dashboard status says warn or crit: a
+# Exit codes, most severe first when several apply: 13 UNSAFE (a folder is not this
+# account's 700 folder), 14 PORT (someone else listens on the port, or who listens cannot
+# be told), 15 AUTH (no password hash, one that does not parse, or a start failed), 16
+# COPY (a node's copy failing for over an hour, never good, or stale while the copy
+# runs), 17 STATUS (rc-dashboard status says warn or crit: a
 # collector silent, stopped or degraded), 12 AUDIT (files readable by others, or
 # extended ACLs), 10 RESTARTED, FROZEN, or LINGER
 # (something was started or restarted, or linger was turned back on), 0 OK; 2 for a
@@ -39,8 +37,8 @@ umask 077
 me=$(id -un)
 uid=$(id -u)
 # Everything lives in the deployment's folder; there is no default. The tests point the
-# run folder (data, cache, logs), the stream's base, and etc/ elsewhere; the session
-# never sets those.
+# run folder (data, cache, logs), the copy's base, and etc/ elsewhere; the session never
+# sets those.
 R=${RC_DASH_ROOT:-}
 if [ -z "$R" ]; then
   echo "check-local.sh: RC_DASH_ROOT is not set; it names the deployment's folder" >&2
@@ -49,28 +47,26 @@ fi
 RUN=${RC_DASH_RUN:-$R}
 BASE=${RC_FLEET_BASE:-$RUN/data}
 ETC=${RC_FLEET_ETC:-$R/etc}
-MARKER=$RUN/TRIPPED
 # The tmux session that runs both processes, its windows (tmux-session.sh), and the
 # loop each window runs.
 UNIT=rc-tmux.service
-WINDOWS="stream dashboard"
+WINDOWS="copy dashboard"
 KEEP=$(dirname "$0")/keep-running.sh
 CGROUP_ROOT=${RC_CGROUP_ROOT:-/sys/fs/cgroup}
 PROC_NET=${RC_PROC_NET:-/proc/net}
-DOWN_ALERT_S=3600          # a source node down, or silent while connected, this long is reported
-STALE_ALERT_S=600          # a status file older than this, with the stream running, too
+DOWN_ALERT_S=3600          # a node's copy failing, or never good, this long is reported
 FROZEN_AFTER_S=1200        # a listening dashboard this old must answer
 NEVER_LISTENED_S=7200      # one not listening yet gets this long: a start on a busy core is slow
 RETRY_S=${RC_CHECK_RETRY_S:-30}
 # The dashboard's port, from its settings; the dashboard's own default without them.
 PORT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server"]["port"])' \
        "$ETC/dashboard.config.json" 2>/dev/null || echo 8080)
-# site.env's PRIVATE_TREE, as deploy.sh renders it into etc/stream.json. "no" (a host that
-# only the team can log in to): modes, owners, and ACLs are the user's business, so the
-# folders must only be real folders, and the privacy audit is off. Anything unreadable
-# counts as "yes".
-PRIVATE=$(python3 -c 'import json,sys; print("no" if json.load(open(sys.argv[1])).get("private") is False else "yes")' \
-          "$ETC/stream.json" 2>/dev/null || echo yes)
+# site.env's PRIVATE_TREE, as deploy.sh renders it into etc/kit.env. "no" (a host that only
+# the team can log in to): modes, owners, and ACLs are the user's business, so the folders
+# must only be real folders, and the privacy audit is off. Anything unreadable counts as
+# "yes".
+PRIVATE=$(sed -n 's/^PRIVATE_TREE=//p' "$ETC/kit.env" 2>/dev/null | tail -n 1)
+[ "$PRIVATE" = no ] || PRIVATE=yes
 if [ "$PRIVATE" = no ]; then
   WANT="a real folder"
 else
@@ -93,7 +89,6 @@ own_dir() {      # the same, made if missing
 }
 dirs_ok() { own_dir "$RUN" && own_dir "$RUN/cache" && own_dir "$RUN/logs" && own_dir "$BASE"; }
 base_ok() { private_dir "$RUN" && private_dir "$BASE"; }
-tripped() { [ -e "$MARKER" ] || [ -L "$MARKER" ]; }
 unquote() {     # as keep-running.sh, and systemd, read a value: blanks, then one pair of quotes off
   local v=$1
   v=${v#"${v%%[![:space:]]*}"}
@@ -236,9 +231,6 @@ case "${1:-}" in
     dirs_ok && exit 0
     echo "UNSAFE $RUN is not $WANT" >&2; exit 13 ;;
   --base-ok)
-    if tripped; then
-      echo "TRIPPED the stream stopped itself; see $MARKER and the runbook" >&2; exit 11
-    fi
     base_ok && exit 0
     echo "UNSAFE $RUN or $BASE is missing or not $WANT" >&2; exit 13 ;;
   --auth-set)
@@ -257,7 +249,7 @@ esac
 found=()
 code=0
 severity() {
-  case $1 in 11) echo 7;; 13) echo 6;; 14) echo 5;; 15) echo 4;; 16|17) echo 3;; 12) echo 2;;
+  case $1 in 13) echo 6;; 14) echo 5;; 15) echo 4;; 16|17) echo 3;; 12) echo 2;;
              10) echo 1;; *) echo 0;; esac
 }
 note() {        # finding, exit code; the exit code kept is the most severe one
@@ -266,14 +258,6 @@ note() {        # finding, exit code; the exit code kept is the most severe one
   return 0
 }
 
-# Never print the marker's contents: it is only a sign that the stream stopped. A process
-# that started just as the stream tripped is stopped here.
-if tripped; then
-  note "TRIPPED the stream stopped itself; see $MARKER and the runbook" 11
-  for sc in rc-dashboard.scope rc-fleet-stream.scope; do
-    systemctl --user is-active --quiet "$sc" && systemctl --user stop "$sc"
-  done
-fi
 dirs_ok || note "UNSAFE $RUN or a folder in it is not $WANT" 13
 auth_set || note "AUTH $AUTH_WHY" 15
 
@@ -299,7 +283,7 @@ elif [ -n "$lines" ]; then
   [ "$foreign" = 1 ] && note "PORT foreign listener on port $PORT" 14
 fi
 
-if [ "$code" != 11 ] && [ "$code" != 13 ]; then
+if [ "$code" != 13 ]; then
   # Linger keeps the user manager, and with it the tmux session, running when no one
   # is logged in. An administrator or a cleanup script can turn it off (some sites do,
   # hourly, for accounts that run no tmux). This check's own login starts the user
@@ -353,33 +337,34 @@ if [ "$code" != 11 ] && [ "$code" != 13 ]; then
   fi
 fi
 
-# Each source node's stream, from the receiver's status file (read only after the
-# folder checks above passed).
-if base_ok && [ -f "$BASE/state/status.json" ] && [ ! -L "$BASE/state/status.json" ]; then
-  stream_active=0
-  systemctl --user is-active --quiet rc-fleet-stream.scope && stream_active=1
-  report=$(python3 - "$BASE/state/status.json" "$DOWN_ALERT_S" "$STALE_ALERT_S" "$stream_active" <<'PYEOF'
-import json, sys, time
-path, down_s, stale_s, active = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4] == "1"
+# Each node's copy, from pull.py's state (read only after the folder checks above passed):
+# a node whose passes have failed for over an hour, one never copied well, or one with no
+# good pass for an hour (pull.py status's STALE, which a stopped copy leaves).
+# RC_PULL_CMD stands in for the command (tests).
+if base_ok && [ -d "$BASE/mirror/.state" ] && [ ! -L "$BASE/mirror/.state" ]; then
+  if [ -n "${RC_PULL_CMD:-}" ]; then
+    pulled=$(bash -c "$RC_PULL_CMD" 2>/dev/null)
+  else
+    pulled=$(timeout 60 /usr/bin/python3 "$R/current/deploy/fleet/pull.py" --config "$ETC/fleet.env" \
+             status --stale "$DOWN_ALERT_S" --json 2>/dev/null)
+  fi
+  report=$(printf '%s' "$pulled" | python3 -c '
+import json, sys
+down_s = float(sys.argv[1])
 try:
-    st = json.load(open(path))
-except (OSError, ValueError) as e:
-    print("STREAM status unreadable: %s" % e)
+    doc = json.loads(sys.stdin.read())
+    rows = doc["nodes"]
+except (ValueError, KeyError, TypeError):
+    print("COPY its state could not be read (pull.py status)")
     sys.exit(0)
-now = time.time()
-age = now - float(st.get("at_epoch") or 0)
-if active and age > stale_s:
-    print("STREAM status is %d min old" % (age // 60))
-for host, s in sorted((st.get("hosts") or {}).items()):
-    since = s.get("down_since")
-    if not s.get("connected") and since and now - since > down_s:
-        err = (s.get("last_error") or "no error recorded")[:160]
-        print("STREAM %s down %.1f h: %s" % (host, (now - since) / 3600, err))
-    lag = s.get("lag_s")
-    if s.get("connected") and isinstance(lag, (int, float)) and lag > down_s:
-        print("STREAM %s stale: connected, nothing from it for %.1f h" % (host, lag / 3600))
-PYEOF
-  )
+for r in rows:
+    state, age = r.get("state"), r.get("last_ok_age_s")
+    err = str(r.get("error") or "no error recorded")[:160]
+    if state == "never" or (state in ("FAILED", "STALE") and age is None):
+        print("COPY %s never copied: %s" % (r.get("host"), err))
+    elif state == "STALE" or (state == "FAILED" and age > down_s):
+        print("COPY %s %s for %.1f h: %s" % (r.get("host"), state, age / 3600, err))
+' "$DOWN_ALERT_S" 2>/dev/null)
   while IFS= read -r l; do
     [ -n "$l" ] && note "$l" 16
   done <<< "$report"
@@ -387,7 +372,7 @@ fi
 
 # The dashboard's own verdict on every collector and link, from the settings it serves
 # with: `rc-dashboard status --json` (a heartbeat gone quiet, a probe that could not
-# load, a link the stream reports down). A level of warn or crit is a finding.
+# load, a node's copy that fails). A level of warn or crit is a finding.
 # RC_STATUS_CMD stands in for the command (tests).
 status_findings() {
   local out err rc
@@ -396,7 +381,7 @@ status_findings() {
     out=$(bash -c "$RC_STATUS_CMD" 2>"$err"); rc=$?
   elif [ -x "$R/venv/bin/python" ] && [ -d "$R/current/dashboard" ]; then
     out=$(cd "$R/current/dashboard" && RC_DASH_CONFIG=$ETC/dashboard.config.json \
-          RC_DASH_TRANSPORT_FILES=${RC_DASH_TRANSPORT_FILES:-$BASE/state/status.json} \
+          RC_DASH_TRANSPORT_FILES=${RC_DASH_TRANSPORT_FILES:-$BASE/mirror/.state/*.json} \
           timeout 300 "$R/venv/bin/python" -m rc_dashboard status --json 2>"$err"); rc=$?
   else
     rm -f "$err"
@@ -424,7 +409,7 @@ if level != "ok":
   fi
   rm -f "$err"
 }
-if [ "$code" != 11 ] && [ "$code" != 13 ]; then
+if [ "$code" != 13 ]; then
   while IFS= read -r l; do
     [ -n "$l" ] && note "$l" 17
   done <<< "$(status_findings)"

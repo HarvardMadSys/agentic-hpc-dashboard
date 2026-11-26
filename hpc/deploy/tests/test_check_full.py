@@ -1,5 +1,6 @@
 """check-local.sh's hourly run and its --base-ok start check, with systemctl, loginctl,
-ss, tmux, curl, and ps replaced by stand-ins that log their calls."""
+ss, tmux, curl, and ps replaced by stand-ins that log their calls, and the copy's state
+(`pull.py status --json`) by RC_PULL_CMD."""
 import json
 import os
 import shutil
@@ -68,7 +69,7 @@ echo "  ${STUB_AGE:-7200}"
 ''',
 }
 
-ACTIVE = "rc-tmux.service rc-dashboard.scope rc-fleet-stream.scope"
+ACTIVE = "rc-tmux.service rc-dashboard.scope rc-fleet-copy.scope"
 # A hash of the right shape: scrypt$n$r$p$salt$key, an 8-byte salt and a 16-byte key.
 HASH = "scrypt$16384$8$1$c2FsdHNhbHQ=$aGFzaGhhc2hoYXNoaGFzaA=="
 OURS = 'LISTEN 0 128 127.0.0.1:28090 0.0.0.0:* users:(("python",pid=4242,fd=7))'
@@ -82,7 +83,8 @@ class Rig(unittest.TestCase):
         self.base = os.path.join(self.tmpd, "data")
         self.home = os.path.join(self.tmp, "home")
         self.etc = os.path.join(self.home, "rc-dashboard", "etc")
-        for d in (self.tmpd, self.base, os.path.join(self.base, "state"),
+        for d in (self.tmpd, self.base, os.path.join(self.base, "mirror"),
+                  os.path.join(self.base, "mirror", ".state"),
                   os.path.join(self.tmpd, "cache"), os.path.join(self.tmpd, "logs"),
                   self.home, os.path.join(self.home, "rc-dashboard"), self.etc):
             os.mkdir(d, 0o700)
@@ -107,29 +109,35 @@ class Rig(unittest.TestCase):
             fh.write("4242\n")
         self.log = os.path.join(self.tmp, "calls.log")
         self.ss_file = os.path.join(self.tmp, "ss.out")
-        self.write_status({"node01": {"connected": True, "down_since": None, "last_error": None}})
+        self.pull_file = os.path.join(self.tmp, "pull.json")
+        self.write_pull(self.node("node01"))
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def write_status(self, hosts, age=0):
-        p = os.path.join(self.base, "state", "status.json")
-        with open(p, "w") as fh:
-            json.dump({"at_epoch": time.time() - age, "hosts": hosts}, fh)
-        os.chmod(p, 0o600)
+    @staticmethod
+    def node(host, state="ok", age=30.0, error=None):
+        """One row of `pull.py status --json`: age is the last good pass's, in seconds."""
+        return {"host": host, "kind": "rsync", "state": state, "ok": state == "ok",
+                "last_ok_age_s": age, "last_attempt_age_s": 30.0, "error": error}
+
+    def write_pull(self, *rows):
+        with open(self.pull_file, "w") as fh:
+            json.dump({"stale_after_s": 3600, "nodes": list(rows)}, fh)
 
     def listeners(self, *lines):
         with open(self.ss_file, "w") as fh:
             fh.write("".join(l + "\n" for l in lines))
 
-    def run_check(self, *args, active=ACTIVE, linger="yes", panes="stream=0 dashboard=0",
+    def run_check(self, *args, active=ACTIVE, linger="yes", panes="copy=0 dashboard=0",
                   http="401", age="7200", start_rc="0", swap="", **extra):
         env = dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"], HOME=self.home,
                    RC_DASH_ROOT=os.path.join(self.home, "rc-dashboard"), RC_DASH_RUN=self.tmpd,
                    RC_FLEET_ETC=self.etc, RC_CGROUP_ROOT=self.cgroot,
                    RC_CHECK_RETRY_S="0", STUB_LOG=self.log, STUB_ACTIVE=active,
                    STUB_LINGER=linger, STUB_SS_FILE=self.ss_file, STUB_PANES=panes,
-                   STUB_HTTP=http, STUB_AGE=age, STUB_START_RC=start_rc, STUB_SWAP=swap)
+                   STUB_HTTP=http, STUB_AGE=age, STUB_START_RC=start_rc, STUB_SWAP=swap,
+                   RC_PULL_CMD="cat %s" % self.pull_file)
         env.update(extra)
         p = subprocess.run(["bash", SCRIPT] + list(args), env=env, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, universal_newlines=True)
@@ -156,30 +164,9 @@ class TestFullRun(Rig):
         self.assertIn("LINGER", out)
         self.assertIn("enable-linger", calls)
 
-    def test_marker_reported_without_contents(self):
-        secret = os.path.join(self.tmp, "secret")
-        with open(secret, "w") as fh:
-            fh.write("not-the-real-password-1234\n")
-        os.symlink(secret, os.path.join(self.tmpd, "TRIPPED"))
-        code, out, calls = self.run_check(active="", panes="stream=1 dashboard=1")
-        self.assertEqual(code, 11)
-        self.assertIn("TRIPPED", out)
-        self.assertNotIn("not-the-real-password", out)
-        self.assertNotIn("systemctl --user start", calls)
-        self.assertNotIn("respawn-pane", calls)
-
-    def test_trip_stops_what_still_runs(self):
-        """A dashboard that started just as the stream tripped is stopped here."""
-        open(os.path.join(self.tmpd, "TRIPPED"), "w").close()
-        code, out, calls = self.run_check()
-        self.assertEqual(code, 11)
-        self.assertIn("systemctl --user stop rc-dashboard.scope", calls)
-        self.assertIn("systemctl --user stop rc-fleet-stream.scope", calls)
-        self.assertNotIn("systemctl --user start", calls)
-
     def test_missing_data_is_recreated(self):
         """In /tmp the top folder is ours under the sticky bit, so a missing data/
-        (a reimage, or the user's own rm) is made again and the stream refills it."""
+        (a reimage, or the user's own rm) is made again and the copy refills it."""
         shutil.rmtree(self.base)
         code, out, calls = self.run_check(active="")
         self.assertNotIn("UNSAFE", out)
@@ -188,7 +175,7 @@ class TestFullRun(Rig):
 
     def test_open_top_folder_is_unsafe(self):
         os.chmod(self.tmpd, 0o755)
-        code, out, calls = self.run_check(active="", panes="stream=1 dashboard=1")
+        code, out, calls = self.run_check(active="", panes="copy=1 dashboard=1")
         self.assertEqual(code, 13)
         self.assertIn("UNSAFE", out)
         self.assertNotIn("systemctl --user start", calls)
@@ -196,8 +183,8 @@ class TestFullRun(Rig):
 
     def test_foreign_listener_while_dashboard_down(self):
         self.listeners("LISTEN 0 128 127.0.0.1:28090 0.0.0.0:*")
-        code, out, calls = self.run_check(active="rc-tmux.service rc-fleet-stream.scope",
-                                          panes="stream=0 dashboard=1")
+        code, out, calls = self.run_check(active="rc-tmux.service rc-fleet-copy.scope",
+                                          panes="copy=0 dashboard=1")
         self.assertEqual(code, 14)
         self.assertIn("PORT foreign", out)
         self.assertNotIn("respawn-pane -t rc-dashboard:dashboard", calls)
@@ -214,37 +201,79 @@ class TestFullRun(Rig):
         self.assertEqual(code, 14)
         self.assertIn("PORT foreign", out)
 
-    def test_stream_down_for_hours_alerts(self):
+    def test_a_copy_failing_for_over_an_hour_alerts(self):
         self.listeners(OURS)
-        self.write_status({"node02": {"connected": False, "down_since": time.time() - 7300,
-                                          "last_error": "the stream ended (transport: Host key verification failed.)"},
-                           "node01": {"connected": True, "down_since": None, "last_error": None}})
+        self.write_pull(self.node("node02", "FAILED", age=7300.0,
+                                  error="rsync ended with exit 255: Host key verification failed."),
+                        self.node("node01"))
         code, out, calls = self.run_check()
         self.assertEqual(code, 16)
-        self.assertIn("STREAM node02", out)
+        self.assertIn("COPY node02 FAILED for 2.0 h", out)
         self.assertIn("Host key verification failed", out)
         self.assertNotIn("node01", out)
 
-    def test_connected_but_silent_alerts(self):
-        """The review's case: connected, lag_s 86403, and nothing printed. The stream
-        closes a link silent for minutes, so a connected one silent for an hour is stuck."""
+    def test_a_copy_failing_for_minutes_is_left_to_retry(self):
+        """A pass fails now and then (a node rebooting); the copy tries again each minute."""
         self.listeners(OURS)
-        self.write_status({"node01": {"connected": True, "down_since": None, "last_error": None,
-                                      "lag_s": 86403.0},
-                           "node02": {"connected": True, "down_since": None, "last_error": None,
-                                      "lag_s": 12.5}})
+        self.write_pull(self.node("node01", "FAILED", age=600.0, error="ssh: connect timed out"))
         code, out, calls = self.run_check()
-        self.assertEqual(code, 16)
-        self.assertIn("STREAM node01 stale", out)
-        self.assertNotIn("node02", out)
+        self.assertEqual((code, out), (0, "OK"))
 
-    def test_stale_status_alerts(self):
+    def test_a_node_never_copied_alerts(self):
+        """No pass at all, or none good yet: the node's files have never reached the
+        dashboard, which a node's first failing passes say as well as a missing state file."""
         self.listeners(OURS)
-        self.write_status({"node01": {"connected": True, "down_since": None, "last_error": None}},
-                          age=1800)
+        self.write_pull(self.node("node01", "never", age=None, error="no pass recorded"),
+                        self.node("node02", "FAILED", age=None, error="Permission denied (publickey)."))
         code, out, calls = self.run_check()
         self.assertEqual(code, 16)
-        self.assertIn("STREAM status", out)
+        self.assertIn("COPY node01 never copied: no pass recorded", out)
+        self.assertIn("COPY node02 never copied: Permission denied (publickey).", out)
+
+    def test_a_stale_copy_alerts(self):
+        """Passes that stopped altogether (the copy's window ended, or every pass hangs)."""
+        self.listeners(OURS)
+        self.write_pull(self.node("node01", "STALE", age=7300.0,
+                                  error="no pass for 2h 1m: is the copy running?"))
+        code, out, calls = self.run_check()
+        self.assertEqual(code, 16)
+        self.assertIn("COPY node01 STALE for 2.0 h: no pass for 2h 1m", out)
+
+    def test_a_state_that_cannot_be_read_is_said(self):
+        self.listeners(OURS)
+        with open(self.pull_file, "w") as fh:
+            fh.write("pull.py: FLEET_HOSTS is empty\n")
+        code, out, calls = self.run_check()
+        self.assertEqual(code, 16)
+        self.assertIn("COPY its state could not be read", out)
+
+    def test_the_copys_own_status_is_asked(self):
+        """Without RC_PULL_CMD: the release's pull.py, with the deployment's fleet.env, and
+        an hour as its STALE line, which the check's own reading of FAILED matches."""
+        fleet = os.path.join(self.home, "rc-dashboard")
+        for d in ("current", "deploy", "fleet"):
+            fleet = os.path.join(fleet, d)
+            os.mkdir(fleet, 0o700)      # the privacy audit flags anything wider
+        argv = os.path.join(self.tmp, "argv.json")
+        with open(os.path.join(fleet, "pull.py"), "w") as fh:
+            fh.write("import json, sys\njson.dump(sys.argv[1:], open(%r, 'w'))\n"
+                     "print(json.dumps({'nodes': []}))\n" % argv)
+        os.chmod(os.path.join(fleet, "pull.py"), 0o600)
+        self.listeners(OURS)
+        code, out, calls = self.run_check(RC_PULL_CMD="")
+        self.assertEqual((code, out), (0, "OK"))
+        with open(argv) as fh:
+            self.assertEqual(json.load(fh), ["--config", os.path.join(self.etc, "fleet.env"),
+                                             "status", "--stale", "3600", "--json"])
+
+    def test_no_copy_state_yet_is_not_read(self):
+        """A deployment whose copy has not run once has no state folder: nothing to say."""
+        self.listeners(OURS)
+        os.rmdir(os.path.join(self.base, "mirror", ".state"))
+        with open(self.pull_file, "w") as fh:
+            fh.write("not json")
+        code, out, calls = self.run_check()
+        self.assertEqual((code, out), (0, "OK"))
 
 
 class TestAuth(Rig):
@@ -317,10 +346,10 @@ class TestStatus(Rig):
         code, out, _ = self.run_check(**env)
         self.assertEqual((code, out), (0, "OK"))
 
-    def test_a_trip_skips_the_status(self):
-        open(os.path.join(self.tmpd, "TRIPPED"), "w").close()
+    def test_an_unsafe_folder_skips_the_status(self):
+        os.chmod(self.tmpd, 0o755)
         code, out, _ = self.run_check(**self.status({"level": "crit", "why": ["x"]}, rc=2))
-        self.assertEqual(code, 11)
+        self.assertEqual(code, 13)
         self.assertNotIn("STATUS", out)
 
 
@@ -359,7 +388,7 @@ class TestWithoutSs(Rig):
         as it is beside a foreign listener."""
         empty = os.path.join(self.tmp, "net")
         os.mkdir(empty, 0o700)
-        code, out, calls = self.run_check(panes="stream=0 dashboard=1", PATH=self.path,
+        code, out, calls = self.run_check(panes="copy=0 dashboard=1", PATH=self.path,
                                           RC_PROC_NET=empty)
         self.assertEqual(code, 14)
         self.assertIn("PORT cannot tell", out)
@@ -370,7 +399,7 @@ class TestSession(Rig):
     def test_starts_the_session_when_it_is_down(self):
         """The tmux session runs both processes, and a running tmux is what keeps some
         sites' cleanup scripts from turning linger off."""
-        code, out, calls = self.run_check(active="rc-dashboard.scope rc-fleet-stream.scope")
+        code, out, calls = self.run_check(active="rc-dashboard.scope rc-fleet-copy.scope")
         self.assertEqual(code, 10)
         self.assertIn("RESTARTED rc-tmux.service", out)
         self.assertIn("systemctl --user start rc-tmux.service", calls)
@@ -382,23 +411,23 @@ class TestSession(Rig):
         self.assertIn("START FAILED rc-tmux.service", out)
 
     def test_respawns_a_window_whose_loop_ended(self):
-        code, out, calls = self.run_check(active="rc-tmux.service rc-fleet-stream.scope",
-                                          panes="stream=0 dashboard=1")
+        code, out, calls = self.run_check(active="rc-tmux.service rc-fleet-copy.scope",
+                                          panes="copy=0 dashboard=1")
         self.assertEqual(code, 10)
         self.assertIn("RESTARTED dashboard", out)
         self.assertIn("tmux -L rc-dashboard respawn-pane -t rc-dashboard:dashboard.0", calls)
-        self.assertNotIn("respawn-pane -t rc-dashboard:stream", calls)
+        self.assertNotIn("respawn-pane -t rc-dashboard:copy", calls)
 
     def test_split_window_is_not_missing(self):
         """Someone split the window (Ctrl-b %): its first pane is the loop's."""
         self.listeners(OURS)
-        code, out, calls = self.run_check(panes="stream=0 dashboard=0,0")
+        code, out, calls = self.run_check(panes="copy=0 dashboard=0,0")
         self.assertEqual((code, out), (0, "OK"))
         self.assertNotIn("new-window", calls)
 
     def test_dead_loop_in_a_split_window_is_respawned(self):
         self.listeners(OURS)
-        code, out, calls = self.run_check(panes="stream=0 dashboard=1,0")
+        code, out, calls = self.run_check(panes="copy=0 dashboard=1,0")
         self.assertEqual(code, 10)
         self.assertIn("respawn-pane -t rc-dashboard:dashboard.0", calls)
         self.assertNotIn("new-window", calls)
@@ -407,11 +436,11 @@ class TestSession(Rig):
         self.listeners(OURS)
         code, out, calls = self.run_check(panes="dashboard=0")
         self.assertEqual(code, 10)
-        self.assertIn("RESTARTED stream", out)
+        self.assertIn("RESTARTED copy", out)
         made = [l for l in calls.splitlines() if " new-window " in l]
         self.assertEqual(len(made), 1, calls)
-        self.assertIn("tmux -L rc-dashboard new-window -d -t rc-dashboard: -n stream ", made[0])
-        self.assertTrue(made[0].endswith("exec %s/keep-running.sh stream" % KIT), made[0])
+        self.assertIn("tmux -L rc-dashboard new-window -d -t rc-dashboard: -n copy ", made[0])
+        self.assertTrue(made[0].endswith("exec %s/keep-running.sh copy" % KIT), made[0])
 
     def test_frozen_dashboard_is_restarted(self):
         """Listening but not answering, as a soft memory cap (memory.high) can stall it."""
@@ -459,42 +488,42 @@ class TestSession(Rig):
 
 
 class TestNotPrivate(Rig):
-    """site.env's PRIVATE_TREE=false (a host only the team can log in to): no UNSAFE for open
-    folders and no AUDIT, but a trip is still a trip."""
+    """site.env's PRIVATE_TREE=false (a host only the team can log in to), as deploy.sh
+    renders it into etc/kit.env: no UNSAFE for open folders and no AUDIT, but a folder
+    that is not a real folder is still unsafe."""
 
     def setUp(self):
         super().setUp()
-        p = os.path.join(self.etc, "stream.json")
+        p = os.path.join(self.etc, "kit.env")
         with open(p, "w") as fh:
-            json.dump({"private": False}, fh)
+            fh.write("PRIVATE_TREE=no\n")
         os.chmod(p, 0o600)
 
     def test_open_folders_and_files_are_not_reported(self):
         self.listeners(OURS)
         os.chmod(self.tmpd, 0o710)
         os.chmod(self.base, 0o750)
-        p = os.path.join(self.base, "state", "shared.json")
+        p = os.path.join(self.base, "mirror", "shared.json")
         with open(p, "w") as fh:
             fh.write("{}")
         os.chmod(p, 0o640)
         code, out, _ = self.run_check()
         self.assertEqual((code, out), (0, "OK"))
 
-    def test_a_trip_is_still_reported(self):
+    def test_a_symlinked_folder_is_still_unsafe(self):
         self.listeners(OURS)
-        open(os.path.join(self.tmpd, "TRIPPED"), "w").close()
+        real = os.path.join(self.tmp, "elsewhere")
+        os.mkdir(real, 0o700)
+        shutil.rmtree(self.base)
+        os.symlink(real, self.base)
         code, out, _ = self.run_check()
-        self.assertEqual(code, 11)
-        self.assertIn("TRIPPED", out)
+        self.assertEqual(code, 13)
+        self.assertIn("UNSAFE", out)
 
 
 class TestBaseOk(Rig):
     def test_private_base_ok(self):
         self.assertEqual(self.run_check("--base-ok")[0], 0)
-
-    def test_marker_refuses(self):
-        open(os.path.join(self.tmpd, "TRIPPED"), "w").close()
-        self.assertEqual(self.run_check("--base-ok")[0], 11)
 
     def test_symlink_base_refuses(self):
         real = os.path.join(self.tmpd, "elsewhere")

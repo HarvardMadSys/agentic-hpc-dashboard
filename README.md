@@ -190,7 +190,7 @@ deploy/rc-deploy status         # every collector's verdict and every node's cop
 |---|---|---|
 | **One server** | the server runs the collector and the dashboard, as systemd units | [`deploy/single`](deploy/single/README.md) |
 | **A fleet** | every node runs the collector; one more host runs the dashboard over a copy of their files, pulled with rsync every minute | [`deploy/fleet`](deploy/fleet/README.md) |
-| **A cluster's login nodes** | the same where you have no root anywhere: each node's files stream over ssh to a host of your own ([`hpc/fleet/`](hpc/fleet/README.md)), set from one file and checked every hour | [`hpc/deploy`](hpc/deploy/README.md) |
+| **A cluster's login nodes** | the same where you have no root anywhere: a host of your own copies each node's files with the same rsync, through a key the nodes let run nothing else ([`hpc/fleet/`](hpc/fleet/README.md)), set from one file and checked every hour | [`hpc/deploy`](hpc/deploy/README.md) |
 
 [`deploy/README.md`](deploy/README.md) covers what the first two share: the units, the
 password, the hourly check, settings, upgrading, backups, moving and removing.
@@ -231,12 +231,11 @@ The records name real users and show what they ran, so both halves keep them clo
   off). Nothing it reads or shows leaves the host for a model's provider. It counts which tabs
   readers open, a count a day kept on its own host and read with `rc-dashboard usage`, with no
   user, window or filter (`RC_DASH_COUNT_VIEWS=0` turns that off).
-- **The fleet stream** carries the files over ssh, with a key that can run the sender and
-  nothing else, and only from the dashboard's host.
-- **The fleet's copy** ([`deploy/fleet`](deploy/fleet/README.md)) is pulled by an account in
-  the collector's group, with a key that runs read-only rsync of the collector's folders and
-  nothing else (`rrsync -ro`, where the node has it), only from the dashboard's host, into a
-  folder only the dashboard's account can read.
+- **The copy** of the nodes' files is pulled with a key that runs read-only rsync of the
+  collector's folders and nothing else, only from the dashboard's host, into a folder only
+  the dashboard's account can read: by an account in the collector's group, through `rrsync
+  -ro` where the node has it ([`deploy/fleet`](deploy/fleet/README.md)), or, with no root on
+  the nodes, through [`hpc/fleet`](hpc/fleet/README.md)'s guard.
 
 ## Documentation map
 
@@ -260,7 +259,7 @@ The records name real users and show what they ran, so both halves keep them clo
 | [`docs/plans/`](docs/plans/) | implementation plans, kept as the record of how the work was done |
 | [`deploy/README.md`](deploy/README.md) | the live service on servers where you have root: what runs where, the password, watching, settings, upgrading; [`single/`](deploy/single/README.md) and [`fleet/`](deploy/fleet/README.md) install each layout |
 | [`hpc/README.md`](hpc/README.md) | what is HPC-specific, and which HPC settings stay in the collector and the dashboard |
-| [`hpc/fleet/README.md`](hpc/fleet/README.md) | the fleet stream's three programs, and what each is for |
+| [`hpc/fleet/README.md`](hpc/fleet/README.md) | the guard that lets the copy's key read the collector's folder and nothing else |
 | [`hpc/deploy/README.md`](hpc/deploy/README.md) | the live deployment on login nodes: the settings file, the first deploy, memory and disk, upgrades, and the hourly check |
 | [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) | the public demo: deploying it, its password, and deploying from GitHub |
 | [`docs/logo/README.md`](docs/logo/README.md) | the mark and the lockups |

@@ -9,9 +9,11 @@
 # came before. The settings stay as the last deploy rendered them, but for a release that
 # reads no pattern root, whose settings name each node's folder in place of the copy's
 # pattern, and for one from before the password's hash file, whose etc/auth.env holds the
-# hash in etc/password.hash again. The nodes keep their sender: a sender newer than the
-# receiver is the order deploy.sh keeps anyway. To go back for good, check out the older
-# commit and run deploy.sh --restart.
+# hash in etc/password.hash again. On the nodes, SENDER_DIR/current goes back to that
+# release's code too, where a node still has it (install-sender.sh keeps the one before):
+# a release from before the copy (deploy/fleet/pull.py) streamed with a sender of its own,
+# which the copy's guard does not answer. To go back for good, check out the older commit
+# and run deploy.sh --restart.
 # --plan prints the release it would go back to, and changes nothing.
 set -euo pipefail
 umask 077
@@ -29,8 +31,10 @@ done
 # shellcheck source=/dev/null
 . "${SITE_ENV:-$here/site.env}"
 : "${DASH_SSH:?DASH_SSH is not set in site.env}" "${DASH_ROOT:?DASH_ROOT is not set in site.env}"
-ssh -i "${SSH_KEY:-$HOME/.ssh/id_ed25519}" -o IdentitiesOnly=yes -o BatchMode=yes \
-    -o ConnectTimeout=20 -o LogLevel=ERROR "$DASH_SSH" "bash -s -- $DASH_ROOT '$want' $plan" <<'REMOTE'
+ssh_=(ssh -i "${SSH_KEY:-$HOME/.ssh/id_ed25519}" -o IdentitiesOnly=yes -o BatchMode=yes
+      -o ConnectTimeout=20 -o LogLevel=ERROR)
+# The host first; the remote script's last line names the release it went back to.
+out=$("${ssh_[@]}" "$DASH_SSH" "bash -s -- $DASH_ROOT '$want' $plan" <<'REMOTE'
 set -euo pipefail
 R=$1 want=$2 plan=$3
 cur=$(readlink "$R/current" 2>/dev/null | sed 's#^releases/##')
@@ -118,4 +122,27 @@ mv -T "$R/current.new" "$R/current"
 printf '%s %s rollback\n' "$want" "$(date '+%F %T')" >> "$R/releases/.history"
 systemctl --user restart rc-tmux.service
 echo "current: $want (was ${cur:-none}); the session restarted"
+echo "ROLLED_BACK_TO=$want"
 REMOTE
+) || { rc=$?; printf '%s\n' "$out"; exit "$rc"; }
+printf '%s\n' "$out" | grep -v '^ROLLED_BACK_TO='
+to=$(printf '%s\n' "$out" | sed -n 's/^ROLLED_BACK_TO=//p' | tail -n 1)
+# The nodes: SENDER_DIR/current back to that release's code, where a node still has it
+# (install-sender.sh keeps the one it replaced). Once with a shared home.
+if [ -n "$to" ] && [ -n "${SENDER_DIR:-}" ]; then
+  for node in $SOURCE_NODES; do
+    dest="$SOURCE_USER@$node${SOURCE_DOMAIN:+.$SOURCE_DOMAIN}"
+    if r=$("${ssh_[@]}" "$dest" "if [ -d $SENDER_DIR/$to ]; then ln -sfn $to $SENDER_DIR/current.new && mv -T $SENDER_DIR/current.new $SENDER_DIR/current && if [ -e $SENDER_DIR/$to/rsync_guard.py ]; then echo moved; else echo moved-stream; fi; else echo none; fi" 2>&1); then
+      case $r in
+        moved) echo "  $node: $SENDER_DIR/current is $to again" ;;
+        # A release from before the copy has the stream's sender alone: a key line made
+        # for the copy (rsync_guard.py) is not answered until it runs that sender again.
+        moved-stream) echo "  $node: $SENDER_DIR/current is $to again, the stream's sender from before the copy: a key line that runs rsync_guard.py is not answered now; make it run fleet_stream.py send --root <SOURCE_ROOT> (hpc/deploy/README.md)" ;;
+        *) echo "  $node: no $to in $SENDER_DIR; it keeps the code it has" ;;
+      esac
+      [ "${SHARED_HOME:-yes}" = yes ] && break
+    else
+      echo "  $node: not reached: $r" >&2
+    fi
+  done
+fi

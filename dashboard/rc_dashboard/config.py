@@ -519,9 +519,9 @@ def defaults():
                   "reducer_version": 3},
         # Is the collection working (status.py: `rc-dashboard status`,
         # /api/status, /metrics)? `transport_files`: the state files of what
-        # copies the collectors' files here -- deploy/fleet's pull.py
-        # (<mirror>/.state/<node>.json) and hpc/fleet's receiver
-        # (<base>/state/status.json) -- as paths or glob patterns.
+        # copies the collectors' files here -- deploy/fleet's pull.py, which
+        # both kits copy with (<mirror>/.state/<node>.json) -- as paths or glob
+        # patterns.
         # `stale_s`: a host's newest record, or its copy's last good pass,
         # older than this is a problem. Neither changes a number, so no saved
         # build or hour is keyed on them (`UNREDUCED`).

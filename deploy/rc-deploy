@@ -23,7 +23,7 @@ host. It writes one settings file and records the kit in it (KIT=):
     single  one server with root runs both (deploy/single)   settings: /etc/rc-dashboard/site.env
     fleet   root on the nodes and the dashboard's host; the dashboard copies each node
             with rsync (deploy/fleet)                         settings: /etc/rc-dashboard/site.env
-    hpc     no root needed: each node's files stream over ssh to a host of your own
+    hpc     no root needed: each node's files are copied over ssh to a host of your own
             (hpc/deploy)                                      settings: hpc/deploy/site.env
 
 single and fleet keep their settings with the install, so init runs as root for them
@@ -375,10 +375,10 @@ def choose_kit(slurm, nodes, root_nodes, root_dash):
         if root_dash == "yes":
             return "single", "one server, with root: it runs both"
         return "hpc", ("no root here: the site's administrators install the collector (the RPM), "
-                       "and its files stream to a host of your own")
+                       "and its files are copied to a host of your own")
     if root_nodes == "yes" and root_dash == "yes":
         return "fleet", "root on the nodes and the dashboard's host: rsync copies each node"
-    return "hpc", "no root on %s: each node's files stream over ssh, started by a key that can "\
+    return "hpc", "no root on %s: each node's files are copied over ssh, with a key that can "\
         "run nothing else" % ("the nodes" if root_nodes != "yes" else "the dashboard's host")
 
 
@@ -580,7 +580,7 @@ def cmd_add_node(args):
         set_line(path, "SOURCE_NODES", " ".join(nodes + [name]))
         say("%s added to SOURCE_NODES in %s" % (name, path))
         if vals.get("SHARED_HOME", "yes") != "yes":
-            say("the nodes do not share a home: add the stream key's line to %s's "
+            say("the nodes do not share a home: add the copy key's line to %s's "
                 "~/.ssh/authorized_keys on %s (hpc/deploy/README.md, step 3)"
                 % (vals.get("SOURCE_USER"), name))
         return run([kit_script(kit, "deploy.sh")], env={"SITE_ENV": path})
@@ -671,20 +671,18 @@ def cmd_remove_node(args):
             # Refused before the file changes: render.py renders no deployment of no
             # node, so an emptied SOURCE_NODES stopped deploy.sh with the receiver still
             # copying the node, --purge-copy not reached, and every later deploy stopped.
-            raise Refused("%s is the only node in SOURCE_NODES, and a deployment streams from "
+            raise Refused("%s is the only node in SOURCE_NODES, and a deployment copies from "
                           "at least one: add its replacement first (add-node), or stop "
                           "collecting altogether (uninstall)" % name)
         set_line(path, "SOURCE_NODES", " ".join(rest))
         say("%s taken out of SOURCE_NODES in %s" % (name, path))
         run([kit_script(kit, "deploy.sh")], env={"SITE_ENV": path})
         if args.purge_copy:
-            # Its copy, the fetches it had half done, and its verified ledger, which named
-            # files the copy no longer held: added again, the node's frames for them were
-            # refused. (The receiver also forgets a ledger's keys whose files are gone,
-            # for a ledger its retiring link wrote back after this.)
+            # Its copy and its state file (pull.py's), and what the stream before it kept
+            # of the node: the fetches it had half done and its verified ledger.
             data = "%s/data" % vals["DASH_ROOT"]
-            gone = ["%s/mirror/%s" % (data, name), "%s/staging/%s" % (data, name),
-                    "%s/state/%s.verified.json" % (data, name)]
+            gone = ["%s/mirror/%s" % (data, name), "%s/mirror/.state/%s.json" % (data, name),
+                    "%s/staging/%s" % (data, name), "%s/state/%s.verified.json" % (data, name)]
             rc = run(_hpc_ssh(vals) + [vals["DASH_SSH"],
                                        "rm -rf " + " ".join(shlex.quote(p) for p in gone)],
                      check=False)
@@ -693,7 +691,7 @@ def cmd_remove_node(args):
                 raise Refused("%s is out of SOURCE_NODES and deployed without it, but its copy "
                               "could not be removed (ssh ended with exit %d): remove %s on %s "
                               "by hand" % (name, rc, " ".join(gone), vals["DASH_SSH"]))
-        say("on %s, take the stream key's line out of %s's ~/.ssh/authorized_keys if its home is "
+        say("on %s, take the copy key's line out of %s's ~/.ssh/authorized_keys if its home is "
             "its own" % (name, vals.get("SOURCE_USER")))
         return 0
     need_root("remove-node")
@@ -748,9 +746,9 @@ def cmd_status(args):
     if kit == "hpc":
         r = vals["DASH_ROOT"]
         remote = ("cd %s/current/dashboard && RC_DASH_CONFIG=%s/etc/dashboard.config.json "
-                  "RC_DASH_TRANSPORT_FILES=%s/data/state/status.json %s/venv/bin/python -m rc_dashboard "
-                  "status; rc=$?; echo; /usr/bin/python3 %s/current/hpc/fleet/fleet_stream.py status "
-                  "--base %s/data; exit $rc" % (r, r, r, r, r, r))
+                  "RC_DASH_TRANSPORT_FILES='%s/data/mirror/.state/*.json' %s/venv/bin/python -m "
+                  "rc_dashboard status; rc=$?; echo; /usr/bin/python3 %s/current/deploy/fleet/pull.py "
+                  "--config %s/etc/fleet.env status; exit $rc" % (r, r, r, r, r, r))
         return run(_hpc_ssh(vals) + [vals["DASH_SSH"], remote], check=False)
     need_root("status")
     return run([os.path.join(HERE, "common", "check.sh"), "--print"], check=False)

@@ -122,7 +122,8 @@ inflates whole; its docstring gives each rule. `dashboard/tests/test_fleet_copy.
 dashboard's own tail over such a copy: every record is read once.
 
 Only `<day>/<name>.jsonl` and `<day>/<name>.jsonl.gz` are copied, of the `FLEET_DAYS` newest
-days, and no link is followed. The copy is private to `rc-dashboard` (700/600), and nothing
+days, and no link is followed. The copy is private to `rc-dashboard` (700/600;
+`FLEET_PRIVATE=no` leaves its modes to the umask and the folder's default ACL), and nothing
 is copied while its volume has less than `FLEET_FREE_MIN_GB` free. A node's copy lags the
 node by up to `FLEET_INTERVAL_S` (60 s) plus a pass; the dashboard calls a feed stale after
 5 minutes without a new record (`RC_DASH_EBPF_MAX_AGE_S`).

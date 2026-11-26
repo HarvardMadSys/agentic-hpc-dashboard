@@ -1,5 +1,5 @@
-"""install-sender.sh, run for real against a temporary folder: the sender that each source
-node runs for the stream key's forced command."""
+"""install-sender.sh, run for real against a temporary folder: the guard that each source
+node runs for the copy key's forced command, under its own name and the earlier stream's."""
 import os
 import shutil
 import stat
@@ -34,7 +34,7 @@ class TestInstallSender(unittest.TestCase):
         return p
 
     def current(self):
-        with open(os.path.join(self.dir, "current", "fleet_stream.py")) as fh:
+        with open(os.path.join(self.dir, "current", "rsync_guard.py")) as fh:
             return fh.read()
 
     def test_installs_and_points_current_at_it(self):
@@ -43,8 +43,13 @@ class TestInstallSender(unittest.TestCase):
         self.assertEqual(os.readlink(os.path.join(self.dir, "current")), "aaaaaaaaaaaa")
         self.assertEqual(self.current(), "one")
         self.assertEqual(stat.S_IMODE(os.stat(self.dir).st_mode), 0o700)
-        f = os.path.join(self.dir, "aaaaaaaaaaaa", "fleet_stream.py")
+        f = os.path.join(self.dir, "aaaaaaaaaaaa", "rsync_guard.py")
         self.assertEqual(stat.S_IMODE(os.stat(f).st_mode), 0o600)
+        # a key from the earlier stream runs `current/fleet_stream.py send --root ROOT`
+        old = os.path.join(self.dir, "current", "fleet_stream.py")
+        self.assertEqual(os.readlink(old), "rsync_guard.py")
+        with open(old) as fh:
+            self.assertEqual(fh.read(), "one")
         self.assertEqual(sorted(os.listdir(self.dir)), ["aaaaaaaaaaaa", "current"])
 
     def test_keeps_the_one_before_and_removes_older_ones(self):

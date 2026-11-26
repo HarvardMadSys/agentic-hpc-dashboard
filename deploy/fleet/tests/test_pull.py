@@ -366,6 +366,24 @@ class TestRun(Rig):
             out = self.run_pull(code=3)
         self.assertIn("another pull.py", out)
 
+    def test_the_copy_is_private_unless_told_not(self):
+        """FLEET_PRIVATE=yes, the default, makes the copy 700/600 whatever was there; no
+        leaves its modes to the umask and the folder's default ACL, for a team that reads
+        the copy through one (the HPC kit's PRIVATE_TREE=false)."""
+        self.write("n1", "2026-11-21/n1.exits.jsonl", lines(0, 2))
+        os.makedirs(self.mirror, exist_ok=True)
+        os.chmod(self.mirror, 0o750)
+        self.settings(FLEET_PRIVATE="no")
+        self.run_pull()
+        self.assertEqual(stat.S_IMODE(os.stat(self.mirror).st_mode), 0o750)
+        self.settings()
+        self.run_pull()
+        self.assertEqual(stat.S_IMODE(os.stat(self.mirror).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(self.dst("n1", "2026-11-21/n1.exits.jsonl")).st_mode),
+                         0o600)
+        self.settings(FLEET_PRIVATE="maybe")
+        self.assertIn("FLEET_PRIVATE='maybe' is not one of yes/no", self.run_pull(code=2))
+
     def test_paused_when_the_disk_is_full(self):
         self.write("n1", "2026-11-21/n1.exits.jsonl", lines(0, 2))
         self.settings(FLEET_FREE_MIN_GB="1e12")
@@ -384,6 +402,9 @@ class TestRun(Rig):
             while not os.path.exists(self.dst("n1", "2026-11-21/n1.exits.jsonl")):
                 self.assertLess(time.time(), deadline, "the loop pulled nothing")
                 time.sleep(0.2)
+            # the lock names its holder, which the HPC kit's deploy sends SIGHUP
+            with open(os.path.join(self.mirror, ".state", "pull.lock")) as fh:
+                self.assertEqual(fh.read(), "%d\n" % p.pid)
             p.send_signal(signal.SIGTERM)
             self.assertEqual(p.wait(timeout=20), 0)
         finally:
@@ -409,6 +430,29 @@ class TestRun(Rig):
         self.write("n1", "2026-11-21/n1.jsonl", lines(0, 4), tier="ebpfm-login")
         self.run_pull()
         self.assertFalse(os.path.exists(os.path.join(self.mirror, "node")))
+
+    def test_the_flat_layout_copies_the_ebpf_tier_alone_into_mirror_name(self):
+        """FLEET_LAYOUT=flat, the HPC kit's: MIRROR/NAME/<day>/, as its own stream kept it,
+        so a site moving to pull.py has nothing to move; the node tier is not copied, and its
+        root names a folder that never is, so the dashboard reads no default place for it."""
+        self.settings(FLEET_LAYOUT="flat")
+        self.write("n1", "2026-11-21/n1.exits.jsonl", lines(0, 5))
+        self.write("n1", "2026-11-21/n1.jsonl", lines(0, 4), tier="ebpfm-login")
+        self.run_pull()
+        self.assertEqual(self.read(os.path.join(self.mirror, "n1", "2026-11-21", "n1.exits.jsonl")),
+                         lines(0, 5))
+        self.assertFalse(os.path.exists(os.path.join(self.mirror, "ebpf")))
+        self.assertFalse(os.path.exists(os.path.join(self.mirror, "node")))
+        self.assertFalse(os.path.exists(os.path.join(self.mirror, "n1", "2026-11-21", "n1.jsonl")))
+        out = self.run_pull("roots")
+        self.assertEqual(out.splitlines(), [
+            "RC_DASH_EBPF_ROOTS=%s/*" % self.mirror,
+            "RC_DASH_NODE_ROOTS=%s/.state/no-node-tier" % self.mirror,
+            "RC_DASH_TRANSPORT_FILES=%s/.state/*.json" % self.mirror])
+        per_node = subprocess.run([sys.executable, SCRIPT, "--config", self.conf, "roots",
+                                   "--per-node"], stdout=subprocess.PIPE,
+                                  universal_newlines=True).stdout
+        self.assertIn("RC_DASH_EBPF_ROOTS=%s/n1:%s/n2\n" % (self.mirror, self.mirror), per_node)
 
     @unittest.skipUnless(HAVE_RRSYNC, "rrsync is not installed")
     def test_through_a_key_restricted_to_rrsync(self):
@@ -442,7 +486,11 @@ class TestSettings(unittest.TestCase):
                                    "c": "pull@alias"})
 
     def test_refused(self):
-        for text, why in (("FLEET_HOSTS=\n", "names no node"),
+        for text, why in (("FLEET_HOSTS=a\nFLEET_LAYOUT=deep\n", "tiers (MIRROR/<tier>/NAME) or flat"),
+                          ('FLEET_HOSTS="a::/x/login"\nFLEET_LAYOUT=flat\n', "names no eBPF-tier folder"),
+                          ('FLEET_HOSTS="a:/x/ebpf:/x/login"\nFLEET_LAYOUT=flat\n',
+                           "FLEET_LAYOUT=flat copies the eBPF tier alone"),
+                          ("FLEET_HOSTS=\n", "names no node"),
                           ("FLEET_HOSTS='a a'\n", "twice"),
                           ("FLEET_HOSTS=../x\n", "not a node name"),
                           ("FLEET_HOSTS=a\nFLEET_HOST=b\n", "unknown setting"),
@@ -668,10 +716,10 @@ class TestStatus(StubRig):
         self.state("n3", ok=False, ok_epoch=now - 7200, attempt_epoch=now - 7000,
                    error="listing failed (rsync exit 255): Permission denied (publickey)")
         out = self.run_pull("status", code=1)
-        self.assertRegex(out, r"n1\s+STALE\s+last ok 3d 2h ago\s+no pass for 3d 2h: is rc-pull running")
+        self.assertRegex(out, r"n1\s+STALE\s+last ok 3d 2h ago\s+no pass for 3d 2h: is the copy running")
         self.assertRegex(out, r"n2\s+ok\s+last ok \d+s ago\s+1234 B appended in the last pass")
         self.assertRegex(out, r"n3\s+FAILED\s+last ok 2h 0m ago\s+listing failed .*Permission denied"
-                              r".*last tried 1h 56m ago: is rc-pull running")
+                              r".*last tried 1h 56m ago: is the copy running")
         self.assertRegex(out, r"n4\s+never\s+last ok never\s+no pass recorded")
 
     def test_stale_threshold(self):

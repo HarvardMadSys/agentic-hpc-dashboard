@@ -8,8 +8,8 @@ use [`deploy/`](../deploy/README.md) instead.
 
 | Folder | What |
 |---|---|
-| [`fleet/`](fleet/) | The fleet stream: `fleet_stream.py` carries each node's collector files to the dashboard's host as they are written, over one ssh connection per node, started by a forced-command key that can run nothing else. `seed_mirror.py` and `pull-gz.sh` seed a new copy from sealed days pulled ahead of time. |
-| [`deploy/`](deploy/) | The kit that runs the stream and the dashboard on a host of your own: one settings file (`site.env`), systemd user units, the hourly check, and the privacy checks a shared host needs. [`deploy/README.md`](deploy/README.md) is the runbook. [`../deploy/rc-deploy`](../deploy/rc-deploy) `init` writes `site.env` from four questions, and runs this kit's scripts (`apply`, `add-node`, `password`, `status`, `upgrade`, `rollback`, `backup`, `uninstall`). |
+| [`fleet/`](fleet/) | The guard: `rsync_guard.py`, the forced command of the key the dashboard's host copies each node with. It lets that key run read-only rsync of the collector's folder and nothing else. The copy itself is [`deploy/fleet/pull.py`](../deploy/fleet/pull.py), the fleet kit's. |
+| [`deploy/`](deploy/) | The kit that runs the copy and the dashboard on a host of your own: one settings file (`site.env`), a systemd user unit, the hourly check, and the privacy checks a shared host needs. [`deploy/README.md`](deploy/README.md) is the runbook. [`../deploy/rc-deploy`](../deploy/rc-deploy) `init` writes `site.env` from four questions, and runs this kit's scripts (`apply`, `add-node`, `password`, `status`, `upgrade`, `rollback`, `backup`, `uninstall`). |
 
 ## What stays where it is
 

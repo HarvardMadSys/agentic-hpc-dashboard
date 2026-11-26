@@ -1,6 +1,5 @@
 """Is the collection working (rc_dashboard/status.py): `rc-dashboard status`,
-/api/status, /metrics, and the transport files of pull.py and the stream's
-receiver.
+/api/status, /metrics, and pull.py's transport files.
 
     cd dashboard && .venv/bin/python -m unittest tests.test_status -q
 """
@@ -235,6 +234,15 @@ class Transports(Feed):
                                             "feeds.ebpf.roots": [self.ebpf, root]}),
                                 now=self.now, wall=self.now)
         self.assertIsNotNone(self.host(doc, "far")["transport"])
+        # and in pull.py's flat layout (the HPC kit's), under <mirror>/node3/
+        root = os.path.join(mirror, "node3")
+        write(os.path.join(root, self.day, "flat.snapshot.jsonl"),
+              [rec("residency_totals", self.now - 5, "flat")])
+        pat = self.rsync_state("node3")
+        doc = statusmod.collect(self.cfg(**{"status.transport_files": [pat],
+                                            "feeds.ebpf.roots": [self.ebpf, root]}),
+                                now=self.now, wall=self.now)
+        self.assertIsNotNone(self.host(doc, "flat")["transport"])
 
     def test_a_copy_that_never_brought_a_file_has_a_row(self):
         pat = self.rsync_state("h-new", ok=False, ok_epoch=None, error="Permission denied")
@@ -247,33 +255,18 @@ class Transports(Feed):
         self.assertTrue(any("h-new: copy (rsync) FAILED: Permission denied; last good never"
                             in w for w in doc["why"]))
 
-    def test_the_stream_receivers_status(self):
-        base = os.path.join(self.tmp, "base")
-        st = {"at": "x", "at_epoch": self.now - 5, "paused": False,
-              "hosts": {"h-ok": {"connected": True, "live": self.day, "lag_s": 3.0,
-                                 "down_since": None, "last_error": None, "bytes_today": 1},
-                        "h-silent": {"connected": False, "live": None, "lag_s": None,
-                                     "down_since": self.now - 600,
-                                     "last_error": "ConnectionError: ssh exited 255",
-                                     "bytes_today": 0}}}
-        p = os.path.join(base, "state", "status.json")
+    def test_the_old_streams_status_file_is_not_a_transport(self):
+        """The ssh stream the HPC kit copied with before pull.py wrote <base>/state/status.json;
+        a setting still naming it is said, not read as a copy that works."""
+        p = os.path.join(self.tmp, "base", "state", "status.json")
         os.makedirs(os.path.dirname(p))
         with open(p, "w") as fh:
-            json.dump(st, fh)
+            json.dump({"at_epoch": self.now - 5, "hosts": {"h-ok": {"connected": True}}}, fh)
         doc = statusmod.collect(self.cfg(**{"status.transport_files": [p]}),
                                 now=self.now, wall=self.now)
-        ok, down = self.host(doc, "h-ok")["transport"], self.host(doc, "h-silent")["transport"]
-        self.assertEqual((ok["kind"], ok["ok"], ok["error"]), ("stream", True, None))
-        self.assertAlmostEqual(ok["last_ok_age_s"], 8, delta=1)
-        self.assertEqual((down["ok"], down["error"]), (False, "ConnectionError: ssh exited 255"))
-        self.assertAlmostEqual(down["last_ok_age_s"], 600, delta=2)
-        # a receiver that stopped writing: every link not ok, saying why
-        st["at_epoch"] = self.now - 4000
-        with open(p, "w") as fh:
-            json.dump(st, fh)
-        doc = statusmod.collect(self.cfg(**{"status.transport_files": [p]}),
-                                now=self.now, wall=self.now)
-        self.assertIn("is it running", self.host(doc, "h-ok")["transport"]["error"])
+        self.assertTrue(any("is not a state file of deploy/fleet/pull.py" in w for w in doc["why"]),
+                        doc["why"])
+        self.assertIsNone(self.host(doc, "h-ok")["transport"])
 
     def test_a_file_that_is_not_a_state_file_warns(self):
         p = os.path.join(self.tmp, "x.json")

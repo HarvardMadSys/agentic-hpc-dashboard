@@ -207,6 +207,6 @@ test('Feeds says a failed copy is a copy, and which code each collector and the 
   assert.match(feeds, /h\.running\.collector_version \? ` · \$\{h\.running\.collector_version\}` : ''/);
   assert.match(feeds, /rc-dashboard \{version\}/);
   const types = readFileSync(fileURLToPath(new URL('../src/api/types.ts', import.meta.url)), 'utf8');
-  assert.match(types, /export interface CollectorTransport \{\s*kind: 'rsync' \| 'stream';\s*ok: boolean;\s*last_ok_age_s: number \| null;\s*error: string \| null;\s*\}/);
+  assert.match(types, /export interface CollectorTransport \{\s*kind: 'rsync';\s*ok: boolean;\s*last_ok_age_s: number \| null;\s*error: string \| null;\s*\}/);
   assert.match(types, /candidates\?: FeedCandidate\[\];/);
 });

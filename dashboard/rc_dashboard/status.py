@@ -27,28 +27,23 @@ The service answers from what it has read (`from_service`). Exit 0 ok, 1 warn,
    "hosts": [{"host": str, "verdict": "ok|degraded|stopped|silent|unknown",
               "heartbeat_age_s": num|null,
               "newest_age_s": {"ebpf": num|null, "ebpf_node": num|null},
-              "transport": {"kind": "rsync|stream", "ok": bool,
+              "transport": {"kind": "rsync", "ok": bool,
                             "last_ok_age_s": num|null, "error": str|null} | null}]}
 
 A null is a value nobody measured, never 0: no heartbeat in what was read, no
 file of that tier for the host, a copy that never worked.
 
 **Transports** (`status.transport_files`, RC_DASH_TRANSPORT_FILES: paths or glob
-patterns) are the state files of what copies the files here, in the formats their
-writers have:
-
-  rsync   deploy/fleet/pull.py's `<mirror>/.state/<node>.json`: `host`, `ok`,
-          `ok_epoch` (its last good pass), `error`, `file_hosts` (the host names
-          the node's day-files carry). A pass marked ok but older than `stale_s`
-          is not ok: pull.py may have stopped.
-  stream  hpc/fleet's receiver's `<base>/state/status.json`: `at_epoch` (written
-          every 10 s), `paused`, and per source host `connected`, `lag_s` (since
-          its last frame), `down_since`, `last_error`.
+patterns) are the state files of what copies the files here: deploy/fleet/pull.py's
+`<mirror>/.state/<node>.json`, which both kits copy with (kind `rsync`): `host`, `ok`,
+`ok_epoch` (its last good pass), `error`, `file_hosts` (the host names the node's
+day-files carry). A pass marked ok but older than `stale_s` is not ok: pull.py may
+have stopped.
 
 Each maps to a collector host by name (its `host`, or a name in `file_hosts`),
-else by where that host's files are (`<mirror>/{ebpf,node}/<node>/`,
-`<base>/mirror/<host>/`). A transport's host with no files here still gets a row:
-the copy that never brought any is what to fix.
+else by where that host's files are (`<mirror>/{ebpf,node}/<node>/`, or `<mirror>/<node>/`
+in pull.py's flat layout, the HPC kit's). A transport's host with no files here still
+gets a row: the copy that never brought any is what to fix.
 """
 import glob
 import json
@@ -138,13 +133,10 @@ def read_transports(patterns, stale_s, now=None):
                 problems.append("transport file %s cannot be read: %s"
                                 % (p, getattr(e, "strerror", None) or e))
                 continue
-            if isinstance(d, dict) and isinstance(d.get("hosts"), dict) and "at_epoch" in d:
-                out += _stream(p, d, stale_s, now)
-            elif isinstance(d, dict) and "ok" in d and ("host" in d or "attempt_epoch" in d):
+            if isinstance(d, dict) and "ok" in d and ("host" in d or "attempt_epoch" in d):
                 out.append(_rsync(p, d, stale_s, now))
             else:
-                problems.append("transport file %s is not a state file of deploy/fleet/pull.py "
-                                "or of hpc/fleet's receiver" % p)
+                problems.append("transport file %s is not a state file of deploy/fleet/pull.py" % p)
     return out, problems
 
 
@@ -163,39 +155,8 @@ def _rsync(path, d, stale_s, now):
     names = [name] + [str(h) for h in (d.get("file_hosts") or []) if h]
     return {"name": name, "kind": "rsync", "ok": ok, "last_ok_age_s": _round(age),
             "error": redact.redact(str(err)) if err else None, "names": names,
-            "roots": [os.path.join(mirror, "ebpf", name), os.path.join(mirror, "node", name)]}
-
-
-def _stream(path, d, stale_s, now):
-    base = os.path.dirname(os.path.dirname(os.path.abspath(path)))
-    at = _num(d.get("at_epoch"))
-    file_age = (now - at) if at is not None else None
-    paused = bool(d.get("paused"))
-    out = []
-    for host, s in sorted(d["hosts"].items()):
-        s = s if isinstance(s, dict) else {}
-        connected = bool(s.get("connected"))
-        lag, down = _num(s.get("lag_s")), _num(s.get("down_since"))
-        if connected and file_age is not None:
-            age = file_age + (lag or 0.0)
-        elif not connected and down is not None:
-            age = now - down
-        else:
-            age = None
-        err = None
-        if file_age is None or file_age > stale_s:
-            err = "the receiver last wrote its status %s ago: is it running?" % age_text(file_age)
-        elif paused:
-            err = "paused: the disk the copy is on is full"
-        elif not connected:
-            err = s.get("last_error") or "not connected"
-        elif age is not None and age > stale_s:
-            err = "connected, but nothing from it for %s" % age_text(age)
-        out.append({"name": str(host), "kind": "stream", "ok": err is None,
-                    "last_ok_age_s": _round(age),
-                    "error": redact.redact(str(err)) if err else None, "names": [str(host)],
-                    "roots": [os.path.join(base, "mirror", str(host))]})
-    return out
+            "roots": [os.path.join(mirror, "ebpf", name), os.path.join(mirror, "node", name),
+                      os.path.join(mirror, name)]}     # FLEET_LAYOUT=flat
 
 
 def public_transport(t):
