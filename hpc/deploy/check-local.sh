@@ -3,10 +3,12 @@
 # with RC_DASH_ROOT set to the deployment's folder (rc-tmux.service and check.sh set it).
 #
 #   check-local.sh --dirs-only   the folder and its cache/, logs/, and data/ are real 700
-#                                folders owned by this account (created if missing);
-#                                exit 0 or 13
+#                                folders owned by this account (created if missing), and
+#                                so are the copy's data/mirror and data/mirror/.state
+#                                where they are (pull.py makes them); exit 0 or 13
 #   check-local.sh --base-ok     the folder and its data/ (where the copy goes) are real
-#                                700 folders owned by this account; exit 0 or 13
+#                                700 folders owned by this account, and the copy's
+#                                folders where they are; exit 0 or 13
 #   check-local.sh --auth-set    etc/password.hash (or etc/auth.env) holds a password
 #                                hash that parses; exit 0 or 15
 #   check-local.sh --port-free   nothing listens on the dashboard's port yet; exit 0 or 14
@@ -73,7 +75,9 @@ else
   WANT="a 700 folder owned by $me"
 fi
 
+judged=         # the folder judged last: after a failed check, the one that failed
 private_dir() {  # a real folder (not a symlink); unless PRIVATE=no, this account's, mode 700
+  judged=$1
   [ -d "$1" ] && [ ! -L "$1" ] || return 1
   [ "$PRIVATE" = no ] && return 0
   [ "$(stat -c '%u %a' "$1")" = "$uid 700" ]
@@ -87,8 +91,18 @@ own_dir() {      # the same, made if missing
   fi
   private_dir "$1"
 }
-dirs_ok() { own_dir "$RUN" && own_dir "$RUN/cache" && own_dir "$RUN/logs" && own_dir "$BASE"; }
-base_ok() { private_dir "$RUN" && private_dir "$BASE"; }
+# The copy's folder and its state (fleet.env's FLEET_MIRROR, under data/), which pull.py
+# makes as PRIVATE_TREE says, so they are not made here: where they are, they are judged
+# as data/ is. pull.py takes a link there for the folder, so the copy, and the chmod it
+# gives a private one, would land outside the deployment's folder.
+copy_ok() {
+  local d
+  for d in "$BASE/mirror" "$BASE/mirror/.state"; do
+    if [ -e "$d" ] || [ -L "$d" ]; then private_dir "$d" || return 1; fi
+  done
+}
+dirs_ok() { own_dir "$RUN" && own_dir "$RUN/cache" && own_dir "$RUN/logs" && own_dir "$BASE" && copy_ok; }
+base_ok() { private_dir "$RUN" && private_dir "$BASE" && copy_ok; }
 unquote() {     # as keep-running.sh, and systemd, read a value: blanks, then one pair of quotes off
   local v=$1
   v=${v#"${v%%[![:space:]]*}"}
@@ -229,10 +243,10 @@ answers() {      # the dashboard answers at all; a 401, without the password, co
 case "${1:-}" in
   --dirs-only)
     dirs_ok && exit 0
-    echo "UNSAFE $RUN is not $WANT" >&2; exit 13 ;;
+    echo "UNSAFE ${judged:-$RUN} is not $WANT" >&2; exit 13 ;;
   --base-ok)
     base_ok && exit 0
-    echo "UNSAFE $RUN or $BASE is missing or not $WANT" >&2; exit 13 ;;
+    echo "UNSAFE ${judged:-$RUN} is missing or not $WANT" >&2; exit 13 ;;
   --auth-set)
     auth_set && exit 0
     echo "AUTH $AUTH_WHY" >&2; exit 15 ;;
@@ -258,7 +272,7 @@ note() {        # finding, exit code; the exit code kept is the most severe one
   return 0
 }
 
-dirs_ok || note "UNSAFE $RUN or a folder in it is not $WANT" 13
+dirs_ok || note "UNSAFE ${judged:-$RUN} is not $WANT" 13
 auth_set || note "AUTH $AUTH_WHY" 15
 
 # Logs: the processes hold them open (appending), so copy and truncate.

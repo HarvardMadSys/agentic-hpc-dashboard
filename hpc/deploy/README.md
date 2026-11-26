@@ -167,8 +167,10 @@ from `~/.config/rc-dashboard/password` over a channel you trust.
 
 With `PRIVATE_TREE=true` (the default), everything is mode 700 or 600. Before each start of
 either process, its window checks that `DASH_ROOT` and its `data` folder are this account's
-own 700 folders, not symlinks, and stops until they are (`check-local.sh --base-ok`;
-[Troubleshooting](#troubleshooting)).
+own 700 folders, not symlinks, and the copy's `data/mirror` and `data/mirror/.state` too where
+they are, and stops until they are (`check-local.sh --base-ok`;
+[Troubleshooting](#troubleshooting)). A link there would take the copy out of `DASH_ROOT`: to
+keep the copy on another disk, move all of `DASH_ROOT` there.
 
 A deployment from before the copy kept the stream's files beside it, which nothing reads
 now: `data/staging/`, `data/state/`, `etc/stream.json` (kept for a rollback), and a
@@ -401,7 +403,7 @@ needs it.
 | `COPY <node> FAILED`, or `never copied` | the error after it is rsync's or ssh's: a key line missing or wrong on the node (step 3), a host key that changed (`data/mirror/.state/known_hosts`), or the guard refusing what was asked (it says why) |
 | `COPY <node> STALE` | the copy stopped: the `copy` window's log, `DASH_ROOT/logs/rc-fleet-copy.log`; a wrong `fleet.env` (exit 2) or one naming no node (exit 4) stops it until a deploy fixes it |
 | `STATUS crit: <node> silent` | the copy works but the collector on the node writes nothing: the site's collector (`ebpfm status` on the node) |
-| `UNSAFE` | `DASH_ROOT` or a folder in it is a symlink, or (with `PRIVATE_TREE=true`) not this account's own 700 folder: `ls -la $DASH_ROOT`, put it right, and the next hourly check starts both again |
+| `UNSAFE` | the folder it names (`DASH_ROOT`, or a folder in it such as `data/mirror`) is a symlink, or (with `PRIVATE_TREE=true`) not this account's own 700 folder: `ls -la` it, put it right, and the next hourly check starts both again |
 | `deploy.sh`: a value is still the example's | fill `site.env` in: `--strict` refuses `your-account` and `*.example.org` |
 
 ## Tests
