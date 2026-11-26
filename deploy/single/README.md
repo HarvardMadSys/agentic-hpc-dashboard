@@ -11,7 +11,7 @@ On the server, as root:
 ```bash
 tar -C /opt -xzf agentic-hpc-dashboard-1.0.0.tar.gz        # a release's kit, where any account can read it
 cd /opt/agentic-hpc-dashboard-1.0.0                         # (or a clone of the repository: it builds its own code)
-deploy/rc-deploy init                  # asks whether it runs Slurm, and picks this kit
+sudo deploy/rc-deploy init             # asks whether it runs Slurm, and picks this kit
 sudo deploy/rc-deploy plan             # what it would do; nothing done
 sudo deploy/rc-deploy apply            # deploy/single/install.sh, with the settings init wrote
 sudo deploy/rc-deploy password         # makes the password, puts its hash in place, starts the dashboard

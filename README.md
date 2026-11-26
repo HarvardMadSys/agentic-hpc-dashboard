@@ -173,12 +173,13 @@ Start from a release's kit, `agentic-hpc-dashboard-X.Y.Z.tar.gz` on the
 [releases page](https://github.com/HarvardMadSys/agentic-hpc-dashboard/releases), unpacked
 where any account can read it and it can stay (`/opt/agentic-hpc-dashboard`): it installs
 that release's wheel, checked against the release's checksums, with nothing to build. A
-checkout works the same way and builds its own code. One front door picks the layout from
-four questions (Slurm? which nodes? root on the nodes? root on the dashboard's host?) and
-runs its scripts:
+checkout works the same way and builds its own code. The login nodes' layout ships a commit
+from where it runs, so it needs a checkout: `git clone --branch vX.Y.Z` for a release. One
+front door picks the layout from four questions (Slurm? which nodes? root on the nodes? root
+on the dashboard's host?) and runs its scripts:
 
 ```bash
-deploy/rc-deploy init           # writes the settings file, and records the layout in it
+sudo deploy/rc-deploy init      # writes the settings file, and records the layout in it (hpc: no sudo)
 sudo deploy/rc-deploy plan      # what it would do; nothing done (hpc runs as you, no sudo)
 sudo deploy/rc-deploy apply
 sudo deploy/rc-deploy password  # makes the password; its hash goes where the dashboard reads it
@@ -207,8 +208,8 @@ resolve, and what each does: [`dashboard/README.md`](dashboard/README.md#configu
 
 The deployment kits take the same names for the same settings: `SITE_NAME`, `SITE_DESCRIPTION`,
 `SLURM`, `NODE_NOUN`, `ANONYMIZE` (1/0, true/false, yes/no, on/off), `MEMORY_MAX` and
-`FREE_MIN_GB`. They go in `deploy/site.env` (rc-deploy), the deploy/ installers' environment,
-or `hpc/deploy/site.env`; each sets the dashboard's own setting (`deploy/README.md`,
+`FREE_MIN_GB`. They go in `/etc/rc-dashboard/site.env` (rc-deploy), the deploy/ installers'
+environment, or `hpc/deploy/site.env`; each sets the dashboard's own setting (`deploy/README.md`,
 "Settings"). The collector reads `/etc/default/ebpfm` (`ebpfm config` shows every setting).
 
 ## Data and privacy

@@ -360,7 +360,7 @@ if [ "$mode" = fleet ]; then
   fleet=()
   [ -n "${FREE_MIN_GB:-}" ] && fleet+=("FLEET_FREE_MIN_GB=$FREE_MIN_GB")
   # NODES names the nodes of the fleet.env made now, and of no later one: rc-deploy
-  # hands deploy/site.env's NODES to every apply and upgrade, and a fleet emptied on
+  # hands site.env's NODES to every apply and upgrade, and a fleet emptied on
   # purpose (remove-node of its last node) would get the retired nodes back.
   if [ -n "${NODES:-}" ]; then
     if [ ! -e "$ETC/fleet.env" ]; then
