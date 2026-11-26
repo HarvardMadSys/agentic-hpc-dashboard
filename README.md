@@ -201,7 +201,7 @@ Each setting resolves on its own: a command-line flag wins over an `RC_DASH_*` e
 variable, which wins over the config file (`dashboard/dashboard.toml` or
 `dashboard/dashboard.config.json`, TOML or JSON), which wins over the default.
 [`dashboard.example.toml`](dashboard/dashboard.example.toml) is a dozen lines to start from.
-`rc-dashboard print-config --reference` prints the eighteen settings a site chooses, each
+`rc-dashboard print-config --reference` prints the twenty settings a site chooses, each
 with its default and a line of help (`--all`: every setting, the internal ones too), and
 `rc-dashboard print-config` prints each resolved setting and where it came from. How they
 resolve, and what each does: [`dashboard/README.md`](dashboard/README.md#configuration).
@@ -223,8 +223,9 @@ The records name real users and show what they ran, so both halves keep them clo
   `[REDACTED-PROMPT]` (`EBPFM_REDACT`). Its records go only to its output folders; its one use of the network is
   resolving host names that command lines mention, to name the endpoints a process talked to
   (`EBPFM_ARGV_HOSTS=0` turns that off).
-- **The dashboard** will not start without a password unless told to (`--open`), and masks
-  credentials again on every way out. `RC_DASH_ANONYMIZE=1` replaces every name with an alias.
+- **The dashboard** will not start without a password, or the site's single sign-on through a
+  proxy, unless told to (`--open`), and masks credentials again on every way out.
+  `RC_DASH_ANONYMIZE=1` replaces every name with an alias.
   It names network endpoints by reverse DNS from its own host (`RC_DASH_RDNS=0` turns that
   off). Nothing it reads or shows leaves the host for a model's provider.
 - **The fleet stream** carries the files over ssh, with a key that can run the sender and

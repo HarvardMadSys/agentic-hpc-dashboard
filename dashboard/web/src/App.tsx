@@ -50,7 +50,7 @@ import { table } from './lib/lookup';
 import { zoneLabel } from './lib/zone';
 import { useServiceZone } from './lib/useZone';
 import { SetupScreen, noData } from './components/SetupScreen';
-import { asksPassword } from './lib/auth';
+import { signIn } from './lib/auth';
 
 /* Live is the first paint, with the shell; every other tab loads its code
  * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). The sessions
@@ -421,9 +421,9 @@ export default function App() {
   // Records the demo made up (rc_dashboard/demo) say so themselves, and the
   // header says it whenever any host's do, whatever the site is called.
   const synthetic = Object.values(feeds.data ?? {}).flatMap((f) => f.synthetic_hosts ?? []);
-  // A password is set, inline or in a hash file (lib/auth.ts), so the rail offers to
-  // sign out.
-  const passwordSet = asksPassword(config.data as Record<string, unknown> | null | undefined);
+  // How the reader got in (lib/auth.ts): the head names a user the site's single
+  // sign-on signed in, and the rail offers to sign out where there is a way to.
+  const signin = signIn(config.data as Record<string, unknown> | null | undefined);
   const mainRef = useRef<HTMLElement>(null);
   const { secs, go: goSec } = useSections(mainRef, tab.k);
   useScrollEdges(mainRef);
@@ -917,15 +917,24 @@ export default function App() {
               <span className="foot-warn-t"> of 3 classes shown</span>
             </div>
           )}
-          {/* Only while the service asks for a password (rc_dashboard/auth.py). A
-              form, so signing out works without the page's own code. */}
-          {passwordSet && (
+          {/* Only where there is a way out (lib/auth.ts): after the password, the
+              service's own form, so signing out works without the page's own code;
+              under the site's single sign-on, a link to the proxy's sign-out. */}
+          {signin.signOut?.kind === 'form' && (
             <form className="rail-signout" method="post" action="/logout">
               <button type="submit" data-tip="sign this browser out">
                 <Icon name="signout" size={16} />
                 <span>Sign out</span>
               </button>
             </form>
+          )}
+          {signin.signOut?.kind === 'link' && (
+            <div className="rail-signout">
+              <a href={signin.signOut.href} data-tip="sign out of the site's single sign-on">
+                <Icon name="signout" size={16} />
+                <span>Sign out</span>
+              </a>
+            </div>
           )}
           {/* How the page gets its data, in one line: the transport as a light,
               and the last update. The window, when the panels were built, and
@@ -1041,6 +1050,19 @@ export default function App() {
               {zl.short}
               <span className="vh">{`. ${zl.tip}`}</span>
             </span>
+            {/* who the site's single sign-on signed in, as the proxy named them
+                (lib/auth.ts); with the password or on an open page, no one */}
+            {signin.user && (
+              <span
+                className="pill who"
+                data-tip={`signed in as ${signin.user}, through the site's single sign-on`}
+                tabIndex={0}
+              >
+                <Icon name="users" size={12} />
+                <span className="who-n">{signin.user}</span>
+                <span className="vh">, signed in through the site's single sign-on</span>
+              </span>
+            )}
             <button
               className="iconbtn"
               onClick={refresh}

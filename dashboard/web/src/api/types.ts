@@ -26,6 +26,21 @@ export function isConfigLeaf(n: ConfigNode): n is ConfigLeaf {
   return !!n && typeof n === 'object' && '_value' in n && '_origin' in n;
 }
 
+/** How the reader of this page got in: `/api/config`'s `_meta.auth._value`, with
+ *  `_origin` `request` (rc_dashboard/auth.py `reader`). Through the site's single
+ *  sign-on, a proxy in front of the service (`proxy`); with the dashboard's own
+ *  password (`password`); or neither, on a page served open (`open`). */
+export type AuthMethod = 'proxy' | 'password' | 'open';
+export interface AuthInfo {
+  method: AuthMethod;
+  /** the user the proxy named; null unless `method` is `proxy` */
+  user: string | null;
+  /** where Sign out goes when the proxy signed the reader in
+   *  (`server.auth.proxy_logout_url`); null otherwise, and then, under the proxy,
+   *  no Sign out. After the password, Sign out is the service's own form. */
+  logout_url: string | null;
+}
+
 /* ----------------------------------------------------------------- feeds */
 
 export type FeedStatus = 'ok' | 'stale' | 'empty' | 'missing';

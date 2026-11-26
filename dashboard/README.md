@@ -101,9 +101,9 @@ missing, the exact `serve` command, and `ssh -N -L <port>:127.0.0.1:<port> <you>
 ## Configuration
 
 Each setting resolves **separately**: **CLI flag > `RC_DASH_*` env var > config file > built-in
-default**, and a flag you don't pass never outranks the file. A site chooses the eighteen below.
+default**, and a flag you don't pass never outranks the file. A site chooses the twenty below.
 [`dashboard.example.toml`](dashboard.example.toml) sets four of them, and `init` writes a file with
-the ones it asks. `print-config --reference` prints all eighteen as a TOML file, each with its
+the ones it asks. `print-config --reference` prints all twenty as a TOML file, each with its
 default on this host and a line of help; `print-config` prints each one resolved, with where it
 came from (`_origin`).
 
@@ -127,6 +127,8 @@ came from (`_origin`).
 | `server.allowed_hosts` | `RC_DASH_ALLOWED_HOSTS` | none | names the page may be reached by besides loopback and `server.host` ([Password](#password)) |
 | `server.auth.password_hash_file` | `RC_DASH_PASSWORD_HASH_FILE` | none | the password's hash ([Password](#password)) |
 | `server.auth.open` | `RC_DASH_OPEN`, `--open` | `false` | no password ([Password](#password)) |
+| `server.auth.proxy_header` | `RC_DASH_PROXY_HEADER` | none | the header the site's single sign-on names the user in ([Single sign-on through a proxy](#single-sign-on-through-a-proxy)) |
+| `server.auth.proxy_secret_file` | `RC_DASH_PROXY_SECRET_FILE` | none | the secret that proxy sends, without which its header does not count (same section) |
 
 Every other setting is **internal**: it tunes the reducers, caches and workers, and its default is
 the answer. It still loads from the file, a variable or a flag, and `print-config` shows one that
@@ -649,7 +651,7 @@ window on a busy node can take ~1 GB.
 
 | endpoint | purpose |
 |---|---|
-| `GET /api/config` | resolved config, `_origin` per key; `_meta` adds `version` (`{"_value": {"version": "0.1.0", "commit": "abc1234" or null}, "_origin": "build", "git" or "package"}`), `tz` (`{"name", "abbrev", "utc_offset_s"}`, [The time zone](#the-time-zone)) and `host` (the dashboard host's short name), each with `_origin` `runtime` but the version |
+| `GET /api/config` | resolved config, `_origin` per key; `_meta` adds `version` (`{"_value": {"version": "0.1.0", "commit": "abc1234" or null}, "_origin": "build", "git" or "package"}`), `tz` (`{"name", "abbrev", "utc_offset_s"}`, [The time zone](#the-time-zone)) and `host` (the dashboard host's short name), each with `_origin` `runtime` but the version, and `auth` (`{"method": "proxy", "password" or "open", "user", "logout_url"}`, how this request got in, `_origin` `request`: [Single sign-on](#single-sign-on-through-a-proxy)) |
 | `GET /api/feeds` | per feed: configured vs resolved paths, every candidate and what was found there (`candidates`, [The two feeds](#the-two-feeds)), status, lag, rows, notice, backfill; the eBPF tier's `history` ([History in Parquet](#history-in-parquet)) |
 | `GET /api/collectors` | per host, whether its collector is OK: verdict and reasons, heartbeat age, every run and how it ended (each with its `collector_version`), probes that could not load, and the copy bringing its files (`transport`) ([Is each collector OK?](#is-each-collector-ok)) |
 | `GET /api/status?stale=` | is the collection working: per host and rolled up into ok, warn or crit, what `rc-dashboard status --json` prints ([status](#is-the-collection-working-status)) |
@@ -872,8 +874,10 @@ One password puts the whole service behind it: the page, its assets, every `/api
 file**, `server.auth.password_hash_file` (`RC_DASH_PASSWORD_HASH_FILE`), or given outright as
 `server.auth.password_hash` (`RC_DASH_PASSWORD_HASH`); both set stops the service, saying why. With
 neither, `serve` refuses to start, because on a shared host "bound to 127.0.0.1" means "readable by
-every local user". `server.auth.open` (`--open`, `RC_DASH_OPEN=1`) serves without a password
-anyway, to anyone who reaches the port. A [demo](#demo-mode) is open unless a password is set.
+every local user", unless the site's single sign-on signs readers in instead
+([Single sign-on through a proxy](#single-sign-on-through-a-proxy)). `server.auth.open` (`--open`,
+`RC_DASH_OPEN=1`) serves without either anyway, to anyone who reaches the port. A
+[demo](#demo-mode) is open unless a password is set.
 
 ```bash
 uv run --frozen rc-dashboard new-password --install ~/.config/rc-dashboard/password.hash
@@ -933,14 +937,94 @@ password_hash_file = "/etc/rc-dashboard/password.hash"
   comma-separated: `https://dash.example.org`). Vite's dev server is another origin too:
   `server.dev_origins` (`RC_DASH_DEV_ORIGINS`), which `run.sh` sets, adds to `allowed_origins`
   ([web/README.md](web/README.md)).
-- **With no password, a request under a host name that is not this host's is refused** (a 403). Its
-  `Host` must be a loopback name, the bind host (`server.host`), or one of `server.allowed_hosts`
-  (`RC_DASH_ALLOWED_HOSTS`; `*` for any); otherwise a page on another site could point its own name
-  at 127.0.0.1 and read every route (DNS rebinding). With a password the cookie already prevents
-  that, so the check is off. The demo image answers under any name, its data being made up.
+- **With no password, or with single sign-on, a request under a host name that is not this host's
+  is refused** (a 403). Its `Host` must be a loopback name, the bind host (`server.host`), or one of
+  `server.allowed_hosts` (`RC_DASH_ALLOWED_HOSTS`; `*` for any); otherwise a page on another site
+  could point its own name at 127.0.0.1 and read every route (DNS rebinding). With a password alone
+  the cookie already prevents that, so the check is off. The demo image answers under any name, its
+  data being made up.
 
 `tests/test_auth.py` reads every route, an asset and the websocket with and without the password;
 `tests/test_guard.py` sends the handshakes a browser, a script and Vite's proxy send.
+
+### Single sign-on through a proxy
+
+A reverse proxy in front of the service (oauth2-proxy, Apache's mod_auth_openidc, Open OnDemand)
+signs each reader in with the site's own sign-on and names them in a header; the dashboard takes
+that as the reader, with no password of its own (`auth.Proxy`):
+
+| setting | variable | |
+|---|---|---|
+| `server.auth.proxy_header` | `RC_DASH_PROXY_HEADER` | the header the proxy names the user in (`X-Forwarded-User`); empty, the default, is off |
+| `server.auth.proxy_secret_file` | `RC_DASH_PROXY_SECRET_FILE` | a file holding the secret the proxy sends on every request, in `X-RC-Proxy-Secret` |
+| `server.auth.proxy_trusted` | `RC_DASH_PROXY_TRUSTED` | the addresses or networks the proxy connects from (127.0.0.1 and ::1) |
+| `server.auth.proxy_groups_header`, `server.auth.proxy_groups` | `RC_DASH_PROXY_GROUPS_HEADER`, `RC_DASH_PROXY_GROUPS` | with groups named, the proxy signs in only a user in one, as it lists theirs in that header (the password, if there is one, is still a way in: below) |
+| `server.auth.proxy_logout_url` | `RC_DASH_PROXY_LOGOUT_URL` | where *Sign out* goes (the proxy's own sign-out, `/oauth2/sign_out`); with none, no *Sign out* |
+
+- **The secret, not the address, is what a request proves itself with.** Every account on the
+  dashboard's host connects from 127.0.0.1 too, and could send any header; so the user header is
+  believed only with the secret, sent once, from a trusted address (the connection's own, never a
+  forwarded one). Without it, the header is as if absent, and the service says so on stderr at most
+  once a minute. The secret goes no further than the sign-in. Make it with
+  `python3 -c 'import secrets; print(secrets.token_urlsafe(48))' > FILE` (umask 077; readable by the
+  service's account alone: one every account can read stops the service). The deploy/ installers
+  make `/etc/rc-dashboard/proxy.secret` when `dashboard.env` sets `RC_DASH_PROXY_HEADER`.
+- **The proxy must set both headers on every request it passes on**, the websocket's included, and
+  overwrite any copy a client sent. With nginx in front of oauth2-proxy:
+
+  ```nginx
+  location / {
+    auth_request /oauth2/auth;
+    auth_request_set $user $upstream_http_x_auth_request_user;
+    proxy_set_header X-Forwarded-User $user;
+    proxy_set_header X-RC-Proxy-Secret "<the secret>";
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_http_version 1.1;
+    proxy_pass http://127.0.0.1:8080;
+  }
+  ```
+
+  With Apache, `RequestHeader set X-Forwarded-User "expr=%{REMOTE_USER}"` and
+  `RequestHeader set X-RC-Proxy-Secret "<the secret>"`. A proxy that passes its public name in the
+  Host, as this one does, needs that name in `server.allowed_hosts`.
+- **The proxy's copy of the secret needs the same care as the service's.** Any account that can
+  read it can send it from 127.0.0.1 and name any user, and a stock `/etc/nginx/conf.d/*.conf` or
+  `/etc/httpd/conf.d/*.conf` is readable by everyone. Keep the secret's line out of those, in a
+  file of its own that the proxy includes and that is readable by root alone (0600: nginx's and
+  httpd's master process reads its config as root), or by root and the proxy's group (0640
+  `root:nginx`, `root:apache`) for a proxy whose master runs as that group:
+
+  ```nginx
+  # /etc/nginx/rc-dashboard-secret.conf, made with: install -m 600 -o root /dev/null FILE
+  proxy_set_header X-RC-Proxy-Secret "<the secret>";
+  ```
+
+  and `include /etc/nginx/rc-dashboard-secret.conf;` in the `location` above, in place of the
+  line; with Apache, an `Include` of such a file holding the `RequestHeader set` line. Open
+  OnDemand writes its Apache config from `ood_portal.yml`, and both are usually readable by
+  everyone: include the file from there (its custom location directives) rather than writing the
+  secret in them.
+- **One user, once.** A name is taken when the header comes once, in at most 256 characters, none a
+  control character. With groups, the groups header too must come once. A user in none of the groups
+  gets a 403 in plain text; a request the proxy did not sign in gets a 401 saying the page is behind
+  the site's sign-on, and a websocket is refused.
+- **The password stays a way in, groups or not.** With a password set too, a request the proxy did
+  not sign in may still sign in with it (the form, the cookie and Basic auth, as above), and so may
+  a user the proxy named who is in none of the groups: `proxy_groups` limits who the site's
+  sign-on lets in, not who gets in. To make the sign-on the only way, set no password
+  (`server.auth.password_hash_file` empty) once it works: the service starts without one when the
+  proxy's sign-in is set, and refuses what the proxy did not sign in.
+- **The page names the reader.** `/api/config`'s `_meta.auth` says how this reader got in (`proxy`,
+  `password` or `open`) and the user the proxy named; the page's head shows it, and *Sign out* goes
+  to `proxy_logout_url`.
+- A setting it could not work with stops the service, saying why: a header name that is not one, or
+  one a client or HTTP itself sets (`Authorization`, `Host`, `X-Forwarded-For`, the secret's own); no
+  trusted address, or a name in place of one; groups with no header to read them from; a sign-out
+  URL that is neither a path here nor an http(s) URL; no secret, or a short one. Like the password,
+  none of it is in a saved-state fingerprint. `tests/test_proxy_signin.py` drives each of these, and
+  the real app served from 127.0.0.1 and 127.0.0.2.
 
 ## Backup and restore
 
