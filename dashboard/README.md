@@ -580,11 +580,21 @@ quantile within 1% (`rel_err`), `sampled` false.
 Joins that cross an hour (the shell-wrapper dedup, the process index's parent requests, a sandbox
 wrapper absorbing its payload) are carried from each hour into the next, so hours are reduced in
 order. A carried entry untouched for 24 hours is aged out, the one place a merged 7 d window differs
-from one pass over 7 days. An hour closes once the newest record is `panels.hour_grace_s` (300 s)
-past its end; a record that arrives later is merged into its hour's saved state, not lost. Only the
-window builder's worker lists `<cache.dir>/hours/`: the rebuild tick, which queues the hours closed
-since the newest saved one, reads what that list found, so a restart merges every saved hour and
-reduces none again.
+from one pass over 7 days. A run of hours starts afresh at the edge hour of the window that first
+needs them, so the 24 h window built at start-up saves its hours from a join state that knows
+nothing older. A wider window's run, begun further back, reduces every one of those hours again with
+its own join state, not only the first (each saved hour says where its join state began), and a run
+stopped part-way resumes where it stopped. So the saved hours are one chain, begun at the edge hour
+of the widest window built so far: a 7 d window built after the 24 h one is the 7 d window built
+alone, and a narrower window is its slice of that chain from its next build after a wider one. It
+costs the narrower window's hours once more, once. Before, only the first of them was reduced again,
+and a parent that exited in the others kept the bytes of children that exited before the day began,
+which a 7 d window built after the 24 h one then counted twice (the
+[store spike](../docs/design/store-spike.md#results) found it). An hour closes once the newest record
+is `panels.hour_grace_s` (300 s) past its end; a record that arrives later is merged into its hour's
+saved state, not lost. Only the window builder's worker lists `<cache.dir>/hours/`: the rebuild tick,
+which queues the hours closed since the newest saved one, reads what that list found, so a restart
+merges every saved hour and reduces none again.
 
 On one login node's feed a 24 h window then builds in ~2-3 s and a 7 d one in ~8 s after a restart,
 a window switch or a drift refresh (against ~15 s and ~160 s scanned); filling the hours the first
