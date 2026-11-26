@@ -35,8 +35,8 @@ page has an HPC tab is asked (`SLURM`), never guessed from root. Edit the file a
 
 | Unit | Runs | As | Made by |
 |---|---|---|---|
-| `ebpfm.service` | the collector's eBPF tier, `collector/ebpf_trace.py` | root | [`common/install-collector.sh`](common/install-collector.sh) (`ebpfm.sh install-unit`) |
-| `ebpfm-node.service` | the collector's node tier, a snapshot every 5 minutes | root | the same |
+| `ebpfm.service` | the collector's eBPF tier, `collector/ebpf_trace.py`; starting, stopping or restarting it does the same to the node tier's unit | root | [`common/install-collector.sh`](common/install-collector.sh) (`ebpfm.sh install-unit`) |
+| `ebpfm-node.service` | the collector's node tier, a snapshot every 5 minutes; part of `ebpfm.service`, and alone where the eBPF tier cannot run | root | the same |
 | `rc-dashboard.service` | `rc_dashboard serve`, on `127.0.0.1:8080` behind a password; its memory cap in `rc-dashboard.service.d/50-memory.conf` | `rc-dashboard` | [`common/install-dashboard.sh`](common/install-dashboard.sh) |
 | `rc-dashboard-check.timer` | [`common/check.sh`](common/check.sh) every hour: `rc-dashboard status` ([Watching it](#watching-it)) | `rc-dashboard` | the same |
 | `rc-pull.service` (fleet) | [`fleet/pull.py`](fleet/pull.py) `loop`, the copy of every node | `rc-dashboard` | the same, `fleet` |
@@ -192,7 +192,7 @@ the memory drop-in): an upgrade is the same command, with nothing to repeat.
 after a kernel upgrade, which needs matching headers. The dashboard is rebuilt and
 restarted. The collector's units are written again, but a running collector keeps
 running: its restart flushes every live process as `truncated`, so choose the moment,
-`sudo systemctl restart ebpfm ebpfm-node`. The exception is a collector started before its
+`sudo systemctl restart ebpfm` (both tiers: `ebpfm-node` is part of it). The exception is a collector started before its
 output had a group: it reads the group only at start, and would make every new file
 root's alone, the dashboard's reads included. The installer refuses to leave it so, and
 restarts it only when given `--restart`. An install made before `install.env` existed has

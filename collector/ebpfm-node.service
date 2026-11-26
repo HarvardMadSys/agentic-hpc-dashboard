@@ -23,6 +23,12 @@
 Description=ebpfm node-tier collector (node health snapshots)
 Documentation=file://@EBPFM_DIR@/README.md
 After=local-fs.target
+# Part of ebpfm.service, which starts it: a stop or restart of that unit stops or
+# restarts this one too, so `systemctl restart ebpfm` restarts the whole
+# collector. Not the other way round, and not on a failure: where the eBPF tier
+# cannot run, or gives up, this tier runs on alone. `systemctl restart
+# ebpfm-node` restarts this tier alone, which loses no live process.
+PartOf=ebpfm.service
 
 [Service]
 Type=simple
