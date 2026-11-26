@@ -125,8 +125,10 @@ class Rig(unittest.TestCase):
             EBPFM_PACKAGED_UNIT=os.path.join(t, "no-package"), EBPF_DIR=self.ebpf,
             NODE_DIR=self.node, EBPFM_PID_DIR=os.path.join(t, "run"), HOME=t,
             INSTALL_ENV=os.path.join(t, "etc", "rc-dashboard-install", "install.env"),
-            EBPFM_SYSCTL_CONF=os.path.join(t, "etc", "sysctl.d", "99-ebpfm.conf"))
+            EBPFM_SYSCTL_CONF=os.path.join(t, "etc", "sysctl.d", "99-ebpfm.conf"),
+            RC_MEMINFO=os.path.join(t, "meminfo"))
         self.install_env = self.env["INSTALL_ENV"]
+        self.host_memory(16)        # half of it, 8G, is the dashboard's cap unless told
         for k in ("SLURM", "SITE_NAME", "SITE_DESCRIPTION", "NODE_NOUN", "ANONYMIZE", "MEMORY_MAX",
                   "DASH_MEMORY_MAX", "NODES", "FREE_MIN_GB", "SERVICE_USER", "PULL_USER",
                   "COLLECTOR_GROUP", "SUDO_USER", "PLAN"):
@@ -162,6 +164,12 @@ class Rig(unittest.TestCase):
             if m:
                 out[m.group(1)] = m.group(2)
         return out
+
+    def host_memory(self, gib, kb=None):
+        """The memory this host has, as /proc/meminfo says it: `gib` whole, or `kb` as a
+        real host says it, a little under its nominal size."""
+        with open(self.env["RC_MEMINFO"], "w") as fh:
+            fh.write("MemTotal:       %d kB\nMemFree:         1024 kB\n" % (kb or gib * 1048576))
 
     def memory(self):
         """The dashboard's cap, from its drop-in."""
@@ -500,6 +508,37 @@ class TestAnswersStay(Rig):
         self.install("--no-build")
         self.assertEqual(self.memory(), "20G")
         self.assertEqual(self.keys(self.install_env)["MEMORY_MAX"], "20G")
+
+    def test_the_cap_follows_the_host_unless_given(self):
+        """Untold, the cap is half the host's memory, from 2G to 32G, said as it is chosen;
+        a host whose memory cannot be read gets 8G, said too. MemTotal is a little under a
+        host's nominal size, so it is rounded to the nearest gigabyte first: a "16 GB" host
+        that says 15.5 GiB gets 8G, not 7G. Once chosen the cap is saved, so the next run
+        keeps it, and says when it is more than the host has."""
+        for gib, kb, said, cap in ((3, None, 3, "2G"), (24, None, 24, "12G"),
+                                   (16, 16265000, 16, "8G"), (15, 15400000, 15, "8G"),
+                                   (64, 65700000, 63, "32G"), (512, None, 512, "32G")):
+            with self.subTest(gib=gib, kb=kb):
+                for p in (self.install_env, os.path.join(self.units, "rc-dashboard.service.d",
+                                                         "50-memory.conf")):
+                    if os.path.exists(p):
+                        os.remove(p)
+                self.host_memory(gib, kb)
+                out = self.install()
+                self.assertIn("MEMORY_MAX=%s: half this host's %dG" % (cap, said), out)
+                self.assertEqual(self.memory(), cap)
+                self.assertNotIn("caps nothing", out)
+        self.host_memory(8)
+        out = self.install("--no-build")
+        self.assertNotIn("half this host's", out)
+        self.assertEqual(self.memory(), "32G")                   # saved, not chosen again
+        self.assertIn("warning: MEMORY_MAX=32G is more than this host's 8G, so it caps nothing", out)
+        os.remove(self.install_env)
+        os.remove(os.path.join(self.units, "rc-dashboard.service.d", "50-memory.conf"))
+        os.remove(self.env["RC_MEMINFO"])
+        out = self.install("--no-build")
+        self.assertEqual(self.memory(), "8G")
+        self.assertIn("MEMORY_MAX=8G: could not read %s" % self.env["RC_MEMINFO"], out)
 
     def test_a_folder_moved_by_hand_is_refused_not_followed(self):
         """Told another folder than the one the collector writes, a run stops: following
