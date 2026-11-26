@@ -50,6 +50,13 @@ site=$(cd "$(dirname "$site")" && pwd)/$(basename "$site")
 : "${WORK_DIR:?WORK_DIR is not set in site.env}" "${SSH_KEY:?SSH_KEY is not set in site.env}"
 
 cd "$repo"
+# A release's kit is no checkout: what ships is a commit, so the kit runs from a clone.
+if [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$(pwd -P)" ]; then
+  tag=$(cat deploy/VERSION 2>/dev/null || echo vX.Y.Z)
+  echo "deploy.sh ships a git commit, and $repo is not a checkout (a release's kit is not one):" >&2
+  echo "  git clone --branch $tag https://github.com/HarvardMadSys/agentic-hpc-dashboard" >&2
+  exit 1
+fi
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   echo "deploy.sh ships HEAD only; commit or set aside the changes first" >&2
   exit 1

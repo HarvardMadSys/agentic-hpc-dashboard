@@ -28,10 +28,11 @@ which also says what each panel means. What each tab is for is in
 ## Where the records come from
 
 - **The eBPF tier** (`feeds.ebpf`): `exit`, `truncated`, `residency`, `residency_totals`, `conn`,
-  `netio`, `submit`, `meta`, `stop`. Every figure reads only this tier, but for the Feeds tab's and
-  the three that read the node tier (LV-1, RE-8, RE-1).
+  `netio`, `submit`, `meta`, `stop`. Every figure reads only this tier, but for the Feeds tab's,
+  Summary's collection card (SU-1, which also reads the node tier's newest records) and the four
+  that read the node tier (LV-1, SU-4, RE-8, RE-1).
 - **The node tier** (`feeds.ebpf_node`): a host's snapshot a line. Its newest snapshots (path NODE)
-  are served as `panels.node`, which RE-1 draws and LV-1 reads; its history over the window (path
+  are served as `panels.node`, which RE-1 draws and LV-1 and SU-4 read; its history over the window (path
   NODEHIST), as `panels.node.series`, which RE-8 draws.
 - **Slurm**: no scheduler accounting (`sacct`, `sacctmgr`) is read. The Slurm figures read the
   eBPF tier's `submit` records (one per `sbatch`, `srun` or `salloc`) and the `exit` records of
@@ -53,7 +54,6 @@ Scale: FAS RC's eight login nodes wrote 21.6 M eBPF records on 2026-11-15: 17.1 
 | NODEHIST | the node tier over time, `nodehist.py:NodeHistory`, on a thread of its own | a pass every 60 s (`IDLE_S`), 4 MB a read (`CHUNK`); binned to the window on every `/api/panels` read | no: the node tier is never sealed |
 | FEEDS | the feed reports, `feeds.py:resolve` | per `/api/feeds` request, and every 30 s for the `feeds` frame | no |
 | CONFIG | the resolved configuration, `/api/config` | once per page load | no records read |
-| ASK | an agent CLI run over a snapshot of BUILD and LIVE payloads, `ask.py` | per question | through BUILD |
 
 ### LIVE: the live tier
 
@@ -208,7 +208,7 @@ pids (`prefilter_where`); one narrowed only by class, tool, kind of tool, agent 
 the JSONL. Measured (`iocmds.py`): about 3 s for a day of rtx6000a, about a minute for a day of the
 FAS RC capture (6.2 GB of gzip, 2.8 M exits).
 
-### NODE, FEEDS, CONFIG and ASK
+### NODE, FEEDS and CONFIG
 
 - **NODE**: `Aggregator.read_node_tier` reads the last `feeds.ebpf_node.snapshots_per_host` (2)
   lines of each node-tier file, without reading the rest (`aggregator.py:last_lines`), into
@@ -218,15 +218,6 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
   state and the history store's (`history.py:HistoryStore.status`). `/api/collectors` adds the
   health the live tier folded (`CollectorHealth.report`).
 - **CONFIG**: `/api/config` serves the resolved configuration with each key's origin.
-- **ASK** (off unless `ask.enabled`; refused, reading nothing, while the service has no password,
-  or while names are anonymized unless `ask.unmasked_answers` is set): `Aggregator.ask` builds a
-  snapshot of the window's `/api/panels` payload, the live payload's `users`, `hosts` and
-  `window`, and the ranked sessions -- or one panel's keys, or one session's process tree read by
-  INSPECT -- and compacts it to `ask.context_kb` (120 KB): `ask.py:snapshot` cuts the largest
-  section's lists and strings a step at a time (`STEPS`) and drops bulky keys such as series and
-  tails (`DROP_KEYS`). It runs the configured agent CLI (`codex exec` by default) as the service's
-  user, `ask.max_concurrent` (1) at a time, for at most `ask.timeout_s` (240 s), with a short
-  environment (`ask.AGENT_ENV`) in a temporary directory of its own.
 
 ## Every tab: the header, the rail and the controls
 
@@ -247,7 +238,6 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
 | SH-13 | no data: the setup screen | FEEDS | every feed's `status`, `candidates`, `synthetic_hosts` | `feeds.py:resolve` · `components/SetupScreen.tsx:noData`, `SetupScreen` |
 | SH-14 | how to read a panel (drawer) | none: the panel as drawn | its labels' `data-tip`s | `components/About.tsx:notesOf`, `AboutButton` |
 | SH-15 | copy a panel's tables as CSV | none: the panel as drawn | its `<table>`s | `components/CopyCsv.tsx:tablesCsv` |
-| SH-16 | Ask LLM beside the open tab (drawer) | ASK | `/api/ask` `enabled` | `ask.py` · `components/AskDrawer.tsx`, `tabs/ChatTab.tsx` |
 | SH-17 | go to a user, login node or session | LIVE, BUILD | `facets.users`, live `hosts`, the sessions' `rows` | `App.tsx:App` (`paletteItems`) · `components/CommandPalette.tsx` |
 
 #### SH-1 status pill
@@ -343,6 +333,62 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
   tool-call key the window's process index walks up to them (`agent_keys`). The page polls every 600
   ms; `Job.page` sorts the groups for each page of 200 rows (up to 1,000).
 - **Cost:** a read of the window's bytes per lookup, whatever it matches (IOCMDS).
+
+## Summary
+
+The first screen: four questions, at most two numbers each and eight in all, each card linking to
+where it is broken down. None has a reducer of its own: each reads a payload another figure draws,
+as that figure reads it, so the two cannot disagree.
+
+| | figure | path | payload | code (service · page) |
+|---|---|---|---|---|
+| SU-1 | card: is collection healthy | LIVE (health), FEEDS | `/api/status`: `level`, `why`, `hosts[].verdict`, `hosts[].transport` | `status.py:from_service`, `assemble`; `health.py:CollectorHealth.report` · `tabs/SummaryTab.tsx:collection` |
+| SU-2 | card: who runs agents, and how much | BUILD (on read) | `trajectories.summary[c].users`, `.sessions` | `TrajectoryReducer.summary` · `tabs/SummaryTab.tsx:agents` |
+| SU-3 | card: is anything risky | BUILD | `risk.dangerous.rows`, `risk.secrets.rows`, `risk.sections` | `reducers/risk.py:RiskReducer.result` · `tabs/SummaryTab.tsx:risky` |
+| SU-4 | card: is a login node struggling | NODE | `node.hosts[].cpu_idle_pct`, `.per_user[].throttled_delta_s`; `node.disk[].full`; `node.nfs[]` retransmissions; `node.thresholds` | `reducers/resources.py:NodeReducer.result` · `tabs/SummaryTab.tsx:struggling` |
+
+#### SU-1 is collection healthy
+
+- **Shows:** the login nodes whose collector is OK, of every host `/api/status` lists; the level in
+  a word (`working`, `something to look at`, `data not arriving`), its reasons on the pill's hover;
+  each host that is not OK, named with its verdict, or with `copy failed` where its collector is OK
+  and the copy bringing its files here is not. A read that fails after an answer leaves that
+  answer drawn, with `not current` in the pill and why on its hover, rather than old health shown
+  as now's.
+- **Records:** each host's own `meta`, `residency_totals` and `stop` records (FD-1's verdicts), the
+  newest record of each host's plain day-files, and the transport files (`status.transport_files`).
+- **Computation:** `status.from_service` takes the service's collector health and feed reports and
+  reads each host's newest record from the end of its plain files; `assemble` judges ok, warn or
+  crit (`status.stale_s`). The page counts the hosts whose verdict is `ok`.
+- **Cost:** a tail read per host's newest plain file, per request: asked when Summary opens and a
+  minute after each answer while it is on screen.
+
+#### SU-2 who runs agents, and how much
+
+- **Shows:** the users with an agent session in the window, and the agent sessions; each class's
+  sessions side by side (agent, human, IDE, each with its word), their counts on hover.
+- **Records, computation, cost:** LV-3's: the summary counts each folded session whose last record
+  is in the window (an agent's only when its root was seen), and its users. No request of its own:
+  the shell holds `/api/trajectories` for every tab.
+
+#### SU-3 is anything risky
+
+- **Shows:** the agent class's commands this site's rules say should not run on a login node, and
+  credentials on its command lines; `flagged` or `nothing flagged`.
+- **Records, computation, cost:** LV-4's: the rule rows' `classes.agent`, summed over the command
+  rows and over the credential rows. A risk panel not present (no feed, not reduced, not sent)
+  counts nothing and says why; a kind the site's profile leaves out is not shown.
+
+#### SU-4 is a login node struggling
+
+- **Shows:** the busiest login node by CPU busy (100 less `cpu_idle_pct`) at its newest snapshot,
+  named; and the problems the service's own lines flag there, as LV-1 flags them: local filesystems
+  at or past `node.disk_full_pct` or `node.inode_full_pct` (90%), accounts the kernel held back at
+  their CPU limit, NFS mounts retransmitting. The verdict is `flagged` for any of those, else
+  `busy` when the busiest is at or past 90% CPU busy (`BUSY_PCT`, the page's own line: no reduction
+  reads it), else `no problem flagged`.
+- **Records, computation, cost:** RE-1's: the node tier's newest snapshot of each host. A node
+  with no CPU reading is left out of the busiest; none at all reads "not measured".
 
 ## Live
 
@@ -1299,41 +1345,6 @@ Requests are read off argv: a `#SBATCH` line is not seen.
 - **Computation:** `LiveReducer._submit` keeps the 50 newest (`live.submit_tail`), each judged by
   `slurm.outcome` and masked; `result` cuts them to the window.
 
-## Ask LLM
-
-| | figure | path | payload | code (service · page) |
-|---|---|---|---|---|
-| AL-1 | suggestions for the operator (cards) | ASK over BUILD and LIVE | `/api/ask/{job}` `suggestions` | `aggregator.py:Aggregator.ask`; `ask.py:snapshot`, `parse_suggestions`, `Asker.submit` · `tabs/ChatTab.tsx:SuggestionList` |
-| AL-2 | marked done (list) | none: the service's own file | `/api/suggestions/done` | `ask.py:Asker.done_list`, `mark_done` · `tabs/ChatTab.tsx:ChatTab` |
-| AL-3 | ask about the whole window (answers with their sources) | ASK over BUILD and LIVE | `/api/ask/{job}` `answer`, citations | `Aggregator.ask`; `ask.py:snapshot`, `Asker` · `tabs/ChatTab.tsx:ChatTab`, `components/Ask.tsx`, `components/Cite.tsx:Sources` |
-
-#### AL-1 suggestions for the operator
-
-- **Shows:** suggestion cards for the operator, each with its numbers and their sources.
-- **Records:** none read for it: the window's payloads.
-- **Computation:** `Aggregator.ask` with `context.suggest`: the ASK snapshot for the page's window
-  and filter (refused while the window is still being read), with the trajectories' summary and the
-  15 sessions with the most processes, the cascades with a session hint on each agent, the accounts
-  the risk rows name (`risk_who`), and the suggestions marked done. Command lines are dropped unless
-  `ask.include_commands` is set, and every object gets a citation ref. The agent is asked one fixed
-  question; its JSON answer is checked and cut to 8 suggestions (`parse_suggestions`).
-- **Cost:** one run of the agent CLI, at most 240 s, one at a time. Not measured.
-
-#### AL-2 marked done
-
-- **Shows:** the suggestions anyone marked done.
-- **Computation:** `Asker.mark_done` copies the suggestion from its job into
-  `<cache.dir>/ask/done.json` (200 kept). No records.
-
-#### AL-3 ask about the whole window
-
-- **Shows:** the answer to a question about the window, its figures linked to their rows.
-- **Computation:** as AL-1, without the fixed question, with the conversation's last turns, and with
-  the page's filter left out unless the question is about one panel. A panel's own "ask" button, on
-  any tab, sends only that panel's keys (`Aggregator._ask_panel`); the inspector's sends a digest of
-  the session's process tree, read by INSPECT (`Aggregator._ask_session`, `ask.py:session_digest`).
-- **Cost:** as AL-1.
-
 ## System › Internal
 
 The per-process tables of the resource and I/O reducers (IN-1 to IN-4), drawn through
@@ -1433,9 +1444,9 @@ See [Is each collector OK?](../../dashboard/README.md#is-each-collector-ok). No 
 
 ## Served, not drawn
 
-What the service computes and serves but no figure draws: each costs its reducer's work, and some
-reach Ask LLM's snapshot. The panels' method notes (`notes`, `basis`, `*_basis`) are not served to the
-page at all (`jsonout.strip_basis`): Ask LLM reads them in process.
+What the service computes and serves but no figure draws: each costs its reducer's work. The
+panels' method notes (`notes`, `basis`, `*_basis`) are not served to the page at all
+(`jsonout.strip_basis`).
 
 - **`trajectories`' `by_key_type` and `by_class_counts`**.
 

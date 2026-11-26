@@ -31,10 +31,10 @@ from . import proctree
 from . import redact
 from . import roles, tool_buckets
 from . import status as statusmod
+from . import usage as usagemod
 from . import windows as winmod
 from .aggregator import Aggregator
-from .anonymize import Verbatim
-from .ask import unmasked_refusal
+from .anonymize import Verbatim, verbatim
 from .export import parse_filters
 from .iocmds import PAGE_MAX as iocmd_page_max, IoCommands, agent_keys
 from .reducers import phase_names, phase_rules
@@ -83,33 +83,6 @@ def view_filter(request, anon=None):
         return winmod.ViewFilter.from_params(dealias(query_lists(request), anon))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
-# The largest body a route that changes something reads: a question, the last
-# turns with their answers, and what it is about.
-MAX_BODY = 1 << 20
-
-
-async def json_body(request, limit=MAX_BODY):
-    """The request's body as a JSON object (guard.JsonOnly has seen it say it is
-    JSON): a 413 past `limit` bytes, before they are all read, and a 400 for
-    anything that is not an object -- never a 500."""
-    size = request.headers.get("content-length") or ""
-    if size.isdigit() and int(size) > limit:
-        raise HTTPException(413, "the body is over %d bytes" % limit)
-    chunks, n = [], 0
-    async for chunk in request.stream():
-        n += len(chunk)
-        if n > limit:
-            raise HTTPException(413, "the body is over %d bytes" % limit)
-        chunks.append(chunk)
-    try:
-        body = json.loads(b"".join(chunks))
-    except (ValueError, RecursionError):
-        raise HTTPException(400, "the body is not JSON")
-    if not isinstance(body, dict):
-        raise HTTPException(400, "the body is not a JSON object")
-    return body
 
 
 # The per-record memos (each a pure function of its text, memoized up to a
@@ -278,9 +251,19 @@ class CachedStatic(StaticFiles):
         return n
 
 
+# How `serve` runs uvicorn (__main__.py), and how a test starts the app as it is
+# served: without uvicorn's own reading of X-Forwarded-For, which rewrote a
+# request's `client` from that header before the app saw the request. The app
+# reads the forwarded headers itself once it has kept the connection's own
+# address, which is all the proxy sign-in believes (auth.Peer, auth.Proxy).
+SERVER_OPTIONS = {"proxy_headers": False}
+
+
 def create_app(cfg):
-    # First, so a malformed password hash stops the service before it reads anything.
+    # First, so a malformed password hash, or a proxy sign-in that could not
+    # work, stops the service before it reads anything.
     gate = authmod.from_config(cfg)
+    proxy = authmod.proxy_from_config(cfg)
     # The commit this process runs, taken now: a checkout pulled later is not it
     # (/api/config's _meta.version).
     from . import about
@@ -355,7 +338,8 @@ def create_app(cfg):
                   default_response_class=AnonJSONResponse)
     app.state.cfg = cfg
     app.state.agg = agg
-    app.state.auth = gate
+    app.state.auth = gate                   # the password's (auth.Gate), or None
+    app.state.proxy = proxy                 # the single sign-on's (auth.Proxy), or None
     # ws -> its `Reader`, which says the window that reader is viewing: the live
     # frame is window-specific, one payload per DISTINCT window, not one per
     # client, so ten readers on the default window still cost one build.
@@ -585,80 +569,17 @@ def create_app(cfg):
     # ------------------------------------------------------------------- API
     @app.get("/api/config")
     def api_config(request: Request):
-        return respond(cfg.as_dict(with_origins=True), request=request)
+        tree = cfg.as_dict(with_origins=True)
+        # How this reader got in (auth.reader): the page's head names a user the
+        # proxy signed in, and its Sign out follows. Their own name, and the
+        # service's words, so kept as written when names are masked.
+        tree["_meta"]["auth"] = {"_value": verbatim(authmod.reader(request.scope, proxy)),
+                                 "_origin": "request"}
+        return respond(tree, request=request)
 
     @app.get("/api/feeds")
     def api_feeds(request: Request):
         return respond(agg.refresh_feeds(), request=request)
-
-    # Chat with an LLM: the agent this service would run, a question, a job.
-    @app.get("/api/ask")
-    def api_ask_info():
-        return agg.ask_info()
-
-    # `context` narrows a question to one panel or one session (Aggregator.ask);
-    # the page's `user` / `agent_type` filter rides in the query string, as on
-    # /api/panels, so a panel's question reads the view the reader is looking at.
-    @app.post("/api/ask")
-    async def api_ask(request: Request):
-        body = await json_body(request)
-        question, minutes, ctx = body.get("question"), body.get("window_min"), body.get("context")
-        history = body.get("history") or []
-        turns = [h for h in history if isinstance(h, dict)][-3:] if isinstance(history, list) else None
-        text = (str, type(None))
-        if (not isinstance(question, text) or type(minutes) not in (int, type(None))
-                or turns is None or not isinstance(ctx, (dict, type(None)))
-                or any(not isinstance(h.get(k), text) for h in turns for k in ("q", "a"))):
-            raise HTTPException(400, "question is text, window_min a number of minutes, "
-                                     "history a list of {q, a} texts, and context an object")
-        flt = view_filter(request, anon)
-        if ctx is not None and ctx.get("session") is not None:
-            ctx = dict(ctx, session=dealias_sid(ctx["session"], anon))
-        try:
-            return await asyncio.to_thread(agg.ask, question or "", minutes, turns, ctx, flt)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-
-    # The operator's suggestions marked done: kept by the service for everyone
-    # until undone, and left out of the next "suggest actions" (ask.Asker). A
-    # mark names a job and an index; the text is the service's own.
-    def kept_answers():
-        """The suggestions marked done are Ask's answers, kept: refused as Ask
-        is while names are anonymized and `ask.unmasked_answers` is off."""
-        why = unmasked_refusal(cfg)
-        if why:
-            raise HTTPException(400, why)
-
-    @app.get("/api/suggestions/done")
-    def api_done():
-        kept_answers()
-        return agg.asker.done_list()
-
-    @app.post("/api/suggestions/done")
-    async def api_mark_done(request: Request):
-        kept_answers()
-        body = await json_body(request)
-        try:
-            return agg.asker.mark_done(str(body.get("job") or ""), body.get("index"))
-        except LookupError as e:
-            raise HTTPException(404, str(e))
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-
-    @app.delete("/api/suggestions/done/{did}")
-    def api_undo_done(did: str):
-        kept_answers()
-        try:
-            return agg.asker.undo_done(did)
-        except LookupError as e:
-            raise HTTPException(404, str(e))
-
-    @app.get("/api/ask/{jid}")
-    def api_ask_job(jid: str):
-        j = agg.ask_job(jid)
-        if j is None:
-            raise HTTPException(404, "no such question")
-        return j
 
     @app.get("/api/collectors")
     def api_collectors(request: Request):
@@ -712,8 +633,8 @@ def create_app(cfg):
     # response's `filter` names it. The live tier is not narrowed (`/api/live`).
     @app.get("/api/panels")
     def api_panels(request: Request, window_min: int = Query(None)):
-        # The basis notes, here and on the routes below, are left to Ask LLM, which
-        # reads `agg` in process: the page shows none (`jsonout.strip_basis`).
+        # The basis notes are left out, here and on the routes below: the page
+        # shows none (`jsonout.strip_basis`).
         return respond(jsonout.strip_basis(agg.panels(window_min, view_filter(request, anon))),
                        "panels", request)
 
@@ -833,6 +754,34 @@ def create_app(cfg):
             why.append("a view could not take a record in %d of the tail's batches in a "
                        "row: %s" % (ingest["feed_error_streak"], ingest["feed_error"]))
         return why
+
+    # Which tabs readers open, for the site's own use (usage.py, `rc-dashboard usage`):
+    # a tab's key and a count, nothing of who or what they looked at.
+    views = usagemod.Store(usagemod.folder(cfg)) if cfg.get("ui.count_views") is not False \
+        else None
+
+    @app.post("/api/usage", status_code=204)
+    async def api_usage(request: Request):
+        """Counts of the tabs opened since the page's last post: a 204, and with
+        `ui.count_views` off, nothing kept; a view that is no tab of the page's is
+        dropped. A 400 for anything but counts (usagemod.parse), a 413 past
+        usagemod.MAX_BODY bytes; neither repeats what was sent."""
+        chunks, n = [], 0
+        async for chunk in request.stream():
+            n += len(chunk)
+            if n > usagemod.MAX_BODY:
+                raise HTTPException(413, "the body is over %d bytes" % usagemod.MAX_BODY)
+            chunks.append(chunk)
+        if views is None:
+            return Response(status_code=204)
+        try:
+            counts = usagemod.parse(json.loads(b"".join(chunks) or b"null"))
+        except (ValueError, RecursionError) as e:
+            raise HTTPException(400, str(e) if isinstance(e, usagemod.UsageError)
+                                else "the body is not JSON")
+        if counts:
+            await asyncio.to_thread(views.add, counts)
+        return Response(status_code=204)
 
     @app.get("/api/health")
     def api_health(request: Request):
@@ -1002,17 +951,23 @@ def create_app(cfg):
     # covered without anyone remembering to be (auth.py). Inside it, what may
     # change something takes a JSON body only (guard.JsonOnly).
     app.add_middleware(guardmod.JsonOnly)
-    if gate is not None:
-        app.add_middleware(authmod.AuthMiddleware, gate=gate, site=authmod.site_label(cfg))
+    if gate is not None or proxy is not None:
+        app.add_middleware(authmod.AuthMiddleware, gate=gate, proxy=proxy,
+                           site=authmod.site_label(cfg))
     # ------------------------------------------------------ who may connect
     # Outside the sign-in, so what it refuses costs no password check: a
-    # websocket from another site's page, and with no password, a request
-    # under a name that is not this host's (guard.py).
+    # websocket from another site's page, and with no password, or with proxy
+    # sign-in on, a request under a name that is not this host's (guard.py).
     origins = guardmod.allowed_origins(cfg)
-    app.add_middleware(guardmod.SiteGuard, check_host=gate is None,
+    app.add_middleware(guardmod.SiteGuard, check_host=gate is None or proxy is not None,
                        bind_host=str(cfg.get("server.host") or ""),
                        allowed_hosts=cfg.get("server.allowed_hosts") or (),
-                       allowed_origins=origins)
+                       allowed_origins=origins,
+                       host_why=("signs readers in through a proxy" if proxy is not None
+                                 else "has no password"))
+    # Outside everything: the connection's own address, kept before anything
+    # reads a forwarded header (auth.Peer, SERVER_OPTIONS).
+    app.add_middleware(authmod.Peer)
     # Said at start, beside the sign-in (__main__.py): run.sh, or the
     # environment, may have added a dev server's origins to the configured ones.
     named = list(dict.fromkeys(o.strip() for o in origins if o.strip()))

@@ -30,9 +30,9 @@ The systemd user unit `rc-tmux.service` starts the tmux session. Each of its win
 for the copy, 30 s for the dashboard), and shows its log. Linger keeps the user manager,
 and with it the session, running when no one is logged in.
 
-The scopes cap the dashboard at `DASH_MEMORY_MAX` and the copy at 512 MB, the unit caps
-the tmux session at 64 MB, and each Ask question's Codex run gets 1 GB. Past a cap the
-kernel stops the process, and its window starts it again. There is no soft cap: with no
+The scopes cap the dashboard at `DASH_MEMORY_MAX` and the copy at 512 MB, and the unit caps
+the tmux session at 64 MB. Past a cap the kernel stops the process, and its window starts
+it again. There is no soft cap: with no
 swap, `MemoryHigh` stalls a process instead of stopping it, and a stalled dashboard answers
 nothing.
 
@@ -41,7 +41,9 @@ nothing.
 - **This machine:** git, `python3`, [uv](https://docs.astral.sh/uv/) (it pins the
   dashboard's requirements for the release), node and npm (the page's bundle), and ssh
   with a key (`SSH_KEY`) that logs in to the nodes and to the dashboard's host. For Slack
-  posts from the hourly check: `jq` and `curl`.
+  posts from the hourly check: `jq` and `curl`. And a checkout of this repository, since
+  `deploy.sh` ships its commit: a release's kit is no checkout, so for a release clone at
+  its tag (`git clone --branch vX.Y.Z`).
 - **The dashboard's host:** Linux with systemd, a user manager that you can keep running
   with `loginctl enable-linger`, and tmux. Python 3.11 or later for the dashboard's venv
   (`DASH_PYTHON`), and `/usr/bin/python3` and rsync for the copy. `ss` (without it, the port checks

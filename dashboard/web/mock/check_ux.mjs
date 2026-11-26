@@ -128,8 +128,44 @@ test('a password in a hash file is a password: the rail offers to sign out', asy
   assert.equal(A.asksPassword(auth('', '/etc/rc-dashboard/password.hash')), true, 'the hash file, as init and the kits set it');
   assert.equal(A.asksPassword(auth('', '')), false, 'an open page has no one to sign out');
   assert.equal(A.asksPassword(null), false, 'no config yet');
+  // a service from before `_meta.auth` says it no other way: the password's form, as ever
+  assert.deepEqual(A.signIn(auth('', '/etc/rc-dashboard/password.hash')),
+    { method: 'password', user: null, signOut: { kind: 'form' } });
+  assert.deepEqual(A.signIn(null), { method: 'open', user: null, signOut: null });
+});
+
+test('the head names whom the site’s single sign-on signed in, and Sign out goes where it says', async () => {
+  const A = await ui.load('lib/auth.ts');
+  const meta = (v, extra = {}) => ({ ...extra, _meta: { auth: { _value: v, _origin: 'request' } } });
+  const proxy = (logout_url) => meta({ method: 'proxy', user: 'jdoe', logout_url });
+  assert.deepEqual(A.signIn(proxy('/oauth2/sign_out')),
+    { method: 'proxy', user: 'jdoe', signOut: { kind: 'link', href: '/oauth2/sign_out' } });
+  // no sign-out URL named: no Sign out, since the dashboard cannot end the proxy's session
+  assert.deepEqual(A.signIn(proxy(null)), { method: 'proxy', user: 'jdoe', signOut: null });
+  // nor the password's form, though a password is set beside the proxy
+  const both = meta({ method: 'proxy', user: 'jdoe', logout_url: null },
+    { server: { auth: { password_hash: { _value: '(hidden)' } } } });
+  assert.equal(A.signIn(both).signOut, null);
+  // the password's reader gets the form and no name; an open page, neither
+  assert.deepEqual(A.signIn(meta({ method: 'password', user: null, logout_url: null })),
+    { method: 'password', user: null, signOut: { kind: 'form' } });
+  assert.deepEqual(A.signIn(meta({ method: 'open', user: null, logout_url: null })),
+    { method: 'open', user: null, signOut: null });
+  // a path here or an http(s) URL, and no other link
+  for (const href of ['/oauth2/sign_out', 'https://idp.example.org/logout?client_id=dash', 'HTTP://idp/x']) {
+    assert.deepEqual(A.signIn(proxy(href)).signOut, { kind: 'link', href }, href);
+  }
+  for (const bad of ['javascript:alert(1)', '//evil.example/', '/\\evil.example', 'data:text/html,x',
+    ' /x', 'https://', '']) {
+    assert.equal(A.signIn(proxy(bad)).signOut, null, bad);
+  }
   const app = readFileSync(fileURLToPath(new URL('../src/App.tsx', import.meta.url)), 'utf8');
-  assert.match(app, /const passwordSet = asksPassword\(config\.data/);
+  assert.match(app, /const signin = signIn\(config\.data/);
+  assert.match(app, /signin\.signOut\?\.kind === 'form' && \(\s*<form className="rail-signout" method="post" action="\/logout">/);
+  assert.match(app, /signin\.signOut\?\.kind === 'link' && \([\s\S]*?<a href=\{signin\.signOut\.href\}/);
+  assert.match(app, /\{signin\.user && \(\s*<span\s+className="pill who"/);
+  // the fixture shows both to `npm run dev`
+  assert.deepEqual(api.config._meta.auth._value, { method: 'proxy', user: 'jdoe', logout_url: '/oauth2/sign_out' });
 });
 
 test('every time on the page is in the service’s zone, named in the head', async () => {

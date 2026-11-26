@@ -1,7 +1,7 @@
 """Stable aliases for the names in everything this service sends out.
 
-With `anonymize.enabled` set, no response, websocket frame or Ask-LLM
-snapshot carries a real username, a lab or Slurm account name, an email
+With `anonymize.enabled` set, no response or websocket frame the service
+sends carries a real username, a lab or Slurm account name, an email
 address or a numeric user ID. Each name becomes an alias cut from an HMAC under
 a secret salt -- `user-` or `lab-` and 8 hex characters -- so a reader can still
 follow one person across tabs, windows and restarts, and nobody without the
@@ -175,8 +175,8 @@ def verbatim(obj):
 class Anonymizer:
     """The registry of names seen, and the rewrite every exit applies.
 
-    One per service, shared by the request threads, the live-frame executor and
-    the Ask thread: learning a name takes the lock, rewriting reads plain dicts.
+    One per service, shared by the request threads and the live-frame executor:
+    learning a name takes the lock, rewriting reads plain dicts.
     """
 
     def __init__(self, salt, *, labs=True, emails=True, uids=True, keep=("root",),
@@ -214,11 +214,6 @@ class Anonymizer:
     def _mac(self, kind, name):
         return hmac.new(self._salt, ("%s:%s" % (kind, name)).encode(),
                         hashlib.sha256).hexdigest()[:8]
-
-    def ident(self):
-        """Which masking this is -- a digest of the salt that does not give it
-        away -- for text kept on disk to say what it was written under."""
-        return hmac.new(self._salt, b"ident", hashlib.sha256).hexdigest()[:16]
 
     def user_alias(self, name):
         """The alias of one account, learning it if new; reserved names stay."""

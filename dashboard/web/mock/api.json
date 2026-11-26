@@ -77,6 +77,14 @@
    "host": {
     "_value": "dash01",
     "_origin": "runtime"
+   },
+   "auth": {
+    "_value": {
+     "method": "proxy",
+     "user": "jdoe",
+     "logout_url": "/oauth2/sign_out"
+    },
+    "_origin": "request"
    }
   }
  },
@@ -26263,6 +26271,78 @@
     "by_key_type": {
      "session_scope": 23,
      "cgroup": 5
+    },
+    "summary": {
+     "agent": {
+      "sessions": 18,
+      "probes": 0,
+      "users": 5,
+      "top_user_share_pct": 74.8,
+      "tool_calls": 3271,
+      "calls_p50": 148,
+      "calls_p90": 310,
+      "calls_max": 474,
+      "wall_p50_s": 50200,
+      "wall_p90_s": 103000,
+      "longest": {
+       "sid": "period4-holylogin03-thomwg11-1962",
+       "wall_s": 116200,
+       "user": "thomwg11",
+       "agent_type": "claude_code",
+       "tool_calls": 474
+      },
+      "wait_pct": null,
+      "by_surface": {
+       "terminal": 4,
+       "extension": 3,
+       "script": 5,
+       "unknown": 2,
+       "desktop": 3,
+       "web": 1
+      }
+     },
+     "ide": {
+      "sessions": 8,
+      "probes": 0,
+      "users": 6,
+      "top_user_share_pct": 37.5,
+      "tool_calls": 1549,
+      "calls_p50": 132,
+      "calls_p90": 283,
+      "calls_max": 502,
+      "wall_p50_s": 45800,
+      "wall_p90_s": 98600,
+      "longest": {
+       "sid": "period4-holylogin02-dwei-1925",
+       "wall_s": 111800,
+       "user": "dwei",
+       "agent_type": "vscode",
+       "tool_calls": 101
+      },
+      "wait_pct": null,
+      "by_surface": null
+     },
+     "human": {
+      "sessions": 4,
+      "probes": 0,
+      "users": 1,
+      "top_user_share_pct": 100,
+      "tool_calls": 980,
+      "calls_p50": 114,
+      "calls_p90": 181,
+      "calls_max": 619,
+      "wall_p50_s": 59000,
+      "wall_p90_s": 89800,
+      "longest": {
+       "sid": "period4-boslogin01-aparker-1999",
+       "wall_s": 120600,
+       "user": "aparker",
+       "agent_type": null,
+       "tool_calls": 619
+      },
+      "wait_pct": null,
+      "by_surface": null
+     }
     }
    },
    "cascades": {
@@ -52389,6 +52469,74 @@
    "hours": 168
   }
  },
+ "status": {
+  "level": "warn",
+  "why": [
+   "holylogin02: collector degraded: sysctl kernel.perf_event_paranoid is 3; the stack probe needs 2 or less"
+  ],
+  "hosts": [
+   {
+    "host": "holylogin01",
+    "verdict": "ok",
+    "heartbeat_age_s": 12,
+    "newest_age_s": {
+     "ebpf": 2,
+     "ebpf_node": 60
+    },
+    "transport": null
+   },
+   {
+    "host": "holylogin02",
+    "verdict": "degraded",
+    "heartbeat_age_s": 19,
+    "newest_age_s": {
+     "ebpf": 3,
+     "ebpf_node": 80
+    },
+    "transport": null
+   },
+   {
+    "host": "holylogin03",
+    "verdict": "ok",
+    "heartbeat_age_s": 26,
+    "newest_age_s": {
+     "ebpf": 4,
+     "ebpf_node": 100
+    },
+    "transport": null
+   },
+   {
+    "host": "boslogin01",
+    "verdict": "ok",
+    "heartbeat_age_s": 33,
+    "newest_age_s": {
+     "ebpf": 5,
+     "ebpf_node": 120
+    },
+    "transport": null
+   },
+   {
+    "host": "boslogin02",
+    "verdict": "ok",
+    "heartbeat_age_s": 40,
+    "newest_age_s": {
+     "ebpf": 6,
+     "ebpf_node": 140
+    },
+    "transport": null
+   },
+   {
+    "host": "boslogin03",
+    "verdict": "ok",
+    "heartbeat_age_s": 47,
+    "newest_age_s": {
+     "ebpf": 7,
+     "ebpf_node": 160
+    },
+    "transport": null
+   }
+  ]
+ },
  "trend_days": [
   {
    "date": "2026-09-07",
@@ -73085,6 +73233,78 @@
   "by_key_type": {
    "session_scope": 23,
    "cgroup": 5
+  },
+  "summary": {
+   "agent": {
+    "sessions": 18,
+    "probes": 0,
+    "users": 5,
+    "top_user_share_pct": 74.8,
+    "tool_calls": 3271,
+    "calls_p50": 148,
+    "calls_p90": 310,
+    "calls_max": 474,
+    "wall_p50_s": 50200,
+    "wall_p90_s": 103000,
+    "longest": {
+     "sid": "period4-holylogin03-thomwg11-1962",
+     "wall_s": 116200,
+     "user": "thomwg11",
+     "agent_type": "claude_code",
+     "tool_calls": 474
+    },
+    "wait_pct": null,
+    "by_surface": {
+     "terminal": 4,
+     "extension": 3,
+     "script": 5,
+     "unknown": 2,
+     "desktop": 3,
+     "web": 1
+    }
+   },
+   "ide": {
+    "sessions": 8,
+    "probes": 0,
+    "users": 6,
+    "top_user_share_pct": 37.5,
+    "tool_calls": 1549,
+    "calls_p50": 132,
+    "calls_p90": 283,
+    "calls_max": 502,
+    "wall_p50_s": 45800,
+    "wall_p90_s": 98600,
+    "longest": {
+     "sid": "period4-holylogin02-dwei-1925",
+     "wall_s": 111800,
+     "user": "dwei",
+     "agent_type": "vscode",
+     "tool_calls": 101
+    },
+    "wait_pct": null,
+    "by_surface": null
+   },
+   "human": {
+    "sessions": 4,
+    "probes": 0,
+    "users": 1,
+    "top_user_share_pct": 100,
+    "tool_calls": 980,
+    "calls_p50": 114,
+    "calls_p90": 181,
+    "calls_max": 619,
+    "wall_p50_s": 59000,
+    "wall_p90_s": 89800,
+    "longest": {
+     "sid": "period4-boslogin01-aparker-1999",
+     "wall_s": 120600,
+     "user": "aparker",
+     "agent_type": null,
+     "tool_calls": 619
+    },
+    "wait_pct": null,
+    "by_surface": null
+   }
   }
  },
  "trajectory_detail": {

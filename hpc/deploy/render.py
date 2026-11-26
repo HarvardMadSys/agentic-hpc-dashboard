@@ -30,16 +30,19 @@ PRESETS = [60, 360, 720, 1440, 4320, 10080]
 # backslashes, or spaces.
 PLAIN = re.compile(r"^[A-Za-z0-9_./:+@-]*$")
 REQUIRED = ("SOURCE_USER", "DASH_SSH", "DASH_NODE", "DASH_ROOT", "DASH_PORT")
-OPTIONAL = ("SOURCE_DOMAIN", "SENDER_DIR", "DASH_PYTHON", "RISK_PROFILE", "CODEX")
+OPTIONAL = ("SOURCE_DOMAIN", "SENDER_DIR", "DASH_PYTHON", "RISK_PROFILE")
 # Every key site.env may set (site.env.example has them all), and the other names every
 # kit gives the same setting.
 KNOWN = ("SOURCE_USER", "SOURCE_NODES", "SOURCE_DOMAIN", "SOURCE_ROOT", "SENDER_DIR",
          "SHARED_HOME", "DASH_SSH", "DASH_NODE", "DASH_ROOT", "DASH_PORT", "DASH_PYTHON",
          "PRIVATE_TREE", "SITE_NAME", "SITE_DESCRIPTION", "SLURM", "NODE_NOUN", "RISK_PROFILE",
-         "ANONYMIZE", "DROP_USERS", "DROP_AGENT_USERS", "CODEX", "HISTORY_DAYS", "MAX_WINDOWS",
+         "ANONYMIZE", "DROP_USERS", "DROP_AGENT_USERS", "HISTORY_DAYS", "MAX_WINDOWS",
          "PREWARM_MIN", "MAX_SESSIONS", "DAY_CACHE", "INGEST_WORKERS", "MEMORY_MAX",
          "FREE_MIN_GB", "SSH_KEY", "WORK_DIR", "NODE_MODULES", "SLACK_WEBHOOK_FILE", "KIT")
 ALIASES = {"DASH_MEMORY_MAX": "MEMORY_MAX"}
+# Keys of features since removed: named, with why, and left out, so an older site.env
+# still deploys.
+RETIRED = {"CODEX": "Ask LLM, which ran it, is removed"}
 # The example's own values, which name no real account or host (--strict).
 PLACEHOLDER_VALUE = re.compile(r"(^|[@./])your-account([@./]|$)|(^|[.@])example\.(org|com|net)$")
 YES, NO = ("1", "true", "yes", "on"), ("0", "false", "no", "off")
@@ -89,7 +92,9 @@ def parse_env(path, overrides, warn=None):
                                  % (key, vals[key], alias, vals[alias]))
             vals.setdefault(key, vals[alias])
     for k in sorted(vals):
-        if k not in KNOWN and k not in ALIASES and k not in overrides and warn:
+        if k in RETIRED and warn:
+            warn("render.py: %s: %s is ignored: %s" % (path, k, RETIRED[k]))
+        elif k not in KNOWN and k not in ALIASES and k not in overrides and warn:
             near = difflib.get_close_matches(k, KNOWN, n=1, cutoff=0.75)
             warn("render.py: %s: %s is not a setting%s; it is left out"
                  % (path, k, " (did you mean %s?)" % near[0] if near else ""))
@@ -138,9 +143,8 @@ def derive(v):
     root = v["DASH_ROOT"].rstrip("/")
     if not root.startswith("/"):
         raise ValueError("DASH_ROOT=%r must be an absolute path" % v["DASH_ROOT"])
-    for k in ("SENDER_DIR", "CODEX"):
-        if v.get(k) and not v[k].startswith("/"):
-            raise ValueError("%s=%r must be a full path, or empty" % (k, v[k]))
+    if v.get("SENDER_DIR") and not v["SENDER_DIR"].startswith("/"):
+        raise ValueError("SENDER_DIR=%r must be a full path, or empty" % v["SENDER_DIR"])
     # The collector's folder on the nodes, which the copy reads and the nodes' guard lets
     # it read: a full path, as the guard takes nothing else.
     source_root = (v.get("SOURCE_ROOT") or "/scratch/ebpfm").rstrip("/")
@@ -176,7 +180,6 @@ def derive(v):
     if free < 0:
         raise ValueError("FREE_MIN_GB must not be negative")
     user, domain = v["SOURCE_USER"], v.get("SOURCE_DOMAIN", "")
-    codex = v.get("CODEX", "")
     profile = v.get("RISK_PROFILE", "")
     if profile and not profile.startswith("/"):
         profile = "%s/current/dashboard/%s" % (root, profile)
@@ -207,11 +210,7 @@ def derive(v):
         "DASH_MEMORY_MAX": memory,
         "FREE_MIN_GB": json.dumps(int(free) if free.is_integer() else free),
         "FREE_MIN_GB_PLAIN": str(int(free) if free.is_integer() else free),
-        # Ask runs the Codex CLI when site.env names one; the command stays well formed
-        # either way, so the page's settings show what it would run.
-        "ASK_ENABLED": "true" if codex else "false",
-        "CODEX_JSON": json.dumps(codex or "codex"),
-        "DASH_PATH": (os.path.dirname(codex) + ":" if codex else "") + SYSTEM_PATH,
+        "DASH_PATH": SYSTEM_PATH,
         "RISK_PROFILE_JSON": json.dumps(profile),
         # The copy's own account on the nodes, and the ones site.env names.
         "DROP_GLOBAL_JSON": json.dumps([user] + [a for a in _accounts(v, "DROP_USERS") if a != user]),

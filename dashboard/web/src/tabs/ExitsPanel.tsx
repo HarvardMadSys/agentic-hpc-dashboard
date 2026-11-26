@@ -108,7 +108,6 @@ export function ExitsPanel({ P, cls }: { P: Panels; cls: Cls[] }) {
     <Panel
       title="Commands that failed"
       id="sec-commands-that-failed"
-      ask={[{ panel: 'tool_mix', keys: ['exits'] }]}
       p={tm}
       span
       empty={!ex || !have.length}

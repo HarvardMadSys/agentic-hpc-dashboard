@@ -1,7 +1,18 @@
 #!/bin/bash
-# install-dashboard.sh single|fleet [--no-build] [--plan] [--help]: run the dashboard on
-# this host under systemd. Run as root, from a checkout of this repository; the service
-# runs the code in it.
+# install-dashboard.sh single|fleet [--release vX.Y.Z] [--no-build] [--plan] [--help]: run
+# the dashboard on this host under systemd. Run as root, from a release's kit
+# (agentic-hpc-dashboard-X.Y.Z.tar.gz) or a checkout of this repository.
+#
+#   --release vX.Y.Z  The dashboard as that release published it: its wheel, with the page
+#                     built in, and its pinned requirements, each checked against the
+#                     release's checksums (rc_dashboard-X.Y.Z.sha256), into the venv. No
+#                     Node and no build here, and the service reads nothing from this
+#                     folder: the scripts its units run are copied to OPT/kit. RELEASE in
+#                     the environment or install.env says the same; deploy/rc-deploy sets it
+#                     from the kit's own version. RC_RELEASE_URL names a mirror to fetch
+#                     from instead of GitHub's releases, with a folder per tag.
+#   without it        The code in this checkout: the venv from its lockfile (uv) and the
+#                     page built from it (npm), for development.
 #
 #   single  The dashboard reads this host's collector (EBPF_DIR, NODE_DIR), as a member of
 #           the group the collector writes for (EBPFM_GROUP in /etc/default/ebpfm).
@@ -9,8 +20,8 @@
 #           files, and rc-pull.service runs pull.py, as the same account.
 #
 # It makes the account SERVICE_USER; the venv in OPT (uv, which brings a Python of its own
-# where this host has none new enough); the page's bundle (npm), unless --no-build; and in
-# ETC:
+# where this host has none new enough); without --release, the page's bundle (npm); with
+# --no-build, neither (the venv and the code there already); and in ETC:
 #   dashboard.env  your settings: the port, the site's name, Slurm or not. Written only
 #                  when there is none, so your edits stay; a setting given below is set
 #                  in it, and the change printed.
@@ -18,14 +29,17 @@
 #                  file once there is one. Written on every run.
 #   password.hash  the password's hash, which deploy/common/password.sh writes; the
 #                  dashboard reads it again when it changes.
+#   proxy.secret   with single sign-on (RC_DASH_PROXY_HEADER in dashboard.env), the
+#                  secret the proxy sends on every request, made if missing.
 #   fleet.env      (fleet) the nodes pull.py copies, written only when there is none,
 #   pull_key       (fleet) and the ssh key it logs in to them with, made if missing.
 # Then the units, enabled: rc-dashboard.service, its memory cap in the drop-in
 # rc-dashboard.service.d/50-memory.conf (written when there is none or MEMORY_MAX is
 # given, so `systemctl edit rc-dashboard` stays), rc-dashboard-check.timer (the hourly
 # check, deploy/common/check.sh), and rc-pull.service (fleet). rc-pull starts once
-# fleet.env names your nodes; the dashboard starts once it has a password (or
-# RC_DASH_OPEN=1), and is restarted by a run that finds it running, to pick up the new code.
+# fleet.env names your nodes; the dashboard starts once it has a password (or single
+# sign-on through a proxy, RC_DASH_PROXY_HEADER, or RC_DASH_OPEN=1), and is restarted by a
+# run that finds it running, to pick up the new code.
 #
 # --plan prints what it would do and changes nothing (--help: this text).
 #
@@ -33,9 +47,10 @@
 # /etc/rc-dashboard/install.env, where every run saves them (and prints any that
 # changed), else the defaults: SERVICE_USER (rc-dashboard), PULL_USER (rc-pull: the account
 # on the nodes, whose processes the dashboard drops), ETC (/etc/rc-dashboard), STATE
-# (/var/lib/rc-dashboard), OPT (/opt/rc-dashboard), MEMORY_MAX (8G; DASH_MEMORY_MAX is the
-# same), and for single EBPF_DIR, NODE_DIR, COLLECTOR_GROUP (the folders and group
-# /etc/default/ebpfm names win: collector-paths.sh).
+# (/var/lib/rc-dashboard), OPT (/opt/rc-dashboard), MEMORY_MAX (half this host's memory,
+# from 2G to 32G; DASH_MEMORY_MAX is the same), RELEASE (none: the checkout's code), and
+# for single EBPF_DIR, NODE_DIR, COLLECTOR_GROUP (the folders and group /etc/default/ebpfm
+# names win: collector-paths.sh).
 #
 # Settings that go into dashboard.env (and fleet.env), under the names every kit uses:
 # SITE_NAME, SITE_DESCRIPTION, SLURM (yes/no: the HPC tab), NODE_NOUN ("servers" without
@@ -50,7 +65,7 @@ DEFAULTS=${EBPFM_DEFAULT_FILE:-/etc/default/ebpfm}
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'install-dashboard.sh: %s\n' "$*" >&2; exit 1; }
-usage() { echo "usage: install-dashboard.sh single|fleet [--no-build] [--plan] [--help]" >&2; exit 2; }
+usage() { echo "usage: install-dashboard.sh single|fleet [--release vX.Y.Z] [--no-build] [--plan] [--help]" >&2; exit 2; }
 # shellcheck source=SCRIPTDIR/lib.sh
 . "$here/lib.sh"
 # shellcheck source=SCRIPTDIR/collector-paths.sh
@@ -63,13 +78,16 @@ case $mode in
   *) usage ;;
 esac
 build=1
-for a in "$@"; do
-  case $a in
+while [ $# -gt 0 ]; do
+  case $1 in
     --no-build) build=0 ;;
     --plan) PLAN=1 ;;
+    --release) [ $# -ge 2 ] || usage; RELEASE=$2; shift ;;
+    --release=*) RELEASE=${1#--release=} ;;
     -h|--help) show_help "$0"; exit 0 ;;
     *) usage ;;
   esac
+  shift
 done
 [ "$PLAN" = 1 ] && say "the plan: nothing below is done"
 
@@ -84,7 +102,7 @@ command -v systemctl >/dev/null 2>&1 || die "no systemctl: the dashboard runs as
 if [ -z "${MEMORY_MAX:-}" ] && [ -n "${DASH_MEMORY_MAX:-}" ]; then
   MEMORY_MAX=$DASH_MEMORY_MAX
 fi
-install_env_load SERVICE_USER PULL_USER ETC STATE OPT MEMORY_MAX
+install_env_load SERVICE_USER PULL_USER ETC STATE OPT MEMORY_MAX RELEASE
 FROM_EBPF_DIR=env FROM_NODE_DIR=env
 unit_file=$UNIT_DIR/rc-dashboard.service
 recover() {     # VAR VALUE: an answer only the installed unit remembers
@@ -118,7 +136,27 @@ inplace=$( (sed -n 's/^MemoryMax=//p' "$dropin" 2>/dev/null || true) | tail -n 1
 if [ -n "$inplace" ] && [ "$FROM_MEMORY_MAX" != env ]; then
   MEMORY_MAX=$inplace
 fi
-MEMORY_MAX=${MEMORY_MAX:-8G}
+# Unset, the cap is half this host's memory in whole gigabytes, from 2G to 32G: a host
+# kept for a fleet's dashboard gets room without being told, one that runs other work
+# keeps half for it, and past 32G it is a choice to make (MEMORY_MAX), not a default.
+# MemTotal leaves out what the kernel and firmware keep, so a "16 GB" host says about
+# 15.5 GiB: rounded to the nearest gigabyte first, half of it is the 8G one expects.
+meminfo=${RC_MEMINFO:-/proc/meminfo}
+kb=$( (sed -n 's/^MemTotal:[[:space:]]*\([0-9][0-9]*\) kB$/\1/p' "$meminfo" 2>/dev/null || true) | head -n 1)
+host_g=
+[ -n "$kb" ] && host_g=$(( (kb + 524288) / 1048576 ))
+if [ -z "${MEMORY_MAX:-}" ]; then
+  if [ -n "$host_g" ]; then
+    g=$(( (host_g + 1) / 2 ))
+    [ "$g" -ge 2 ] || g=2
+    [ "$g" -le 32 ] || g=32
+    MEMORY_MAX=${g}G
+    say "MEMORY_MAX=$MEMORY_MAX: half this host's ${host_g}G (from 2G to 32G; MEMORY_MAX sets it)"
+  else
+    MEMORY_MAX=8G
+    say "MEMORY_MAX=8G: could not read $meminfo for this host's memory (MEMORY_MAX sets it)"
+  fi
+fi
 
 for v in SERVICE_USER PULL_USER; do
   [[ ${!v} =~ ^[a-z_][a-z0-9_-]*$ ]] || die "$v='${!v}' is not an account name"
@@ -126,8 +164,37 @@ done
 for v in ETC STATE OPT; do
   [[ ${!v} =~ ^/[A-Za-z0-9._/@+-]*$ ]] || die "$v='${!v}' must be an absolute path, with no spaces or quotes"
 done
-[[ $repo =~ ^/[A-Za-z0-9._/@+-]*$ ]] || die "the checkout's path ($repo) must have no spaces or quotes: the units name it"
 [[ $MEMORY_MAX =~ ^[1-9][0-9]*[KMGT]$ ]] || die "MEMORY_MAX='$MEMORY_MAX' must be a size such as 4G"
+# A cap kept from before (install.env, the drop-in) may be more than this host has, as on
+# a host moved to a smaller machine: it then caps nothing, which is said, not changed.
+if [ -n "$kb" ]; then
+  cap_kb=${MEMORY_MAX%?}
+  case $MEMORY_MAX in
+    *K) ;;
+    *M) cap_kb=$(( cap_kb * 1024 )) ;;
+    *G) cap_kb=$(( cap_kb * 1048576 )) ;;
+    *T) cap_kb=$(( cap_kb * 1073741824 )) ;;
+  esac
+  if [ "$cap_kb" -gt "$kb" ]; then
+    say "warning: MEMORY_MAX=$MEMORY_MAX is more than this host's ${host_g}G, so it caps nothing; MEMORY_MAX=<size> sets a lower one"
+  fi
+fi
+# Where the code comes from, and what the units point at: the release's wheel in the venv
+# and the kit's scripts copied to OPT/kit, or this checkout.
+RELEASE=${RELEASE:-}
+if [ -n "$RELEASE" ]; then
+  ver=${RELEASE#v}
+  [[ $ver =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "RELEASE='$RELEASE' is not a release: vX.Y.Z"
+  RELEASE=v$ver
+  kit=$OPT/kit
+  workdir=$STATE
+  docs=https://github.com/HarvardMadSys/agentic-hpc-dashboard/blob/$RELEASE
+else
+  [[ $repo =~ ^/[A-Za-z0-9._/@+-]*$ ]] || die "the checkout's path ($repo) must have no spaces or quotes: the units name it"
+  kit=$repo
+  workdir=$repo/dashboard
+  docs=file://$repo
+fi
 # The settings that go into dashboard.env, checked before anything changes.
 for v in SLURM ANONYMIZE; do
   if [ -n "${!v:-}" ]; then
@@ -171,8 +238,9 @@ fi
 run install -d -m 700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$STATE"
 run install -d -m 750 -o root -g "$SERVICE_USER" "$ETC"
 run install -d -m 755 "$OPT"
-# The service reads the code from this checkout, and runs as an account that is not yours.
-if id "$SERVICE_USER" >/dev/null 2>&1; then
+# Without a release, the service reads the code from this checkout, and runs as an account
+# that is not yours.
+if [ -z "$RELEASE" ] && id "$SERVICE_USER" >/dev/null 2>&1; then
   if ! runuser -u "$SERVICE_USER" -- test -r "$repo/dashboard/rc_dashboard/__init__.py"; then
     die "$SERVICE_USER cannot read $repo: clone the repository where any account can read it
   (such as /opt/agentic-hpc-dashboard), or open the folders on its path to it"
@@ -181,7 +249,43 @@ fi
 
 # ---- the code's runtime: the venv and the page's bundle, readable by the service
 umask 022
-if [ "$build" = 1 ]; then
+if [ -n "$RELEASE" ]; then
+  if [ "$build" = 1 ]; then
+    for c in uv curl sha256sum; do
+      command -v "$c" >/dev/null 2>&1 || die "no $c: a release is installed with uv (https://docs.astral.sh/uv/), curl and sha256sum"
+    done
+    url=${RC_RELEASE_URL:-https://github.com/HarvardMadSys/agentic-hpc-dashboard/releases/download}/$RELEASE
+    wheel=rc_dashboard-$ver-py3-none-any.whl
+    reqs=rc_dashboard-$ver-requirements.txt
+    sums=rc_dashboard-$ver.sha256
+    say "release $RELEASE: its wheel and pinned requirements, from $url"
+    dl=$(mktemp -d)
+    trap 'rm -rf "$dl"' EXIT
+    for f in "$sums" "$wheel" "$reqs"; do
+      run curl -fsSL --retry 3 -o "$dl/$f" "$url/$f" || die "$url/$f could not be fetched"
+    done
+    if [ "$PLAN" != 1 ]; then
+      # Each file against the release's own list, both named in it: a file it does not
+      # name is no file of that release.
+      for f in "$wheel" "$reqs"; do
+        grep -qE "^[0-9a-f]{64}  $f\$" "$dl/$sums" || die "$sums names no $f"
+      done
+      (cd "$dl" && grep -E "  ($wheel|$reqs)\$" "$sums" | sha256sum --check --quiet --strict -) \
+        || die "a file of release $RELEASE is not the one it published: nothing is installed"
+    fi
+    say "venv in $VENV: the requirements by their hashes, then the wheel"
+    run env UV_PYTHON_INSTALL_DIR="$OPT/python" uv venv --allow-existing --quiet --python ">=3.11" "$VENV"
+    run uv pip install --python "$VENV/bin/python" --quiet --require-hashes -r "$dl/$reqs"
+    run uv pip install --python "$VENV/bin/python" --quiet --no-deps --reinstall "$dl/$wheel"
+  fi
+  # What the units run beside the dashboard (the hourly check, and pull.py in a fleet), a
+  # copy of this kit's, so the service needs nothing from where the kit was unpacked.
+  say "the kit's scripts the units run, in $kit"
+  run install -d -m 755 "$kit/deploy/common" "$kit/deploy/fleet"
+  run install -m 755 "$here/check.sh" "$kit/deploy/common/check.sh"
+  run install -m 644 "$here/lib.sh" "$kit/deploy/common/lib.sh"
+  run install -m 755 "$repo/deploy/fleet/pull.py" "$kit/deploy/fleet/pull.py"
+elif [ "$build" = 1 ]; then
   command -v uv >/dev/null 2>&1 || die "no uv: install it (https://docs.astral.sh/uv/), or --no-build with a venv already in $VENV"
   say "venv in $VENV"
   run env -C "$repo/dashboard" UV_PROJECT_ENVIRONMENT="$VENV" UV_PYTHON_INSTALL_DIR="$OPT/python" \
@@ -193,13 +297,16 @@ if [ "$build" = 1 ]; then
 fi
 if [ "$PLAN" != 1 ]; then
   [ -x "$VENV/bin/python" ] || die "no venv at $VENV: run this without --no-build"
-  [ -f "$repo/dashboard/web/dist/index.html" ] || die "no bundle in $repo/dashboard/web/dist: run this without --no-build"
+  if [ -z "$RELEASE" ]; then
+    [ -f "$repo/dashboard/web/dist/index.html" ] || die "no bundle in $repo/dashboard/web/dist: run this without --no-build"
+  fi
 fi
 
 # ---- settings
 umask 027
 render() {     # TEMPLATE: the template with this install's names filled in
-  sed -e "s#@REPO@#$repo#g" -e "s#@VENV@#$VENV#g" -e "s#@ETC@#$ETC#g" \
+  sed -e "s#@REPO@#$repo#g" -e "s#@KIT@#$kit#g" -e "s#@WORKDIR@#$workdir#g" -e "s#@DOCS@#$docs#g" \
+      -e "s#@VENV@#$VENV#g" -e "s#@ETC@#$ETC#g" \
       -e "s#@STATE@#$STATE#g" -e "s#@USER@#$SERVICE_USER#g" -e "s#@PULL_USER@#$PULL_USER#g" \
       -e "s#@GROUP@#$group#g" -e "s#@MEMORY_MAX@#$MEMORY_MAX#g" "$1"
 }
@@ -248,7 +355,7 @@ run chmod 640 "$ETC/dashboard.env"
 pullpy() {      # pull.py, on the venv's Python where there is one (it needs 3.6 alone)
   local py=$VENV/bin/python
   [ -x "$py" ] || py=python3
-  "$py" "$repo/deploy/fleet/pull.py" --config "$ETC/fleet.env" "$@"
+  "$py" "$kit/deploy/fleet/pull.py" --config "$ETC/fleet.env" "$@"
 }
 pulling=0
 roots=
@@ -256,7 +363,7 @@ if [ "$mode" = fleet ]; then
   fleet=()
   [ -n "${FREE_MIN_GB:-}" ] && fleet+=("FLEET_FREE_MIN_GB=$FREE_MIN_GB")
   # NODES names the nodes of the fleet.env made now, and of no later one: rc-deploy
-  # hands deploy/site.env's NODES to every apply and upgrade, and a fleet emptied on
+  # hands site.env's NODES to every apply and upgrade, and a fleet emptied on
   # purpose (remove-node of its last node) would get the retired nodes back.
   if [ -n "${NODES:-}" ]; then
     if [ ! -e "$ETC/fleet.env" ]; then
@@ -302,15 +409,38 @@ else
   roots="RC_DASH_EBPF_ROOTS=$EBPF_DIR
 RC_DASH_NODE_ROOTS=$NODE_DIR"
 fi
+# Single sign-on through a proxy (RC_DASH_PROXY_HEADER in dashboard.env): the secret the
+# proxy sends on every request, made once, readable by root and the dashboard alone. The
+# dashboard believes the user the proxy names only with it: every account on this host
+# connects from 127.0.0.1 too.
+proxy_on=
+if [ -n "$(env_value "$ETC/dashboard.env" RC_DASH_PROXY_HEADER 2>/dev/null || true)" ]; then
+  proxy_on=1
+  if [ ! -s "$ETC/proxy.secret" ]; then
+    say "$ETC/proxy.secret: the secret the proxy sends the dashboard on every request"
+    if [ "$PLAN" = 1 ]; then
+      echo "    (made from /dev/urandom, mode 640 root:$SERVICE_USER)"
+    else
+      (umask 077 && head -c 48 /dev/urandom | base64 | tr -d '\n/+=' > "$ETC/proxy.secret")
+    fi
+  fi
+  run chown root:"$SERVICE_USER" "$ETC/proxy.secret"
+  run chmod 640 "$ETC/proxy.secret"
+fi
 {
   echo "# Written by deploy/common/install-dashboard.sh ($mode) on every run; your settings"
   echo "# are in dashboard.env. Where the dashboard reads, and where it keeps things:"
   echo "$roots"
-  echo "RC_DASH_STATIC_DIR=$repo/dashboard/web/dist"
+  # a release's wheel carries the page, which the service finds in the package itself
+  [ -n "$RELEASE" ] || echo "RC_DASH_STATIC_DIR=$repo/dashboard/web/dist"
   echo "RC_DASH_CACHE_DIR=$STATE/cache"
   if [ -s "$ETC/password.hash" ]; then
     echo "# The password's hash (deploy/common/password.sh), read again when it changes."
     echo "RC_DASH_PASSWORD_HASH_FILE=$ETC/password.hash"
+  fi
+  if [ -n "$proxy_on" ]; then
+    echo "# The secret the single sign-on's proxy sends in X-RC-Proxy-Secret."
+    echo "RC_DASH_PROXY_SECRET_FILE=$ETC/proxy.secret"
   fi
 } | put "$ETC/paths.env"
 run chown root:"$SERVICE_USER" "$ETC/paths.env"
@@ -342,7 +472,7 @@ if [ "$mode" = fleet ]; then
     else
       run systemctl start rc-pull.service
     fi
-    say "rc-pull runs: $VENV/bin/python $repo/deploy/fleet/pull.py --config $ETC/fleet.env status"
+    say "rc-pull runs: $VENV/bin/python $kit/deploy/fleet/pull.py --config $ETC/fleet.env status"
   else
     say "rc-pull waits for your nodes: give each this key (deploy/fleet/README.md, \"The nodes\"),"
     say "add the line install-node.sh prints there to $ETC/fleet.env (or deploy/rc-deploy add-node),"
@@ -351,11 +481,12 @@ if [ "$mode" = fleet ]; then
   fi
 fi
 
-install_env_save MODE SERVICE_USER PULL_USER ETC STATE OPT MEMORY_MAX
+install_env_save MODE SERVICE_USER PULL_USER ETC STATE OPT MEMORY_MAX RELEASE
 
 set_in() { [ -n "$(env_value "$ETC/dashboard.env" "$1" 2>/dev/null)" ]; }
 open_in() { [ "$(yesno RC_DASH_OPEN "$(env_value "$ETC/dashboard.env" RC_DASH_OPEN 2>/dev/null || true)" 2>/dev/null)" = 1 ]; }
-if set_in RC_DASH_PASSWORD_HASH || [ -s "$ETC/password.hash" ] || { set_in RC_DASH_OPEN && open_in; }; then
+if set_in RC_DASH_PASSWORD_HASH || [ -s "$ETC/password.hash" ] || set_in RC_DASH_PROXY_HEADER \
+    || { set_in RC_DASH_OPEN && open_in; }; then
   if systemctl is-active --quiet rc-dashboard.service; then
     say "restarting the dashboard: it refills its history from the feeds"
     run systemctl restart rc-dashboard.service
@@ -363,11 +494,17 @@ if set_in RC_DASH_PASSWORD_HASH || [ -s "$ETC/password.hash" ] || { set_in RC_DA
     run systemctl start rc-dashboard.service
   fi
   say "the dashboard runs: systemctl status rc-dashboard"
+  if [ -n "$proxy_on" ]; then
+    say "single sign-on: the proxy must send X-RC-Proxy-Secret, with the secret in"
+    echo "    $ETC/proxy.secret, on every request it passes on (dashboard/README.md,"
+    echo "    \"Single sign-on through a proxy\"); without it, no one is signed in"
+  fi
 else
   say "the dashboard starts once it has a password. Make one, as root, with"
   echo "      $repo/deploy/common/password.sh        (or: $repo/deploy/rc-deploy password)"
   echo "    which keeps the password in your ~/.config/rc-dashboard, puts its hash in"
-  echo "    $ETC/password.hash, and starts the dashboard."
+  echo "    $ETC/password.hash, and starts the dashboard. Or let the site's single sign-on"
+  echo "    admit readers through a proxy: RC_DASH_PROXY_HEADER in $ETC/dashboard.env."
 fi
 [ "$PLAN" = 1 ] && say "the plan ends here: nothing was changed"
 exit 0

@@ -253,7 +253,7 @@ class TestRollback(Rig):
         p = os.path.join(etc, "auth.env")
         with open(p, "w") as fh:          # no newline at its end
             fh.write("# replaced by password.hash: RC_DASH_PASSWORD_HASH=scrypt$old\n"
-                     "RC_DASH_ASK=0")
+                     "RC_DASH_SITE_NAME=c1")
         os.chmod(p, 0o600)
         return p
 
@@ -271,7 +271,7 @@ class TestRollback(Rig):
         self.reads_the_hash_file("bbbbbbbbbbbb")
         out = self.run_script("rollback.sh")
         text = self.read(p)
-        self.assertIn("RC_DASH_ASK=0\nRC_DASH_PASSWORD_HASH=%s\n" % self.HASH, text)
+        self.assertIn("RC_DASH_SITE_NAME=c1\nRC_DASH_PASSWORD_HASH=%s\n" % self.HASH, text)
         self.assertEqual(len(re.findall(r"(?m)^RC_DASH_PASSWORD_HASH=..", text)), 1)  # its check
         self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
         self.assertIn("auth.env holds its hash again", out)
@@ -423,6 +423,23 @@ class TestDeployPlan(Rig):
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
         self.assertEqual(p.returncode, 0, p.stdout)
         self.assertIn("site.env renders: 2 node(s)", p.stdout)
+
+    def test_plan_refuses_a_tree_that_is_no_checkout(self):
+        """A release's kit is the repository with no .git: deploy.sh, which ships a commit,
+        says to clone at the kit's release instead of failing in git."""
+        repo = self.checkout()
+        shutil.rmtree(os.path.join(repo, ".git"))
+        os.makedirs(os.path.join(repo, "deploy"), exist_ok=True)
+        with open(os.path.join(repo, "deploy", "VERSION"), "w") as fh:
+            fh.write("v1.2.3\n")
+        p = subprocess.run(["bash", os.path.join(repo, "hpc", "deploy", "deploy.sh"), "--plan"],
+                           env=dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"],
+                                    HOME=self.home, STUB_LOG=self.log,
+                                    GIT_CEILING_DIRECTORIES=self.tmp),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("is not a checkout", p.stdout)
+        self.assertIn("git clone --branch v1.2.3 ", p.stdout)
 
     def test_plan_refuses_the_examples_values(self):
         repo = self.checkout()

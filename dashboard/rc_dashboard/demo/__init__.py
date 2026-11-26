@@ -21,7 +21,7 @@ Nothing in it was measured, and the page cannot be mistaken for a measurement:
 * the header says "synthetic data" whenever a host's heartbeat does
   (`health.py`), and the Feeds tab marks each such host;
 * the site is named "demo · synthetic data" (the rail and the browser tab), and
-  its description, which the chat agent is given, says nothing was measured.
+  its description, among the settings on the Feeds tab, says nothing was measured.
 
 What a demo overrides, whatever the shell or the config file says (run.sh
 exports the cluster's feed roots, and a demo must never read them):
