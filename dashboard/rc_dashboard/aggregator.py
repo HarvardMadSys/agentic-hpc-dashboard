@@ -23,20 +23,17 @@ Two aggregation tiers, because they have different composability:
 import collections
 import itertools
 import json
-import re
 import sys
 import threading
 import time
 
 from . import anonymize
-from . import ask
 from . import clock
 from . import endpoints
 from . import feeds as feedmod
 from . import gz
 from . import jsonout
 from . import portraits
-from . import proctree
 from . import rollup as rollupmod
 from . import status as statusmod
 from .config import is_pattern
@@ -57,10 +54,6 @@ from .tail import FileTailSource, read_back
 # both running, 256 kept /api/live at p90 ~10 ms where 2000 let it reach ~150 ms,
 # for a backfill 2% slower.
 BACKFILL_BATCH = 256
-
-
-# A panel or field named in a question's context: `tool_mix`, `workspace.summary`.
-_ASK_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,39}(\.[A-Za-z][A-Za-z0-9_]{0,39})?")
 
 
 def normalized(norm, raws):
@@ -145,12 +138,10 @@ class Aggregator:
         self.nodehist = NodeHistory(cfg)
         # each collector's own account of itself: start, heartbeat, stop
         self.health = CollectorHealth(cfg)
-        self.asker = ask.Asker(cfg)
         # Stable aliases for every name the service sends out, or None when off.
         # It learns accounts from the roster, so an alias a reader pastes into a
         # filter maps back even for someone the page has not shown yet.
         self.anon = anonymize.from_config(cfg, roster=self._accounts)
-        self.asker.masked_by = self.anon.ident() if self.anon is not None else None
         # Names for the Network bytes panel's endpoints, looked up in the
         # background and applied when the panel is read; None when off.
         self.rdns = endpoints.from_config(cfg)
@@ -785,279 +776,10 @@ class Aggregator:
             out["clock"] = clock.status()
             return out
 
-    def ask_info(self):
-        return ask.describe(self.cfg)
-
-    # What a question about one panel may read besides the window's panels:
-    # the live tier's small sections (never its per-minute series or its event
-    # stream), and the ranked sessions, in these fields.
-    ASK_LIVE = ("users", "hosts", "submits", "window")
-    ASK_SESSION_KEYS = ("sid", "user", "actor3", "agent_type", "n_events", "cpu_s", "wall_s",
-                        "distinct_tools", "chain_runs", "peak_rss_mb", "io_rd_mb", "io_wr_mb",
-                        "net_tx_mb", "net_rx_mb", "sandbox", "approval", "host", "first",
-                        "last", "running")
-
-    def ask(self, question, window_min=None, history=(), context=None, flt=None):
-        """Start one question; the agent runs in the background.
-
-        With no `context` it is about the whole window. `context.parts` makes it
-        about one panel, whose data is all it is given: window panels by key
-        (`{"panel": "risk", "keys": ["sections"]}`), the live tier's small
-        sections (`{"panel": "live", "keys": ["users"]}`), or the ranked
-        sessions (`{"panel": "trajectories", "rank": "cpu_s"}`), over the
-        page's own filter (`flt`). `context.session` makes it about one session,
-        given as a digest of its process tree. `context.title` and `.tab` are
-        what the page calls the panel, for the prompt."""
-        # Refused before anything is read for it -- Ask off, no password, no
-        # agent, a question too long (ask.check): a question that cannot run
-        # must not make the service build a window or re-read a day first.
-        ask.check(self.cfg, question)
-        context = context if isinstance(context, dict) else {}
-        if context.get("session") is not None:
-            return self._ask_session(question, window_min, history, context)
-        if context.get("parts") is not None:
-            return self._ask_panel(question, window_min, history, context, flt)
-        # `context.suggest`: the operator's suggestions -- the whole window the
-        # page has on screen, its filter included, asked one fixed question
-        suggest = context.get("suggest") is True
-        view = flt if suggest else None
-        win = self.window(window_min)
-        got = self.panels(window_min, view) or {}
-        live = self.live_payload(window_min)
-        # sessions come from their own endpoint: the per-class summary and the
-        # busiest few, in plain fields
-        tr = self.trajectories(window_min, view) or {}
-        rows = tr.get("rows") or {}
-        busiest = [rows[s] for s in (tr.get("ranks") or {}).get("events", [])[:15] if s in rows]
-        keep = ("user", "actor3", "agent_type", "n_events", "cpu_s", "wall_s",
-                "distinct_tools", "peak_rss_mb", "sandbox", "approval", "host")
-        # a busiest session's sid is a hint, for a citation to open it by: the
-        # model has no use for it
-        extra = {"facets": got.get("facets"),
-                 "sessions": {"summary": tr.get("summary"),
-                              "busiest": [dict({k: r.get(k) for k in keep}, _go={"sid": r.get("sid")})
-                                          for r in busiest]}}
-        panels = self._cascade_hints(got.get("panels") or {}, self._agent_sessions(tr))
-        scope = {"view": self._ask_view(win, view, context.get("classes"))}
-        if suggest:
-            st = got.get("window_status") or {}
-            if st.get("state") != "ready" and not st.get("has_payload"):
-                raise ValueError("this window is still being read; ask again when it is built")
-            question, history = ask.SUGGEST_QUESTION, ()
-            classes = context.get("classes")
-            extra["risk_who"] = ask.risk_who(panels.get("risk"))
-            extra["done"] = self.asker.done_for_prompt()
-            extra["view"] = {"window": win["label"], "filter": (view or winmod.NO_FILTER).as_dict(),
-                             "classes_shown": anonymize.verbatim(
-                                 [c for c in classes if isinstance(c, str)][:8])
-                             if isinstance(classes, list) else None}
-            scope.update({"about": "suggestions for the operator", "parse": "suggestions",
-                          "guide": ask.GUIDE + "\n\n" + ask.OPERATOR_GUIDE})
-        if self.anon is not None:
-            # The snapshot leaves the host, for the model's provider: aliases only.
-            panels, live, extra = (self.anon.payload(panels), self.anon.payload(live),
-                                   self.anon.payload(extra))
-            scope["view"] = self.anon.payload(scope["view"])
-        return self.asker.submit(question, panels, live, win["label"], history, extra, scope)
-
-    @staticmethod
-    def _ask_label(ctx, key, cap):
-        v = ctx.get(key)
-        return v.strip()[:cap] if isinstance(v, str) else ""
-
-    @staticmethod
-    def _agent_sessions(tr):
-        """(host, agent pid) -> {user: (last, sid)}: for each user whose agent
-        held the pid, the session of its newest day, which a cited agent opens
-        its trajectory by (`_agent_session`). A pid is reused, so another
-        user's agent with the same pid is another session."""
-        out = {}
-        for sid, r in ((tr or {}).get("rows") or {}).items():
-            parts = sid.split("|") if isinstance(sid, str) else []
-            if len(parts) != 4 or not parts[3].startswith("apid:"):
-                continue
-            try:
-                key = (parts[0], int(parts[3][len("apid:"):]))
-            except ValueError:
-                continue
-            held = out.setdefault(key, {})
-            user = (r or {}).get("user")
-            last = (r or {}).get("last") or 0
-            if user not in held or last > held[user][0]:
-                held[user] = (last, sid)
-        return out
-
-    @staticmethod
-    def _agent_session(sessions, host, pid, user):
-        """The sid a cited agent opens, or None. Of the sessions that held its
-        pid, its own user's; failing that, the newest that does not conflict
-        with its user (`users_conflict`: a session with no user, or root's, is
-        not another user's)."""
-        held = sessions.get((host, pid)) or {}
-        if user and user in held:
-            return held[user][1]
-        near = [v for u, v in held.items() if not users_conflict(user, u)]
-        return max(near)[1] if near else None
-
-    @staticmethod
-    def _cascade_hints(panels, sessions):
-        """The panels with each agent of the cascades panel, and each tree by
-        its lead agent, pointing at its session (`_go.sid`), so a citation of
-        one -- or of a folder it wrote -- opens its trajectory. A copy: the
-        panel itself is served to the page as it is."""
-        c = (panels or {}).get("cascades")
-        if not isinstance(c, dict) or not sessions:
-            return panels
-        c = dict(c)
-
-        def hinted(row, sid):
-            return dict(row, _go={"sid": sid}) if sid else row
-
-        def sid_of(host, agent):
-            return Aggregator._agent_session(sessions, host, agent.get("pid"), agent.get("user"))
-
-        ws = c.get("workspace")
-        if isinstance(ws, dict) and isinstance(ws.get("agents"), list):
-            c["workspace"] = dict(ws, agents=[
-                hinted(a, sid_of(a.get("host"), a)) if isinstance(a, dict) else a
-                for a in ws["agents"]])
-        if isinstance(c.get("trees"), list):
-            trees = []
-            for t in c["trees"]:
-                sid = None
-                if isinstance(t, dict):
-                    agents = sorted((n for n in t.get("nodes") or []
-                                     if isinstance(n, dict) and n.get("role") == "agent"),
-                                    key=lambda n: (n.get("agent_level") or 1, -(n.get("tool_calls") or 0)))
-                    sid = next(filter(None, (sid_of(t.get("host"), n) for n in agents)), None)
-                trees.append(hinted(t, sid) if isinstance(t, dict) else t)
-            c["trees"] = trees
-        return dict(panels, cascades=c)
-
-    @staticmethod
-    def _ask_view(win, flt=None, classes=None, sid=None):
-        """What a question was asked over, as the page's own URL keys, so a
-        citation in its answer opens the page on the data the model saw: the
-        window, the filter (none is no filter, not "whatever is on screen"),
-        the classes shown, and the session. The classes and agent types are
-        the reader's own text, kept as sent (`anonymize.Verbatim`)."""
-        flt = flt or winmod.NO_FILTER
-        return {"window_min": win["minutes"], "users": list(flt.users),
-                "atypes": list(flt.agent_types),
-                "cls": anonymize.verbatim([c for c in classes if isinstance(c, str)][:8])
-                if isinstance(classes, list) else None,
-                "sid": sid}
-
-    def _ask_panel(self, question, window_min, history, ctx, flt):
-        parts = ctx.get("parts")
-        if not isinstance(parts, list) or not 0 < len(parts) <= 6:
-            raise ValueError("context.parts: one to six parts of one panel")
-        win = self.window(window_min)
-        flt = flt or winmod.NO_FILTER
-        got = live = None
-        panels, extra, named = {}, {}, []
-        for p in parts:
-            key = p.get("panel") if isinstance(p, dict) else None
-            keys = p.get("keys") if isinstance(p, dict) else None
-            # names, not text: they are written into the model's instructions
-            if not isinstance(key, str) or not _ASK_NAME.fullmatch(key):
-                raise ValueError("context.parts: each part names a panel")
-            if keys is not None and not (isinstance(keys, list) and len(keys) <= 20 and
-                                         all(isinstance(k, str) and _ASK_NAME.fullmatch(k)
-                                             for k in keys)):
-                raise ValueError("context.parts[].keys: a list of field names")
-            if key == "live":
-                want = keys or ["users", "hosts"]
-                bad = [k for k in want if k not in self.ASK_LIVE]
-                if bad:
-                    raise ValueError("the live tier has no %s to ask about" % ", ".join(bad))
-                live = live or self.live_payload(window_min)
-                extra.setdefault("live_now", {}).update(
-                    {k: live.get(k) for k in want if live.get(k) is not None})
-                named.append("live_now (%s)" % ", ".join(want))
-            elif key == "trajectories":
-                tr = self.trajectories(window_min, flt)
-                ranks = tr.get("ranks") or {}
-                rank = p.get("rank") if p.get("rank") in ranks else "recent"
-                rows = tr.get("rows") or {}
-                extra["sessions"] = {
-                    "summary": tr.get("summary"), "ranked_by": rank,
-                    "listed": [{k: rows[s].get(k) for k in self.ASK_SESSION_KEYS}
-                               for s in ranks.get(rank, [])[:40] if s in rows]}
-                named.append("sessions (the ranked list, by %s)" % rank)
-            else:
-                if got is None:
-                    body = self.panels(window_min, flt) or {}
-                    st = body.get("window_status") or {}
-                    if st.get("state") != "ready" and not st.get("has_payload"):
-                        raise ValueError("this window is still being read; ask again when "
-                                         "it is built")
-                    got = body.get("panels") or {}
-                if key not in got:
-                    # one deployment has a Slurm panel and another has not: a
-                    # part the window lacks is said to be missing, not an error
-                    named.append("panels.%s (not in this window)" % key)
-                    continue
-                body = got[key] if isinstance(got[key], dict) else {"rows": got[key]}
-                pick = {}
-                for k in keys or [k for k in body if not k.startswith("_")]:
-                    # `workspace.summary`: one field inside another
-                    top, _, sub = k.partition(".")
-                    if top.startswith("_") or top not in body:
-                        continue
-                    if not sub:
-                        pick[top] = body[top]
-                    elif isinstance(body[top], dict) and sub in body[top]:
-                        pick.setdefault(top, {})[sub] = body[top][sub]
-                if pick:
-                    panels.setdefault(key, {}).update(pick)
-                named.append("panels.%s%s" % (key, " (%s)" % ", ".join(keys) if keys else ""))
-        if not panels and not extra:
-            raise ValueError("this panel has no data in this window to ask about")
-        if "cascades" in panels:
-            panels = self._cascade_hints(panels, self._agent_sessions(self.trajectories(window_min, flt)))
-        classes = ctx.get("classes")
-        extra["view"] = {"window": win["label"], "filter": flt.as_dict(),
-                         "classes_shown": anonymize.verbatim(
-                             [c for c in classes if isinstance(c, str)][:8])
-                         if isinstance(classes, list) else None}
-        title, tab = self._ask_label(ctx, "title", 160), self._ask_label(ctx, "tab", 40)
-        scope = {"about": title or "one panel", "guide": ask.panel_guide(title, tab, named),
-                 "steps": ask.LOCAL_STEPS, "keep": ask.LOCAL_KEEP,
-                 "view": self._ask_view(win, flt, classes)}
-        if self.anon is not None:
-            # The snapshot leaves the host, for the model's provider: aliases only.
-            panels, extra = self.anon.payload(panels), self.anon.payload(extra)
-            scope["view"] = self.anon.payload(scope["view"])
-        return self.asker.submit(question, panels, None, win["label"], history, extra, scope)
-
-    def _ask_session(self, question, window_min, history, ctx):
-        sid = ctx.get("session")
-        if not isinstance(sid, str) or not sid or len(sid) > 400:
-            raise ValueError("context.session: a session id")
-        win = self.window(window_min)
-        body = proctree.serve(self, sid, window_min)
-        if body.get("found") is None:
-            raise ValueError("this window is still being read; ask again when it is built")
-        if not body.get("found"):
-            raise ValueError("this session is not in the %s window" % win["label"])
-        extra = ask.session_digest(body, bool(self.cfg.get("ask.include_commands", False)))
-        extra["view"] = {"window": win["label"]}
-        title = self._ask_label(ctx, "title", 160)
-        scope = {"about": title or "one session", "guide": ask.SESSION_GUIDE,
-                 "steps": ask.SESSION_STEPS, "view": self._ask_view(win, sid=sid)}
-        if self.anon is not None:
-            extra = self.anon.payload(extra)
-            scope["view"] = self.anon.payload(scope["view"])
-        return self.asker.submit(question, None, None, win["label"], history, extra, scope)
-
     def _accounts(self):
         """Every account in the live roster's retention, for the anonymizer."""
         with self.lock:
             return list(self.live.roster.last)
-
-    def ask_job(self, jid):
-        return self.asker.view(jid)
 
     def live_users(self, window_min=None, q=None, limit=None, running=None):
         win = self.window(window_min)

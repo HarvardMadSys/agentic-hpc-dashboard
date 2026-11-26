@@ -39,13 +39,6 @@ class AliasTest(unittest.TestCase):
         other = Anonymizer(b"another", known_users=["glen"])
         self.assertNotEqual(a.user_alias("glen"), other.user_alias("glen"))
 
-    def test_the_masking_is_named_by_its_salt_without_giving_it_away(self):
-        a, b, other = anon(), anon(), Anonymizer(b"another")
-        self.assertEqual(a.ident(), b.ident())
-        self.assertNotEqual(a.ident(), other.ident())
-        self.assertRegex(a.ident(), r"^[0-9a-f]{16}$")
-        self.assertNotIn(b"salt".hex(), a.ident())
-
     def test_a_user_and_a_lab_of_the_same_spelling_get_different_aliases(self):
         a = anon("glen")
         a.learn_lab("sham_lab")

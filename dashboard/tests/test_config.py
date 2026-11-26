@@ -1,7 +1,7 @@
 """The configuration fails closed (rc_dashboard/config.py): a config file
 someone named must exist, a yes/no setting reads as yes or no or stops the
-service, and an unknown key where a typo would leave names unmasked, the page
-open or the agent on stops it too.
+service, and an unknown key where a typo would leave names unmasked or the page
+open stops it too.
 
     cd dashboard && .venv/bin/python -m unittest tests.test_config -q
 """
@@ -104,8 +104,7 @@ class Flags(Case):
 
     def test_one_reading_for_every_yes_no_variable(self):
         flags = self.flag_vars()
-        for var in ("RC_DASH_ASK", "RC_DASH_ANONYMIZE", "RC_DASH_RDNS", "RC_DASH_SLURM",
-                    "RC_DASH_HISTORY", "RC_DASH_CACHE_WINDOWS", "RC_DASH_MERGE_REDUCE",
+        for var in ("RC_DASH_ANONYMIZE", "RC_DASH_RDNS", "RC_DASH_SLURM", "RC_DASH_HISTORY", "RC_DASH_CACHE_WINDOWS", "RC_DASH_MERGE_REDUCE",
                     "RC_DASH_PREPROCESS", "RC_DASH_DROP_SELF_OBS"):
             self.assertIn(var, flags)
         for var, (dotted, coerce) in flags.items():
@@ -129,10 +128,10 @@ class Flags(Case):
         self.assertIn("RC_DASH_PORT", str(cm.exception))
 
     def test_a_string_in_the_file_reads_as_the_variable_does(self):
-        cfg, _ = self.load({"ask": {"enabled": "false"}, "anonymize": {"enabled": " On "},
+        cfg, _ = self.load({"rollup": {"enabled": "false"}, "anonymize": {"enabled": " On "},
                             "panels": {"cache_windows": "off"}, "slurm": {"enabled": 0},
                             "server": {"rdns": {"enabled": 1}}})
-        self.assertIs(cfg.get("ask.enabled"), False)
+        self.assertIs(cfg.get("rollup.enabled"), False)
         self.assertIs(cfg.get("anonymize.enabled"), True)
         self.assertIs(cfg.get("panels.cache_windows"), False)
         self.assertIs(cfg.get("slurm.enabled"), False)
@@ -171,49 +170,11 @@ class SlurmAbnormal(Case):
                         {"reducers": {"slurm": {"abnormal": {key: bad}}}}))
 
 
-class Passthrough(Case):
-    def test_names_and_prefixes_for_the_agents_environment(self):
-        self.assertEqual(configmod.defaults()["ask"]["env_passthrough"], [])
-        with mock.patch.dict(os.environ, {"RC_DASH_ASK_ENV_PASSTHROUGH": "AWS_*, CLOUD_ML_REGION"}):
-            cfg = configmod.load(None, None)
-        self.assertEqual(cfg.get("ask.env_passthrough"), ["AWS_*", "CLOUD_ML_REGION"])
-        cfg, _ = self.load({"ask": {"env_passthrough": ["GOOGLE_APPLICATION_CREDENTIALS"]}})
-        self.assertEqual(cfg.get("ask.env_passthrough"), ["GOOGLE_APPLICATION_CREDENTIALS"])
-        for bad in (["*"], ["A B"], ["AWS_**"], ["*AWS"], ["X*Y"], [5], "AWS_*",
-                    # a prefix short of a family's, or with no _, takes in what else begins so
-                    ["A*"], ["S*"], ["AWS*"], ["A_*"], ["AB_*"], ["_*"], ["1AB_*"], ["__X_*"]):
-            with self.subTest(bad=bad):
-                self.assertIn("ask.env_passthrough", self.refused({"ask": {"env_passthrough": bad}}))
-        good = ["AWS_*", "ANTHROPIC_VERTEX_*", "AZURE_*", "HF_TOKEN", "X"]
-        self.assertEqual(self.load({"ask": {"env_passthrough": good}})[0].get("ask.env_passthrough"),
-                         good)
-        self.assertIn("the nearest is ask.env_passthrough",
-                      self.refused({"ask": {"env_passthru": ["AWS_*"]}}))
-
-
-class Secrets(Case):
-    def test_what_can_hold_a_key_is_said_to_be_set_never_shown(self):
-        key = "sk-ant-api03-EXAMPLEEXAMPLEEXAMPLE0123"
-        for env in ({}, {"RC_DASH_ASK_CMD": "env ANTHROPIC_API_KEY=%s claude -p" % key}):
-            with self.subTest(env=env), mock.patch.dict(os.environ, env):
-                cfg, _ = self.load({"ask": {"command": ["env", "OPENAI_API_KEY=%s" % key, "codex"],
-                                            "system_prompt": "token %s" % key}})
-                tree = cfg.as_dict(with_origins=True)
-                self.assertEqual(tree["ask"]["command"]["_value"], "(hidden)")
-                self.assertEqual(tree["ask"]["system_prompt"]["_value"], "(hidden)")
-                self.assertNotIn(key, json.dumps(tree))
-        # unset stays as it is, so the page can tell the two apart
-        tree = configmod.load(None, None).as_dict(with_origins=True)
-        self.assertIsNone(tree["ask"]["command"]["_value"])
-        self.assertEqual(tree["ask"]["system_prompt"]["_value"], "")
-
-
 class UnknownKeys(Case):
     def test_a_typo_where_it_would_fail_open_stops_it_naming_the_key_meant(self):
         for tree, typo, meant in (
                 ({"anonymize": {"enable": True}}, "anonymize.enable", "anonymize.enabled"),
                 ({"anonymise": {"enabled": True}}, "anonymise", "anonymize"),
-                ({"ask": {"enable": False}}, "ask.enable", "ask.enabled"),
                 ({"server": {"auth": {"pasword_hash": "x"}}}, "server.auth.pasword_hash",
                  "server.auth.password_hash"),
                 ({"server": {"hots": "0.0.0.0"}}, "server.hots", "server.host"),
@@ -224,9 +185,9 @@ class UnknownKeys(Case):
                 self.assertIn("the nearest is %s" % meant, msg)
 
     def test_every_typo_is_named_at_once(self):
-        msg = self.refused({"anonymize": {"enable": True}, "ask": {"enable": False}})
+        msg = self.refused({"anonymize": {"enable": True}, "server": {"hots": "0.0.0.0"}})
         self.assertIn("anonymize.enable ", msg)
-        self.assertIn("ask.enable ", msg)
+        self.assertIn("server.hots ", msg)
 
     def test_a_section_given_as_one_value_stops_it(self):
         self.assertIn("anonymize: true is not an object", self.refused({"anonymize": True}))
@@ -306,21 +267,30 @@ class Retired(Case):
 
 class RetiredSections(Case):
     """The sections of features since removed (`annotate`, the tool-call purposes
-    a model wrote; `export`, the Search & export tab's download): a file or a
-    variable written for one is named and ignored, never refused, and nothing of
-    it is served -- a key it held included."""
+    a model wrote; `export`, the Search & export tab's download; `ask`, Ask LLM):
+    a file or a variable written for one is named and ignored, never refused, and
+    nothing of it is served -- a key it held included."""
 
     KEY = "sk-ant-api03-EXAMPLEEXAMPLEEXAMPLE0123"
     # each section as a site's file may still hold it
     FILE = {"annotate": {"enabled": True, "provider": "command", "api_key": KEY,
                          "command": ["env", "ANTHROPIC_API_KEY=" + KEY, "claude", "-p"],
                          "system_prompt": "token " + KEY, "batch_size": 40},
-            "export": {"max_rows": 100}}
+            "export": {"max_rows": 100},
+            "ask": {"enabled": True, "agent": "codex", "model": "",
+                    "command": ["env", "OPENAI_API_KEY=" + KEY, "codex", "exec", "-"],
+                    "env_passthrough": ["AWS_*"], "timeout_s": 240, "max_concurrent": 1,
+                    "context_kb": 120, "include_commands": False, "system_prompt": "token " + KEY,
+                    "system_prompt_file": "", "snapshot_guide": True, "citations": True,
+                    "unmasked_answers": False}}
     # every variable there was to set one, and its section
     VARS = {"RC_DASH_ANNOTATE": "annotate", "RC_DASH_ANNOTATE_PROVIDER": "annotate",
             "RC_DASH_ANNOTATE_MODEL": "annotate", "RC_DASH_ANNOTATE_BASE_URL": "annotate",
             "RC_DASH_ANNOTATE_KEY_ENV": "annotate", "RC_DASH_ANNOTATE_KEY_FILE": "annotate",
-            "RC_DASH_ANNOTATE_CMD": "annotate", "RC_DASH_EXPORT_MAX_ROWS": "export"}
+            "RC_DASH_ANNOTATE_CMD": "annotate", "RC_DASH_EXPORT_MAX_ROWS": "export",
+            "RC_DASH_ASK": "ask", "RC_DASH_ASK_AGENT": "ask", "RC_DASH_ASK_MODEL": "ask",
+            "RC_DASH_ASK_CMD": "ask", "RC_DASH_ASK_ENV_PASSTHROUGH": "ask",
+            "RC_DASH_ASK_PROMPT_FILE": "ask"}
 
     def test_every_one_is_retired(self):
         self.assertEqual(sorted(configmod.RETIRED_SECTIONS), sorted(self.FILE))
@@ -330,13 +300,13 @@ class RetiredSections(Case):
             self.assertFalse([k for k in configmod.ENV_MAP if k.startswith(name + ".")])
 
     def test_a_file_that_sets_one_starts_without_it(self):
-        cfg, err = self.load(dict(self.FILE, ask={"enabled": False}))
+        cfg, err = self.load(dict(self.FILE, slurm={"enabled": False}))
         for name in self.FILE:
             self.assertIn("config file %s: %s is retired" % (os.path.join(self.tmp, "c.json"),
                                                             name), err)
             self.assertIsNone(cfg.get(name))
         self.assertNotIn("is not a setting", err)
-        self.assertIs(cfg.get("ask.enabled"), False)
+        self.assertIs(cfg.get("slurm.enabled"), False)
         # dropped, so neither /api/config nor a saved build's fingerprint holds
         # it, nor the key it held, which /api/config no longer hides
         served = cfg.as_dict(with_origins=True)
@@ -354,6 +324,55 @@ class RetiredSections(Case):
                 self.assertIsNone(cfg.get(name))
 
 
+class AskRetired(Case):
+    """Ask LLM was removed. A config file or an environment written for it still
+    starts the service: whatever it set is named in one warning, which says so,
+    and dropped -- the keys the old checks refused (a typo, a yes/no that is
+    neither) included, since none is read now."""
+
+    SAID = "is retired: Ask LLM was removed in this version, and the setting is ignored"
+
+    def warnings(self, err):
+        return [line for line in err.splitlines() if line.startswith("warning:")]
+
+    def test_a_section_in_a_toml_file_is_one_warning(self):
+        for text in ('[ask]\nenabled = true\nagent = "codex"\nenv_passthrough = ["AWS_*"]\n'
+                     'command = "env OPENAI_API_KEY=sk-x codex exec -"\n',
+                     # dotted keys, the same table
+                     'ask.enabled = false\nask.model = "some-model"\n',
+                     # what the old checks refused: a typo, and a yes/no that is neither
+                     '[ask]\nenable = true\nenabled = "maybe"\n'):
+            with self.subTest(text=text):
+                path = self.write(text, "c.toml")
+                cfg, err = self.load(path=path)
+                self.assertEqual(self.warnings(err),
+                                 ["warning: config file %s: ask %s" % (path, self.SAID)])
+                self.assertIsNone(cfg.get("ask"))
+                self.assertNotIn("ask", cfg.as_dict())
+                self.assertNotIn("ask", cfg.as_dict(with_origins=True))
+
+    def test_the_section_in_a_json_file_is_one_warning(self):
+        cfg, err = self.load({"ask": {"enabled": True, "timeout_s": "soon"}, "slurm": {"enabled": False}})
+        self.assertEqual(self.warnings(err), ["warning: config file %s: ask %s"
+                                              % (os.path.join(self.tmp, "c.json"), self.SAID)])
+        self.assertIsNone(cfg.get("ask"))
+        self.assertIs(cfg.get("slurm.enabled"), False)
+
+    def test_a_variable_is_one_warning_whatever_it_says(self):
+        for raw in ("1", "0", "false", "maybe"):
+            with self.subTest(raw=raw), mock.patch.dict(os.environ, {"RC_DASH_ASK": raw}):
+                cfg, err = self.load({})
+                self.assertEqual(self.warnings(err), ["warning: RC_DASH_ASK %s" % self.SAID])
+                self.assertIsNone(cfg.get("ask"))
+
+    def test_print_config_no_longer_knows_it(self):
+        self.assertNotIn("ask", configmod.defaults())
+        self.assertFalse([k for k in configmod.ENV_MAP if k.startswith("ask.")])
+        self.assertNotIn("ask", configmod.STRICT)
+        self.assertNotIn("[ask]", configmod.reference_toml())
+        self.assertNotIn("RC_DASH_ASK", configmod.reference_toml())
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -363,9 +382,9 @@ class Toml(Case):
 
     def test_toml_and_json_resolve_the_same(self):
         js = self.write({"site": {"name": "x"}, "slurm": {"enabled": False},
-                         "live": {"retention_min": 1440}, "ask": {"env_passthrough": ["AWS_*"]}})
+                         "live": {"retention_min": 1440}, "filters": {"drop_global": ["svc"]}})
         tm = self.write('[site]\nname = "x"\n[slurm]\nenabled = false\n[live]\n'
-                        'retention_min = 1440\n[ask]\nenv_passthrough = ["AWS_*"]\n', "c.toml")
+                        'retention_min = 1440\n[filters]\ndrop_global = ["svc"]\n', "c.toml")
         a, _ = self.load(path=js)
         b, _ = self.load(path=tm)
         self.assertEqual(a.as_dict(), b.as_dict())
@@ -374,10 +393,10 @@ class Toml(Case):
     def test_the_same_checks(self):
         msg = self.refused(path=self.write('[server]\nhots = "0.0.0.0"\n', "c.toml"))
         self.assertIn("server.hots is not a setting; the nearest is server.host", msg)
-        msg = self.refused(path=self.write('[ask]\nenabled = "maybe"\n', "c.toml"))
-        self.assertIn("ask.enabled", msg)
-        cfg, _ = self.load(path=self.write('[ask]\nenabled = "off"\n', "c.toml"))
-        self.assertIs(cfg.get("ask.enabled"), False)
+        msg = self.refused(path=self.write('[slurm]\nenabled = "maybe"\n', "c.toml"))
+        self.assertIn("slurm.enabled", msg)
+        cfg, _ = self.load(path=self.write('[slurm]\nenabled = "off"\n', "c.toml"))
+        self.assertIs(cfg.get("slurm.enabled"), False)
         msg = self.refused(path=self.write('[site\nname = 1\n', "c.toml"))
         self.assertIn("c.toml", msg)
 
@@ -503,7 +522,10 @@ class Reference(Case):
         text = configmod.reference_toml()
         for dotted, (var, _c) in configmod.ENV_MAP.items():
             self.assertIn("# %s" % var, text, dotted)
-        self.assertIn("# command = (unset)  # RC_DASH_ASK_CMD", text)
+        # a setting whose default is unset is a comment, naming its variable still
+        with mock.patch.object(configmod, "defaults", lambda: {"x": {"cmd": None}}), \
+                mock.patch.dict(configmod.ENV_MAP, {"x.cmd": ("RC_DASH_X_CMD", str)}):
+            self.assertIn("# cmd = (unset)  # RC_DASH_X_CMD", configmod.reference_toml())
 
     def test_the_command_prints_it(self):
         out = io.StringIO()
@@ -576,6 +598,17 @@ class Unreduced(Case):
             self.assertEqual(fp("code", a, ["/r"]), fp("code", b, ["/r"]))
         self.assertNotIn("status", a.as_dict())
         self.assertIn("status", a.as_dict(with_origins=True))
+
+    def test_what_ask_llm_left_keeps_the_fingerprints(self):
+        """A file or a variable that still sets Ask LLM's section moves neither: it is
+        dropped before the tree is made, and was outside both trees besides."""
+        from rc_dashboard import hours, snapshots
+        a, _ = self.load({})
+        with mock.patch.dict(os.environ, {"RC_DASH_ASK": "1", "RC_DASH_ASK_CMD": "codex exec -"}):
+            b, _ = self.load({"ask": {"enabled": True, "context_kb": 60}})
+        for fp in (snapshots.fingerprint, hours.fingerprint):
+            self.assertEqual(fp("code", a, ["/r"]), fp("code", b, ["/r"]))
+        self.assertNotIn("ask", b.as_dict())
 
     def test_status_settings_are_checked(self):
         msg = self.refused({"status": {"transport_files": "/x.json"}})

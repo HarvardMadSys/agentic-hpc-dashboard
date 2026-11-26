@@ -1,10 +1,12 @@
 """`rc-dashboard backup` and `restore` (rc_dashboard/backup.py): the state that
 cannot be rebuilt, into one tar and back -- the roll-up table copied with
 SQLite's backup, the salt, the session key, the config file, the hash file --
-and never a file replaced without --force.
+and never a file replaced without --force. Ask LLM's suggestions marked done,
+which a deployment that used it still holds, are neither backed up nor put back.
 
     cd dashboard && .venv/bin/python -m unittest tests.test_backup -q
 """
+import hashlib
 import io
 import json
 import os
@@ -46,6 +48,7 @@ class Backup(unittest.TestCase):
                      % (self.cache, self.hash_file))
         auth.write_hash_file(self.hash_file, auth.hash_password("pw", n=16, r=1, p=1))
         os.makedirs(os.path.join(self.cache, "rollup"), mode=0o700)
+        # what Ask LLM, since removed, left behind: its suggestions marked done
         os.makedirs(os.path.join(self.cache, "ask"), mode=0o700)
         self.db = os.path.join(self.cache, "rollup", "rollup.sqlite")
         db = sqlite3.connect(self.db)
@@ -79,8 +82,9 @@ class Backup(unittest.TestCase):
             names = set(tar.getnames())
             manifest = json.load(tar.extractfile("MANIFEST.json"))
             snap = tar.extractfile("rollup.sqlite").read()
+        # not ask/done.json, which nothing reads since Ask LLM was removed
         self.assertEqual(names, {"MANIFEST.json", "rollup.sqlite", "session.key", "anonymize.salt",
-                                 "password.hash", "ask-done.json", "config/dashboard.toml"})
+                                 "password.hash", "config/dashboard.toml"})
         roles = {f["role"]: f for f in manifest["files"]}
         self.assertEqual(roles["hash_file"]["path"], self.hash_file)
         self.assertEqual(roles["session_key"]["mode"], "0600")
@@ -142,8 +146,42 @@ class Backup(unittest.TestCase):
             code, out, err = self.run_cli("restore", "--config", moved, "--from", tar_path)
         self.assertEqual(code, 0, err)
         self.assertTrue(os.path.isfile(moved))
-        for name in ("session.key", "anonymize.salt", os.path.join("rollup", "rollup.sqlite"),
-                     os.path.join("ask", "done.json")):
+        for name in ("session.key", "anonymize.salt", os.path.join("rollup", "rollup.sqlite")):
+            self.assertTrue(os.path.isfile(os.path.join(new, "cache", name)), name)
+
+    def test_a_backup_from_before_ask_was_removed_restores_without_its_file(self):
+        """A backup made while Ask LLM was there holds its suggestions marked done
+        (`ask-done.json`): restored, the rest goes back and that file is left out,
+        said to be, since nothing reads it."""
+        tar_path = self.path("b.tar")
+        self.run_cli("backup", "--config", self.config, "--to", tar_path)
+        self.held.close()
+        with tarfile.open(tar_path) as tar:
+            members = {m.name: tar.extractfile(m).read() for m in tar.getmembers()}
+        manifest = json.loads(members.pop("MANIFEST.json"))
+        done = b'{"version": 1, "items": []}\n'
+        manifest["files"] = [f for f in manifest["files"] if f["role"] != "ask_done"]
+        manifest["files"].append({"name": "ask-done.json", "role": "ask_done",
+                                  "path": os.path.join(self.cache, "ask", "done.json"),
+                                  "mode": "0600", "size": len(done),
+                                  "sha256": hashlib.sha256(done).hexdigest()})
+        members["ask-done.json"] = done
+        old = self.path("old.tar")
+        with tarfile.open(old, "w") as tar:
+            for name, data in [("MANIFEST.json", json.dumps(manifest).encode())] + sorted(
+                    members.items()):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        new = self.path("newhost")
+        os.makedirs(new)
+        with mock.patch.dict(os.environ, {"RC_DASH_CACHE_DIR": os.path.join(new, "cache")}):
+            code, out, err = self.run_cli("restore", "--config", os.path.join(new, "dashboard.toml"),
+                                          "--from", old)
+        self.assertEqual(code, 0, err)
+        self.assertIn("ask-done.json: left out: Ask LLM was removed in this version", out)
+        self.assertFalse(os.path.exists(os.path.join(new, "cache", "ask")))
+        for name in ("session.key", "anonymize.salt", os.path.join("rollup", "rollup.sqlite")):
             self.assertTrue(os.path.isfile(os.path.join(new, "cache", name)), name)
 
     def test_a_tar_that_is_no_backup_is_refused(self):

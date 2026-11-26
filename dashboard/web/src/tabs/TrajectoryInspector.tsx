@@ -95,7 +95,6 @@ import { AGENT_TYPE_LBL, CLS_COL, CLS_LBL } from '../lib/classes';
 import { GLOSS } from '../lib/glossary';
 import { serverNow } from '../lib/clock';
 import { useNow } from '../lib/useNow';
-import { registerJumper } from '../lib/cites';
 import { DASH, bytes, clock, dur, fint, fmt } from '../lib/format';
 import { callWord, categoryOf, driverOf, isBlock, phaseLbl, phasesUnread, runningUnread, runningUnreadText } from '../lib/phases';
 import { pcol, plbl, purposeLegend } from '../lib/purposes';
@@ -655,12 +654,6 @@ export function TrajectoryInspector({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jump?.n]);
 
-  // A citation in an answer about this session: the moment it cites (lib/cites.ts).
-  useEffect(
-    () => registerJumper(sid, (j, what) => setWant({ t: j.t, by: j.by, pid: j.pid, zoom: j.zoom, what })),
-    [sid],
-  );
-
   // The jump this row was opened for, if it was: a task or phase picked on the other day's row of this session (`onJump`). It is gone
   // to as any pick is, which waits for the read, so the zoom is made on this row's own axis. The row of another jump takes none.
   const jumpHere = pendingJump && pendingJump.sid === sid ? pendingJump : null;
@@ -1002,7 +995,6 @@ export function TrajectoryInspector({
       <Panel
         id="sec-session-inspector"
         title="Session inspector"
-        ask={{ session: sid }}
         p={env}
         feed="ebpf"
         empty={d?.found === false}

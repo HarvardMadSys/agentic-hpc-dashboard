@@ -206,7 +206,7 @@ export function Attention({ P, cls, feeds }: { P: Panels; cls: Cls[]; feeds: Fee
             <li key={f.key}>
               <i className={`attn-dot ${f.kind}`} aria-hidden="true" />
               <span className="attn-what">{f.what}</span>
-              <button className="linkbtn attn-go" onClick={() => go(f.to, f.where)} data-tip={`open ${f.where}`}>
+              <button className="linkbtn attn-go" onClick={() => go(f.to)} data-tip={`open ${f.where}`}>
                 see {'→'}
               </button>
               {(f.note || f.by) && (

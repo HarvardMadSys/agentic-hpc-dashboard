@@ -120,8 +120,7 @@ defaults, so it cannot drift from the code; `tests/test_config.py` reads it back
   `server.static_dir = "dashboard/web/dist"`), wherever the service is started from, and `~` is a
   home; installed without a checkout, a relative path is beside the file. The settings this applies
   to are `config.PATH_KEYS`: the feed roots, `cache.dir`, `history.dir`, `rollup.dir`,
-  `server.static_dir`, `server.auth.password_hash_file`, `ask.system_prompt_file` and
-  `status.transport_files`. `risk.profile` stays under `dashboard/`, as it always was. A path given
+  `server.static_dir`, `server.auth.password_hash_file` and `status.transport_files`. `risk.profile` stays under `dashboard/`, as it always was. A path given
   by a flag or a variable is the shell's, under the working directory.
 - Path defaults are **candidate lists**, and every candidate that exists is read: `print-config`
   lists those (`_existing`, a glob pattern's matches included), and `check-feeds` prints every
@@ -129,15 +128,17 @@ defaults, so it cannot drift from the code; `tests/test_config.py` reads it back
 - **A mistake stops the service rather than loosening it.** A config file named by `--config` or
   `RC_DASH_CONFIG` must exist. A yes/no setting given as text (an `RC_DASH_*` variable, or a string
   in the file) is `1`/`0`, `true`/`false`, `yes`/`no` or `on`/`off`, in any case; anything else
-  (`RC_DASH_ASK=n`) stops it. An unknown key under `server`, `anonymize` or `ask`, or a top-level
-  key one slip from one of them (`anonymise`), stops it and names the nearest key; an unknown key
-  anywhere else is a warning.
+  (`RC_DASH_SLURM=n`) stops it. An unknown key under `server` or `anonymize`, or a top-level key
+  one slip from either (`anonymise`), stops it and names the nearest key; an unknown key anywhere
+  else is a warning.
 - Retired feeds' settings (`feeds.sacct`, `feeds.sacctmgr`, `feeds.domains`, `feeds.user_actor`,
   `RC_DASH_SACCT_DIR` and the other `config.RETIRED_ENV` variables, `--sacct-dir`, `--jobs-csv`)
   are named in a warning and ignored, never refused. So are the sections of removed features
   (`config.RETIRED_SECTIONS`: `annotate`, the tool-call purposes a model wrote; `export`, the
-  Search & export tab's download) and every variable that set one (`RC_DASH_ANNOTATE`,
-  `RC_DASH_ANNOTATE_*`, `RC_DASH_EXPORT_MAX_ROWS`), which `/api/config` never shows.
+  Search & export tab's download; `ask`, Ask LLM, which ran an agent CLI over the window and is
+  removed) and every variable that set one (`RC_DASH_ANNOTATE`, `RC_DASH_ANNOTATE_*`,
+  `RC_DASH_EXPORT_MAX_ROWS`, `RC_DASH_ASK` and its `RC_DASH_ASK_*`), which `/api/config` never
+  shows.
 - `history` and `ingest` are under [History in Parquet](#history-in-parquet) and
   [Hourly merge-reduce](#hourly-merge-reduce).
 - `filters.drop_global` (`RC_DASH_DROP_USERS`, comma-separated) drops every record of the accounts
@@ -306,8 +307,8 @@ Costs are drawn from ranges that look like a login node's, and model nothing.
 **Nothing in the demo was measured, and the page says so.** Every record carries
 `"synthetic": true`, a key no collector writes. The feeds report lists the hosts whose records carry
 it (`synthetic_hosts`); while any does, the header shows *fake data* and the Feeds tab marks each
-such host. The site is named *demo · fake data*, and its description, which the Ask LLM agent is
-given, says no record was measured. The mark travels with the records, so a service pointed at a
+such host. The site is named *demo · fake data*, and its description says no record was
+measured. The mark travels with the records, so a service pointed at a
 demo feed by hand, or a copy of one, still shows it. Use a demo to show the dashboard, never to
 report on one.
 
@@ -335,7 +336,7 @@ twice and nothing missed. It starts over when the stamp is from another seed, ho
 or is older than the history asked for. Only one demo writes a directory at a time (`.demo.lock`).
 Three days of two hosts is 84 MB of JSONL, written in about 2 s.
 [`docker/demo/Dockerfile`](../docker/demo/Dockerfile) packages the demo as an image (two days of
-history, Ask LLM off, the people's working day in New York time), which
+history, the people's working day in New York time), which
 [`deploy/cloudflare`](../deploy/cloudflare/README.md) runs at <https://dashboard-demo.agentic-system.org>.
 
 ## A capture from another cluster
@@ -652,15 +653,13 @@ window on a busy node can take ~1 GB.
 | `GET /login`, `POST /login` | the sign-in form, and signing in: a session cookie, then back to `next` ([Password](#password)) |
 | `POST /logout` | signing out: the cookie cleared, then the form |
 
-With a password set, every route above asks for it. `POST /api/ask`, `GET /api/ask`,
-`GET /api/ask/{job}` and `/api/suggestions/done` (`GET`, `POST`, and `DELETE
-/api/suggestions/done/{id}`) are [Ask LLM](#ask-llm)'s. Every `/api` request but a GET, HEAD or
+With a password set, every route above asks for it. Every `/api` request but a GET, HEAD or
 OPTIONS takes `Content-Type: application/json` only (a 415 otherwise, `guard.JsonOnly`), which
 another site's page cannot send without the browser asking first; a body past 1 MB is a 413, and a
 malformed one a 400. The page's routes for panels, sessions and users (`/api/panels`,
 `/api/trajectories`, `/api/trajectory`, `/api/users`, `/api/user`) leave out the method notes,
-`notes`, `basis` and every `*_basis` key (`jsonout.strip_basis`): the page shows none of them, and
-Ask LLM reads them where the service holds them. `window_min` is optional everywhere: omitted, it is `live.window_min`. A value
+`notes`, `basis` and every `*_basis` key (`jsonout.strip_basis`): the page shows none of them.
+`window_min` is optional everywhere: omitted, it is `live.window_min`. A value
 above retention is clamped, and the response carries `requested`, `clamped` and a `note`.
 
 `/api/trajectory` (`proctree.py`) is the inspector behind a clicked session row. No reducer holds
@@ -809,7 +808,7 @@ the two shipped profiles, and [`example.json`](risk-profiles/example.json) uses 
 
 `anonymize.enabled` (`RC_DASH_ANONYMIZE=1`) replaces every username, lab or Slurm account name,
 email address and numeric user ID in everything the service sends out (every HTTP response and
-websocket frame, and the Ask snapshot) with a stable alias: `user-7f3a9c1e`,
+websocket frame) with a stable alias: `user-7f3a9c1e`,
 `lab-1b2c3d4e`, `[email]`, `[uid]`. It is off by default, so a deployment for the cluster's own staff
 shows real names. The header says *anonymized* while it is on.
 
@@ -837,12 +836,8 @@ shows real names. The header says *anonymized* while it is on.
   and a session id (`sid`, whose `tty:` and `usr:` keys name an account) take an alias; anything else
   maps to `user-unknown`, which matches no record. The roster's search (`q`) and the `host`,
   `tool` and `cwd` filters match the text as the reader sees it. What a response echoes from a request (a
-  view's filter and status, an I/O lookup's query, a session id, an Ask
-  question and answer, the suggestions marked done) goes back exactly as sent (`anonymize.Verbatim`).
-- **Ask is refused while names are anonymized**, unless `ask.unmasked_answers` is set: its answer is
-  shown as the agent writes it, and the agent can read whatever the service's account can, raw feeds
-  included. The suggestions marked done (`/api/suggestions/done`) are refused too, deleting one
-  included; to clear them, edit or remove `<cache.dir>/ask/done.json` by hand.
+  view's filter and status, an I/O lookup's query, a session id) goes back exactly as sent
+  (`anonymize.Verbatim`).
 - **Not covered.** A person's name in free text that no rule ties to an account (a commit message, a
   folder named after someone), hostnames, partitions and job ids; and an account named in another's
   command line, outside a home path, before any response has named it. In `/api/health`, `anonymize` counts the names it knows, the collisions (two names, one
@@ -854,8 +849,8 @@ parameter of every route and finds neither that name's alias nor any of that acc
 
 ## Password
 
-One password puts the whole service behind it: the page, its assets, every `/api` route (Ask LLM
-included), `/metrics` and the websocket. The service keeps only its salted scrypt hash, **in a hash
+One password puts the whole service behind it: the page, its assets, every `/api` route,
+`/metrics` and the websocket. The service keeps only its salted scrypt hash, **in a hash
 file**, `server.auth.password_hash_file` (`RC_DASH_PASSWORD_HASH_FILE`), or given outright as
 `server.auth.password_hash` (`RC_DASH_PASSWORD_HASH`); both set stops the service, saying why. With
 neither, `serve` refuses to start, because on a shared host "bound to 127.0.0.1" means "readable by
@@ -946,7 +941,6 @@ cannot be rebuilt (`backup.py`):
 | `session.key` | `<cache.dir>/session.key` | a new key signs everyone out |
 | `config/<name>` | the config file the service reads | |
 | `password.hash` | `server.auth.password_hash_file` | |
-| `ask-done.json` | `<cache.dir>/ask/done.json` | Ask's suggestions marked done |
 
 and `MANIFEST.json`: where each was, its mode, size and SHA-256. **Deliberately left out**, as rebuilt
 from the collector's day-files or by asking again: the saved window builds, hours and panels
@@ -960,50 +954,8 @@ and different, and any roll-up table already there, is replaced only with `--for
 written until every target is known to be free. The table goes back through SQLite's own backup, so
 its write-ahead log is taken care of. Stop the service first: it holds the table open, and keeps the
 salt and the key it read at start.
-
-## Ask LLM
-
-The Ask LLM tab, and the *ask* button on a panel or a session, run an agent CLI on this host
-(`ask.py`): by default `codex exec --sandbox read-only`, as the service's account with its Codex
-login, given the question and a compact, masked snapshot of the window. The snapshot leaves the
-host, for the agent's provider.
-
-**The agent can read whatever the service's account can read.** Its sandbox is read-only, not
-confined: the collector's files, the service's cache (the anonymize salt and the session key among
-them) and that account's home are within its reach, and its question is text a reader wrote. Run
-the service as a dedicated account that holds no other credentials, not as a person's. So:
-
-- **Off by default.** `ask.enabled` (`RC_DASH_ASK=1`) turns it on.
-- **Never without a password.** While the service has none (neither `server.auth.password_hash_file`
-  nor `server.auth.password_hash`), Ask is refused even when
-  turned on: `GET /api/ask` says why, and a question gets a 400 and reads nothing.
-- **A short environment.** The agent gets only what a program needs to run, find its login and reach
-  its provider (`ask.AGENT_ENV`, `ask.AGENT_ENV_PREFIXES`): `PATH`, `HOME`, `USER`, `LOGNAME`,
-  `SHELL`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `TMPDIR`, `TERM`, `LD_LIBRARY_PATH`,
-  `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and
-  `DBUS_SESSION_BUS_ADDRESS` (for `systemd-run --user`, as `hpc/deploy` runs it), the proxy and CA
-  variables, `CODEX_HOME`, `OPENAI_*`, `ANTHROPIC_*` and `CLAUDE_*`. Anything else it needs, such as
-  a provider reached through a cloud, is named in `ask.env_passthrough`
-  (`RC_DASH_ASK_ENV_PASSTHROUGH`, comma-separated): variable names, or a family's prefix of three
-  characters or more and then `_*` (`["AWS_*", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION",
-  "AZURE_*"]`); a shorter prefix, or one without the `_` (`S*`), is refused at start. The service's
-  own `RC_DASH_*` settings, its password hash among them, are never passed, and a failing agent's
-  error says it ran with only part of the environment. **The proxy variables are passed as they
-  are** (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lower-case forms), so a user
-  and password in a proxy URL (`http://user:pass@proxy:3128`) can be read by an agent whose prompt
-  holds other users' command lines: for the service's account, prefer a proxy that needs none.
-- **A directory of its own**, made 0700 in the system's temporary directory for each question and
-  removed after, not under `cache.dir`, so the salt, the session key and the saved builds are not its
-  neighbours.
-- **A short question**: at most 4 000 characters (a 400 past that); the prompt carries the last three
-  earlier turns, cut to 600 and 1 500 characters a side.
-
-`ask.agent` picks a preset (`codex`); `ask.command` gives the argv outright, with `{workdir}`,
-`{answer_file}` and `{model}` filled in and the prompt on stdin. A command, or the instructions in
-`ask.system_prompt`, may hold a provider's key, so `/api/config` and `print-config` show both as
-`(hidden)` when set, and `GET /api/ask` names only the program a command runs (`claude` for
-`env ANTHROPIC_API_KEY=... claude -p`). `tests/test_ask.py` checks the refusals, the environment and
-the directory.
+A backup made before Ask LLM was removed also holds `ask-done.json`, its suggestions marked done:
+`restore` leaves it out and says so, since nothing reads it now.
 
 ## Network endpoints
 
@@ -1313,8 +1265,8 @@ none nested.
 **Workspace & blast radius** (`reducers/workspace.py`, composed per agent by the cascades reducer)
 shows where each agent worked, relative to its **home**: the agent process's own cwd, or, when that
 is `/` (IDE-hosted), its first call's directory below the root, labelled as such. The collector
-records no file paths, so three kinds of evidence are kept apart on the page and in the notes Ask
-LLM reads (`cascades.workspace.basis`):
+records no file paths, so three kinds of evidence are kept apart on the page and in its notes
+(`cascades.workspace.basis`):
 
 | reading | kind | what it is |
 |---|---|---|
@@ -1501,7 +1453,6 @@ GPU-hours count only jobs with GPUs and a time limit on the command line, as the
 | `rc_dashboard/anonymize.py` | stable aliases for the names in everything the service sends out ([Anonymized names](#anonymized-names)) |
 | `rc_dashboard/jsonout.py` | JSON out: serialized with orjson on the request's worker thread, gzipped when the reader takes it; the method notes left out of what the page reads (`strip_basis`) |
 | `rc_dashboard/gcwatch.py` | how long Python's garbage collector holds the process, and keeping it short; handing the heap's free pages back to the system (`malloc_trim`) |
-| `rc_dashboard/ask.py` | a question about the window on screen, answered by an agent CLI on this host ([Ask LLM](#ask-llm)) |
 | `rc_dashboard/demo/` | demo mode: the synthetic feed (`world` plans and builds it, `cast` the people, `sessions`/`agents` what each runs, `host` each node's own records, `records` the records as the collector writes them, `feed` the files), and the overrides that point the service at it |
 | `web/` | React + Vite + TS; `dist/` is what the service serves |
 | `bench/` | a synthetic feed at fleet density, timers, a profiler, and the guard that the main served answers stayed the same ([bench/README.md](bench/README.md)) |
