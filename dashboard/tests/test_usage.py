@@ -30,6 +30,7 @@ import uvicorn                                       # noqa: E402
 from rc_dashboard import __main__ as cli             # noqa: E402
 from rc_dashboard import app as appmod               # noqa: E402
 from rc_dashboard import auth                        # noqa: E402
+from rc_dashboard import clock as clockmod           # noqa: E402
 from rc_dashboard import config as configmod         # noqa: E402
 from rc_dashboard import hours, snapshots            # noqa: E402
 from rc_dashboard import usage                       # noqa: E402
@@ -129,6 +130,28 @@ class Store(unittest.TestCase):
 
     def test_no_counts_yet(self):
         self.assertEqual(self.store.totals(30, NOW), {})
+
+    def test_a_pinned_clock_dates_no_count(self):
+        """`serve --as-of` pins time.time for the whole process (clock.install). A reader
+        opens a tab today, so the count is dated by the wall clock, and `usage`, which
+        pins nothing, finds it in its last day."""
+        saved = (time.time, time.time_ns, dict(clockmod._state))
+
+        def unpin():
+            time.time, time.time_ns = saved[0], saved[1]
+            clockmod._state.clear()
+            clockmod._state.update(saved[2])
+        self.addCleanup(unpin)
+        before = usage._day(saved[0]())
+        clockmod.install({"clock.as_of": "2020-01-02 03:04:05"}, [])
+        self.assertTrue(clockmod.status()["pinned"])
+        self.assertTrue(self.store.add({"tab:live": 1}))
+        unpin()
+        after = usage._day()
+        days = os.listdir(self.dir)             # the wall clock's day, not 2020-01-02
+        self.assertEqual(len(days), 1)
+        self.assertIn(days[0], (before + ".json", after + ".json"))
+        self.assertEqual(sum(n for n, _d in self.store.totals(1).values()), 1)
 
     def test_a_folder_that_cannot_be_written_loses_the_counts_not_the_request(self):
         """A read-only or full cache.dir: the post's counts are dropped, said once, and no

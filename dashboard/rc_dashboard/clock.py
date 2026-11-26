@@ -39,6 +39,10 @@ says the clock is pinned, and the page's own "now" follows the server's.
 An explicit `as_of` before the newest record is a clock, not a filter: the live
 tier drops what comes after it as clock skew, while a window build still reads
 it. Pin at or after the end of the capture.
+
+What happens now outside the feed is timed on `wall()`, the clock the pin leaves
+alone: a reader opening a tab (`usage.py`) opens it today, whatever present the
+feed is pinned to, and `rc-dashboard usage`, which pins nothing, reads it there.
 """
 import os
 import time
@@ -116,6 +120,12 @@ def install(cfg, roots):
     time.time_ns = lambda: ns
     _state.update(pinned=True, as_of=as_of, source=source)
     return status()
+
+
+def wall():
+    """The wall clock, which a pin leaves alone: for what happens now, outside the
+    feed, never for what a window or a record is measured against."""
+    return _wall()
 
 
 def status():
