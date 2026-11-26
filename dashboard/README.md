@@ -434,7 +434,9 @@ uv run --frozen rc-dashboard status --json --stale 30m
 | `ok` (exit 0) | none of these |
 
 The JSON (`--json`, and `GET /api/status`) is a contract other tools code against
-(`hpc/deploy/check-local.sh`):
+(`hpc/deploy/check-local.sh`), and the page's first screen reads it: Summary's *Is collection
+healthy?* counts the hosts whose verdict is `ok`, words the level, and names the rest
+([web/README.md](web/README.md#summary-the-first-screen)).
 
 ```json
 {"level": "ok|warn|crit", "why": ["<host>: collector silent: no heartbeat for 2.0 h ..."],
@@ -654,7 +656,7 @@ window on a busy node can take ~1 GB.
 | `GET /api/config` | resolved config, `_origin` per key; `_meta` adds `version` (`{"_value": {"version": "0.1.0", "commit": "abc1234" or null}, "_origin": "build", "git" or "package"}`), `tz` (`{"name", "abbrev", "utc_offset_s"}`, [The time zone](#the-time-zone)) and `host` (the dashboard host's short name), each with `_origin` `runtime` but the version, and `auth` (`{"method": "proxy", "password" or "open", "user", "logout_url"}`, how this request got in, `_origin` `request`: [Single sign-on](#single-sign-on-through-a-proxy)) |
 | `GET /api/feeds` | per feed: configured vs resolved paths, every candidate and what was found there (`candidates`, [The two feeds](#the-two-feeds)), status, lag, rows, notice, backfill; the eBPF tier's `history` ([History in Parquet](#history-in-parquet)) |
 | `GET /api/collectors` | per host, whether its collector is OK: verdict and reasons, heartbeat age, every run and how it ended (each with its `collector_version`), probes that could not load, and the copy bringing its files (`transport`) ([Is each collector OK?](#is-each-collector-ok)) |
-| `GET /api/status?stale=` | is the collection working: per host and rolled up into ok, warn or crit, what `rc-dashboard status --json` prints ([status](#is-the-collection-working-status)) |
+| `GET /api/status?stale=` | is the collection working: per host and rolled up into ok, warn or crit, what `rc-dashboard status --json` prints ([status](#is-the-collection-working-status)); the page's Summary reads it |
 | `GET /metrics?stale=` | the same, in Prometheus' text format |
 | `GET /api/windows` | offered windows, the retention ceiling, and every held window's build state |
 | `GET /api/panels?window_min=&user=&agent_type=` | historical aggregates for that window + its build state; `user` / `agent_type` (repeatable, `none` = untagged) narrow it to a view of its own, built and saved like a window; `filter` names it, `facets` lists the window's users and agent types |

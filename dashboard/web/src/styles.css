@@ -1069,6 +1069,89 @@ html {
   font-family: 'IBM Plex Mono', monospace;
 }
 
+/* ------------------------------------------------------------------ summary */
+/* Summary (tabs/SummaryTab.tsx): four answers, one to a row, two where each
+   has room. A number is in the plates' type with its words beside it, never
+   alone, and a card's verdict is a word in its pill, not a colour. */
+.grid.sum {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (min-width: 1040px) {
+  .grid.sum {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.sum-figs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sum-fig {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+}
+.sum-num {
+  font-size: 32px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.sum-num.sm {
+  font-size: 20px;
+  letter-spacing: -0.015em;
+}
+/* the number's place, when nobody measured it: words, in the muted ink */
+.sum-num.nm {
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+}
+.sum-of {
+  color: var(--ink-2);
+  font-size: 15px;
+}
+.sum-what {
+  color: var(--ink-2);
+  font-size: 15px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sum-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.sum-split {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* where the card is broken down, at its foot whatever its height */
+.sum-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-top: auto;
+  padding-top: 4px;
+  font-size: 13.5px;
+}
+.sum-go {
+  overflow-wrap: anywhere;
+  text-underline-offset: 3px;
+}
+.sum-more {
+  margin: 18px 0 0;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
 /* -------------------------------------------------------------- primitives */
 .legend {
   display: flex;

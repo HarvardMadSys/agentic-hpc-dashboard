@@ -15,6 +15,7 @@ import type {
   IoSort,
   LiveUsers,
   PanelsResponse,
+  StatusDoc,
   TrajOrder,
   TrajRank,
   Trajectories,
@@ -81,6 +82,8 @@ function win(minutes: number | null | undefined, sep = '?'): string {
 export const getConfig = (s?: AbortSignal) => get<ConfigTree>('/config', { signal: s });
 export const getFeeds = (s?: AbortSignal) => get<FeedsResponse>('/feeds', { signal: s });
 export const getCollectors = (s?: AbortSignal) => get<CollectorsResponse>('/collectors', { signal: s });
+/** Is the collection working: each host's verdict and the level they roll up to (Summary). */
+export const getStatus = (s?: AbortSignal) => get<StatusDoc>('/status', { signal: s });
 export const getWindows = (s?: AbortSignal) => get<WindowsResponse>('/windows', { signal: s });
 
 /** `&user=..&agent_type=..`, or nothing when the filter is empty -- so an

@@ -28,10 +28,11 @@ which also says what each panel means. What each tab is for is in
 ## Where the records come from
 
 - **The eBPF tier** (`feeds.ebpf`): `exit`, `truncated`, `residency`, `residency_totals`, `conn`,
-  `netio`, `submit`, `meta`, `stop`. Every figure reads only this tier, but for the Feeds tab's and
-  the three that read the node tier (LV-1, RE-8, RE-1).
+  `netio`, `submit`, `meta`, `stop`. Every figure reads only this tier, but for the Feeds tab's,
+  Summary's collection card (SU-1, which also reads the node tier's newest records) and the four
+  that read the node tier (LV-1, SU-4, RE-8, RE-1).
 - **The node tier** (`feeds.ebpf_node`): a host's snapshot a line. Its newest snapshots (path NODE)
-  are served as `panels.node`, which RE-1 draws and LV-1 reads; its history over the window (path
+  are served as `panels.node`, which RE-1 draws and LV-1 and SU-4 read; its history over the window (path
   NODEHIST), as `panels.node.series`, which RE-8 draws.
 - **Slurm**: no scheduler accounting (`sacct`, `sacctmgr`) is read. The Slurm figures read the
   eBPF tier's `submit` records (one per `sbatch`, `srun` or `salloc`) and the `exit` records of
@@ -332,6 +333,62 @@ FAS RC capture (6.2 GB of gzip, 2.8 M exits).
   tool-call key the window's process index walks up to them (`agent_keys`). The page polls every 600
   ms; `Job.page` sorts the groups for each page of 200 rows (up to 1,000).
 - **Cost:** a read of the window's bytes per lookup, whatever it matches (IOCMDS).
+
+## Summary
+
+The first screen: four questions, at most two numbers each and eight in all, each card linking to
+where it is broken down. None has a reducer of its own: each reads a payload another figure draws,
+as that figure reads it, so the two cannot disagree.
+
+| | figure | path | payload | code (service · page) |
+|---|---|---|---|---|
+| SU-1 | card: is collection healthy | LIVE (health), FEEDS | `/api/status`: `level`, `why`, `hosts[].verdict`, `hosts[].transport` | `status.py:from_service`, `assemble`; `health.py:CollectorHealth.report` · `tabs/SummaryTab.tsx:collection` |
+| SU-2 | card: who runs agents, and how much | BUILD (on read) | `trajectories.summary[c].users`, `.sessions` | `TrajectoryReducer.summary` · `tabs/SummaryTab.tsx:agents` |
+| SU-3 | card: is anything risky | BUILD | `risk.dangerous.rows`, `risk.secrets.rows`, `risk.sections` | `reducers/risk.py:RiskReducer.result` · `tabs/SummaryTab.tsx:risky` |
+| SU-4 | card: is a login node struggling | NODE | `node.hosts[].cpu_idle_pct`, `.per_user[].throttled_delta_s`; `node.disk[].full`; `node.nfs[]` retransmissions; `node.thresholds` | `reducers/resources.py:NodeReducer.result` · `tabs/SummaryTab.tsx:struggling` |
+
+#### SU-1 is collection healthy
+
+- **Shows:** the login nodes whose collector is OK, of every host `/api/status` lists; the level in
+  a word (`working`, `something to look at`, `data not arriving`), its reasons on the pill's hover;
+  each host that is not OK, named with its verdict, or with `copy failed` where its collector is OK
+  and the copy bringing its files here is not. A read that fails after an answer leaves that
+  answer drawn, with `not current` in the pill and why on its hover, rather than old health shown
+  as now's.
+- **Records:** each host's own `meta`, `residency_totals` and `stop` records (FD-1's verdicts), the
+  newest record of each host's plain day-files, and the transport files (`status.transport_files`).
+- **Computation:** `status.from_service` takes the service's collector health and feed reports and
+  reads each host's newest record from the end of its plain files; `assemble` judges ok, warn or
+  crit (`status.stale_s`). The page counts the hosts whose verdict is `ok`.
+- **Cost:** a tail read per host's newest plain file, per request: asked when Summary opens and a
+  minute after each answer while it is on screen.
+
+#### SU-2 who runs agents, and how much
+
+- **Shows:** the users with an agent session in the window, and the agent sessions; each class's
+  sessions side by side (agent, human, IDE, each with its word), their counts on hover.
+- **Records, computation, cost:** LV-3's: the summary counts each folded session whose last record
+  is in the window (an agent's only when its root was seen), and its users. No request of its own:
+  the shell holds `/api/trajectories` for every tab.
+
+#### SU-3 is anything risky
+
+- **Shows:** the agent class's commands this site's rules say should not run on a login node, and
+  credentials on its command lines; `flagged` or `nothing flagged`.
+- **Records, computation, cost:** LV-4's: the rule rows' `classes.agent`, summed over the command
+  rows and over the credential rows. A risk panel not present (no feed, not reduced, not sent)
+  counts nothing and says why; a kind the site's profile leaves out is not shown.
+
+#### SU-4 is a login node struggling
+
+- **Shows:** the busiest login node by CPU busy (100 less `cpu_idle_pct`) at its newest snapshot,
+  named; and the problems the service's own lines flag there, as LV-1 flags them: local filesystems
+  at or past `node.disk_full_pct` or `node.inode_full_pct` (90%), accounts the kernel held back at
+  their CPU limit, NFS mounts retransmitting. The verdict is `flagged` for any of those, else
+  `busy` when the busiest is at or past 90% CPU busy (`BUSY_PCT`, the page's own line: no reduction
+  reads it), else `no problem flagged`.
+- **Records, computation, cost:** RE-1's: the node tier's newest snapshot of each host. A node
+  with no CPU reading is left out of the busiest; none at all reads "not measured".
 
 ## Live
 

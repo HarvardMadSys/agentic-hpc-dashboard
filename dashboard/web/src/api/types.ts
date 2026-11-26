@@ -196,6 +196,28 @@ export interface CollectorsResponse {
   backfill: BackfillStatus | null;
 }
 
+/* ---------------------------------------------------------------- status */
+
+/** `GET /api/status` (rc_dashboard/status.py): is the collection working, per
+ *  host -- the collector's verdict (health.py, the Feeds tab's Collectors), its
+ *  newest record per tier, the copy that brings its files -- rolled up into one
+ *  level. What `rc-dashboard status --json` prints; a null is a value nobody
+ *  measured, never 0. */
+export type StatusLevel = 'ok' | 'warn' | 'crit';
+export interface StatusHost {
+  host: string;
+  verdict: CollectorVerdict;
+  heartbeat_age_s: number | null;
+  newest_age_s: { ebpf: number | null; ebpf_node: number | null };
+  transport: CollectorTransport | null;
+}
+export interface StatusDoc {
+  level: StatusLevel;
+  /** each problem in words, the worst first as they were found */
+  why: string[];
+  hosts: StatusHost[];
+}
+
 /* ---------------------------------------------------------- panel envelope */
 
 export interface PanelEnvelope {

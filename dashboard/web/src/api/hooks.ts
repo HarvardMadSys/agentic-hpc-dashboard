@@ -7,6 +7,7 @@ import type {
   ConfigTree,
   FeedsResponse,
   PanelsResponse,
+  StatusDoc,
   TrajOrder,
   TrajRank,
   Trajectories,
@@ -21,6 +22,7 @@ import {
   getConfig,
   getFeeds,
   getPanels,
+  getStatus,
   getTrajectories,
   getTrajectory,
   getTrend,
@@ -84,6 +86,15 @@ export const useConfig = (): Async<ConfigTree> => useFetched(getConfig, []);
  *  slower than the beat was cancelled by the next request and never arrived. */
 export function useCollectors(everyMs = 20000): Async<CollectorsResponse> {
   const a = useFetched(getCollectors, []);
+  useRefresh(a, everyMs);
+  return a;
+}
+
+/** Is the collection working (`/api/status`), for Summary: asked once when it
+ *  opens and re-read `everyMs` after each answer while it is on screen. A
+ *  collector's heartbeat is a minute apart, so a minute loses nothing. */
+export function useStatus(everyMs: number | null = 60000): Async<StatusDoc> {
+  const a = useFetched(getStatus, []);
   useRefresh(a, everyMs);
   return a;
 }
