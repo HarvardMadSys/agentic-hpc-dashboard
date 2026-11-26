@@ -38,7 +38,9 @@ nothing.
 - **This machine:** git, `python3`, [uv](https://docs.astral.sh/uv/) (it pins the
   dashboard's requirements for the release), node and npm (the page's bundle), and ssh
   with a key (`SSH_KEY`) that logs in to the nodes and to the dashboard's host. For Slack
-  posts from the hourly check: `jq` and `curl`.
+  posts from the hourly check: `jq` and `curl`. And a checkout of this repository, since
+  `deploy.sh` ships its commit: a release's kit is no checkout, so for a release clone at
+  its tag (`git clone --branch vX.Y.Z`).
 - **The dashboard's host:** Linux with systemd, a user manager that you can keep running
   with `loginctl enable-linger`, and tmux. Python 3.11 or later for the dashboard's venv
   (`DASH_PYTHON`), and `/usr/bin/python3` for the stream. `ss` (without it, the port checks

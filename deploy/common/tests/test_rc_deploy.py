@@ -5,6 +5,7 @@ systemctl is a stand-in that logs its calls."""
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,92 @@ class Rig(unittest.TestCase):
                 if m:
                     out[m.group(1)] = m.group(2)
         return out
+
+
+class TestWhere(Rig):
+    """single and fleet keep their settings with the install (ROOT_SITE), so another
+    checkout or kit, another folder, reads them; a deploy/site.env from before moves there."""
+
+    def setUp(self):
+        super().setUp()
+        self.root_site = os.path.join(self.tmp, "etc-rc", "site.env")
+        self.old_site = os.path.join(self.tmp, "kit", "deploy", "site.env")
+        os.makedirs(os.path.dirname(self.old_site))
+        self.where = dict(RC_DEPLOY_ROOT_SITE=self.root_site, RC_DEPLOY_OLD_SITE=self.old_site,
+                          RC_DEPLOY_HPC_SITE=os.path.join(self.tmp, "hpc-site.env"),
+                          RC_DEPLOY_HISTORY="")
+
+    def bare(self, *args, code=0, root=True):
+        """rc-deploy with no --site: it finds the settings file itself."""
+        e = dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"], STUB_LOG=self.log,
+                 INSTALL_ENV=self.install_env, RC_DEPLOY_ECHO="1", USER="alice", **self.where)
+        e["RC_DEPLOY_AS_ROOT"] = "1" if root else "0"
+        p = subprocess.run([sys.executable, TOOL] + list(args), env=e, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, universal_newlines=True, timeout=60)
+        self.assertEqual(p.returncode, code, p.stdout)
+        return p.stdout
+
+    def test_init_writes_them_with_the_install(self):
+        out = self.bare("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes")
+        self.assertIn("settings in %s" % self.root_site, out)
+        with open(self.root_site) as fh:
+            self.assertIn("KIT=single", fh.read())
+        self.assertIn("kit single, settings %s" % self.root_site, self.bare("which"))
+
+    def test_init_without_root_says_the_command_with_the_answers(self):
+        """Every answer decided so far, typed or taken by --yes, and --kit: the command run
+        again as root asks nothing it was told and comes to the same kit (it once said
+        `init` alone, and the defaults chose another)."""
+        out = self.bare("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes",
+                        "--set", "SITE_NAME=c 1", code=1, root=False)
+        self.assertIn("which only root writes", out)
+        self.assertIn("init --set NODES= --set ROOT_ON_DASHBOARD=yes --set 'SITE_NAME=c 1' "
+                      "--set SLURM=yes --yes`", out)
+        self.assertFalse(os.path.exists(self.root_site))
+        out = self.bare("init", "--kit", "fleet", "--yes", "--set", "NODES=n1 n2", code=1, root=False)
+        said = re.search(r"run `sudo \S+ (init [^`]*)`", out).group(1)
+        self.assertEqual(said, "init --kit fleet --set 'NODES=n1 n2' --set ROOT_ON_DASHBOARD=no "
+                               "--set ROOT_ON_NODES=no --set SLURM=yes --yes")
+        out = self.bare(*shlex.split(said), code=0)       # as root, from what it said
+        self.assertIn("the kit: fleet", out)
+
+    def test_a_settings_file_from_before_moves_once_root_runs(self):
+        with open(self.old_site, "w") as fh:
+            fh.write("KIT=single\nSLURM=no\n")
+        out = self.bare("which", root=False)
+        self.assertIn("the next command run as root moves them", out)
+        self.assertIn("settings %s" % self.old_site, out)
+        out = self.bare("which")
+        self.assertIn("settings moved from %s to %s" % (self.old_site, self.root_site), out)
+        # a link stays at the old place: a checkout rolled back past the move reads only
+        # there, and finds the same settings; this one reads them once, not twice
+        self.assertEqual(os.readlink(self.old_site), self.root_site)
+        with open(self.root_site) as fh:
+            self.assertEqual(fh.read(), "KIT=single\nSLURM=no\n")
+        out = self.bare("which")
+        self.assertNotIn("moved", out)
+        self.assertNotIn("two settings files", out)
+        self.assertIn("settings %s" % self.root_site, out)
+
+    def test_the_history_is_beside_them_and_the_kits_own_still_read(self):
+        os.makedirs(os.path.dirname(self.root_site))
+        with open(self.root_site, "w") as fh:
+            fh.write("KIT=single\n")
+        self.bare("upgrade", "--to", "v1")
+        hist = os.path.join(os.path.dirname(self.root_site), "rc-deploy-history")
+        with open(hist) as fh:
+            self.assertEqual(len(fh.read().splitlines()), 1)
+        os.unlink(hist)
+        # from before: the kit's own .rc-deploy-history, which rollback still reads
+        old = os.path.join(REPO, "deploy", ".rc-deploy-history")
+        if os.path.exists(old):
+            self.skipTest("this checkout has a history of its own")
+        try:
+            with open(old, "w") as fh:
+                fh.write("abc123 def456 2026-11-01 10:00:00\n")
+            self.assertIn("checkout --detach abc123", self.bare("rollback"))
+        finally:
+            os.unlink(old)
 
 
 class TestInit(Rig):
@@ -377,6 +464,106 @@ class TestNodes(Rig):
         self.assertRegex(out, r"RUN SITE_ENV=\S+ \S+/hpc/deploy/deploy\.sh\n")
         self.tool("remove-node", "login01")
         self.assertEqual(self.keys()["SOURCE_NODES"], "login02")
+
+
+class TestRelease(Rig):
+    """A release's kit (deploy/VERSION) installs that release: init records it, apply hands
+    it to the installers (install-dashboard.sh --release), upgrade needs no git, and
+    rollback takes the dashboard back to an earlier release's wheel. A checkout builds its
+    own code, as before."""
+
+    def setUp(self):
+        super().setUp()
+        self.version = os.path.join(self.tmp, "VERSION")
+
+    def release(self, v):
+        with open(self.version, "w") as fh:
+            fh.write(v + "\n")
+
+    def tool(self, *args, **env):
+        return super().tool(*args, RC_DEPLOY_VERSION_FILE=self.version, **env)
+
+    def init_fleet(self):
+        self.tool("init", "--yes", "--set", "NODES=n1", "--set", "ROOT_ON_NODES=yes",
+                  "--set", "ROOT_ON_DASHBOARD=yes")
+
+    def test_a_release_kit_installs_its_release(self):
+        self.release("v1.2.3")
+        self.init_fleet()
+        self.assertEqual(self.keys()["RELEASE"], "v1.2.3")
+        out = self.tool("apply")
+        self.assertRegex(out, r"RUN .*RELEASE=v1\.2\.3 .*deploy/fleet/install-dashboard\.sh\n")
+
+    def test_a_checkout_builds_its_own_code(self):
+        self.init_fleet()
+        self.assertNotIn("RELEASE", self.keys())
+        self.assertNotIn("RELEASE=", self.tool("apply"))
+
+    def test_upgrade_from_a_release_kit_runs_no_git(self):
+        self.release("v1.2.3")
+        self.init_fleet()
+        self.release("v1.3.0")              # the newer release's kit, unpacked
+        out = self.tool("upgrade")
+        self.assertNotIn("RUN git", out)
+        self.assertIn("release v1.2.3 -> v1.3.0", out)
+        self.assertEqual(self.keys()["RELEASE"], "v1.3.0")
+        self.assertRegex(out, r"RUN .*RELEASE=v1\.3\.0 .*install-dashboard\.sh\n")
+        out = self.tool("upgrade", "--to", "v1.4.0", code=1)
+        self.assertIn("unpack the kit of v1.4.0", out)
+
+    def test_rollback_from_a_release_kit_takes_an_earlier_wheel(self):
+        self.release("v1.2.3")
+        self.init_fleet()
+        self.release("v1.3.0")
+        self.tool("upgrade")
+        out = self.tool("rollback")         # the release before the last upgrade
+        self.assertNotIn("RUN git", out)
+        self.assertEqual(self.keys()["RELEASE"], "v1.2.3")
+        self.assertRegex(out, r"RUN .*RELEASE=v1\.2\.3 .*install-dashboard\.sh\n")
+        self.assertIn("vX.Y.Z", self.tool("rollback", "abc1234", code=1))
+
+    def test_a_failed_or_repeated_upgrade_keeps_the_release_to_go_back_to(self):
+        """The release is written to the settings and the history only once installed: a
+        failed upgrade leaves both naming the release still running, and installing the
+        same release again records no transition, so rollback still finds the one before."""
+        hist = os.path.join(self.tmp, "history")
+        self.release("v1.2.3")
+        self.init_fleet()
+        self.release("v1.3.0")
+        out = self.tool("upgrade", code=1, RC_DEPLOY_ECHO_FAIL="install-dashboard.sh")
+        self.assertIn("install-dashboard.sh ended with exit 1", out)
+        self.assertEqual(self.keys()["RELEASE"], "v1.2.3")
+        self.assertFalse(os.path.exists(hist))
+        self.tool("upgrade")                                  # the retry, which works
+        self.assertIn("already release v1.3.0", self.tool("upgrade"))
+        with open(hist) as fh:
+            self.assertEqual([l.split()[:2] for l in fh], [["v1.2.3", "v1.3.0"]])
+        out = self.tool("rollback")
+        self.assertEqual(self.keys()["RELEASE"], "v1.2.3")
+        self.assertRegex(out, r"RUN .*RELEASE=v1\.2\.3 .*install-dashboard\.sh\n")
+
+    def test_a_failed_rollback_leaves_the_settings(self):
+        self.release("v1.2.3")
+        self.init_fleet()
+        self.release("v1.3.0")
+        self.tool("upgrade")
+        self.tool("rollback", code=1, RC_DEPLOY_ECHO_FAIL="install-dashboard.sh")
+        self.assertEqual(self.keys()["RELEASE"], "v1.3.0")
+
+    def test_the_hpc_kit_is_refused_from_a_release_kit(self):
+        """The hpc kit's deploy.sh ships a commit of its checkout, which a release's kit is
+        not: init says to clone at that tag, and writes nothing."""
+        self.release("v1.2.3")
+        out = self.tool("init", "--yes", "--set", "NODES=n1", "--set", "ROOT_ON_NODES=no",
+                        "--set", "ROOT_ON_DASHBOARD=no", "--set", "DASH_SSH=alice@dash",
+                        "--set", "DASH_ROOT=/data/rc", code=1)
+        self.assertIn("git clone --branch v1.2.3 ", out)
+        self.assertFalse(os.path.exists(self.site))
+
+    def test_a_release_that_is_no_release_is_refused(self):
+        out = self.tool("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes",
+                        "--set", "RELEASE=latest", code=1)
+        self.assertIn("is not a release", out)
 
 
 class TestHelp(unittest.TestCase):

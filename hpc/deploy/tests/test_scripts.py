@@ -389,6 +389,23 @@ class TestDeployPlan(Rig):
         self.assertEqual(p.returncode, 0, p.stdout)
         self.assertIn("site.env renders: 2 node(s)", p.stdout)
 
+    def test_plan_refuses_a_tree_that_is_no_checkout(self):
+        """A release's kit is the repository with no .git: deploy.sh, which ships a commit,
+        says to clone at the kit's release instead of failing in git."""
+        repo = self.checkout()
+        shutil.rmtree(os.path.join(repo, ".git"))
+        os.makedirs(os.path.join(repo, "deploy"))
+        with open(os.path.join(repo, "deploy", "VERSION"), "w") as fh:
+            fh.write("v1.2.3\n")
+        p = subprocess.run(["bash", os.path.join(repo, "hpc", "deploy", "deploy.sh"), "--plan"],
+                           env=dict(os.environ, PATH=self.bin + ":" + os.environ["PATH"],
+                                    HOME=self.home, STUB_LOG=self.log,
+                                    GIT_CEILING_DIRECTORIES=self.tmp),
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("is not a checkout", p.stdout)
+        self.assertIn("git clone --branch v1.2.3 ", p.stdout)
+
     def test_plan_refuses_the_examples_values(self):
         repo = self.checkout()
         shutil.copy(os.path.join(KIT, "site.env.example"), os.path.join(repo, "hpc", "deploy", "site.env"))
