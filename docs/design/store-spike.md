@@ -79,6 +79,14 @@ investigation before anything here is acted on.
   arrive were not exercised: the SQL reads the files as they are when it runs.
 - **The cost of a dependency**: DuckDB is a 66 MB native library once installed, one more thing
   every install carries and every Python the dashboard supports must have a wheel for.
+- **The own-I/O join's grouping.** The service folds a child's figure into an entry of its user's
+  whose earliest start is within `START_SLACK_S` of its own (`own_io._entry_for`), merges the two
+  closest entries past `PER_PID`, and accepts or refuses each entry whole on its earliest start.
+  The SQL applies the start cutoff child by child. Two children of one user that began within a
+  second of each other around a parent's start less `START_SLACK_S` can come out differently, and
+  so can a pid past `PER_PID` entries. The grouping depends on the order the children arrive, which
+  no window query restates; a recursive query could. The feed here had no such case (the diffs
+  above are exact), so the numbers stand, but a feed that has one would be misread.
 
 ## What to do with it
 
