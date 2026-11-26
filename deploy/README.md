@@ -188,17 +188,16 @@ has measurements over 8 busy login nodes, and the settings that trade history fo
 
 ## Upgrading
 
-From a release's kit, unpack the new release's kit beside the old one, move your settings
-across, and apply:
+From a release's kit, unpack the new release's kit beside the old one and apply from it; it
+reads the same settings, `/etc/rc-dashboard/site.env`:
 
 ```bash
 sudo tar -C /opt -xzf agentic-hpc-dashboard-1.1.0.tar.gz
-sudo cp /opt/agentic-hpc-dashboard-1.0.0/deploy/site.env /opt/agentic-hpc-dashboard-1.1.0/deploy/
 sudo /opt/agentic-hpc-dashboard-1.1.0/deploy/rc-deploy upgrade      # installs 1.1.0's wheel, rewrites the units
 ```
 
 `upgrade` from a release's kit runs no git: it installs the kit's release and notes the one
-it replaced in `deploy/.rc-deploy-history`. From a checkout, it runs `git pull` first
+it replaced in `/etc/rc-dashboard/rc-deploy-history`. From a checkout, it runs `git pull` first
 (`--to v1.1.0` for a tag) and builds what it pulled. By hand, the installer is the same
 command as the first install:
 
