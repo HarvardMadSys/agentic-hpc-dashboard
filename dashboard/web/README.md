@@ -5,7 +5,7 @@ The dashboard's page, in React, Vite and TypeScript. It reads the `rc_dashboard`
 
 ```
 src/api/        the contract: types, fetch client, hooks, the live websocket
-src/lib/        classes, purposes, formatters, URL/filter state, panel lookup, the sticky control bar, the words and geometry of phases and tasks
+src/lib/        classes, purposes, formatters, URL/filter state, panel lookup, the sticky control bar, the words and geometry of phases and tasks, and the count of tabs opened (usage.ts)
 src/charts/     hand-rolled SVG primitives (lines, bars, ribbon)
 src/components/ Panel/EmptyState, Plate, Coverage, ClassFilter, PortraitFigure, Icon, CommandPalette
 src/tabs/       the tabs and their parts

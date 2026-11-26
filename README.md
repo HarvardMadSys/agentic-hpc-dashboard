@@ -228,7 +228,9 @@ The records name real users and show what they ran, so both halves keep them clo
   proxy, unless told to (`--open`), and masks credentials again on every way out.
   `RC_DASH_ANONYMIZE=1` replaces every name with an alias.
   It names network endpoints by reverse DNS from its own host (`RC_DASH_RDNS=0` turns that
-  off). Nothing it reads or shows leaves the host for a model's provider.
+  off). Nothing it reads or shows leaves the host for a model's provider. It counts which tabs
+  readers open, a count a day kept on its own host and read with `rc-dashboard usage`, with no
+  user, window or filter (`RC_DASH_COUNT_VIEWS=0` turns that off).
 - **The fleet stream** carries the files over ssh, with a key that can run the sender and
   nothing else, and only from the dashboard's host.
 - **The fleet's copy** ([`deploy/fleet`](deploy/fleet/README.md)) is pulled by an account in

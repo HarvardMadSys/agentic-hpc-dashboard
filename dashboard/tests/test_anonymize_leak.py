@@ -362,7 +362,11 @@ class ReaderTextTest(Served):
     # No route takes one today; a POST route added later fails the walk below
     # until it is listed here.
     SENT = object()
-    BODIES = {}
+    BODIES = {
+        # counts of tabs: a name in a count is refused, in a key dropped, never repeated
+        "/api/usage": [{"views": {"tab:live": 1}}, {"views": {"tab:live": SENT}},
+                       {"views": SENT}],
+    }
 
     @classmethod
     def body_with(cls, body, name):

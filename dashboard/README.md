@@ -674,6 +674,7 @@ window on a busy node can take ~1 GB.
 | `GET /api/health` | `ok` false, and `why`, when the service is not doing its work: the tail has not moved (no poll ended, no batch handed over) for 5 poll intervals (5 s at least); a background loop failed its last 3 rounds in a row; or a view could not take a record in 3 of the tail's batches in a row. One error alone flips nothing. Also `ingest`, each loop's last error and `streak` (`loops`), the readers (`websocket`), the backfill, the windows, the garbage collector's collections and how often the heap's free pages were handed back (`gc`: `trims`, `last_trim_ms`), `anonymize`'s counts and the memos. A loop's or a view's error is also logged to stderr when it changes, and once a minute while it repeats |
 | `GET /login`, `POST /login` | the sign-in form, and signing in: a session cookie, then back to `next` ([Password](#password)) |
 | `POST /logout` | signing out: the cookie cleared, then the form |
+| `POST /api/usage` | the tabs the page opened since its last post, `{"views": {"tab:live": 2}}`: a 204, kept as a count a day, or nothing kept with `ui.count_views` off ([Which tabs are opened](#which-tabs-are-opened)) |
 
 With a password set, every route above asks for it. Every `/api` request but a GET, HEAD or
 OPTIONS takes `Content-Type: application/json` only (a 415 otherwise, `guard.JsonOnly`), which
@@ -1123,6 +1124,25 @@ under the agents' CPU above, is what "do agents make the node slow for people?" 
 - **Hosts are not classes**, so their lines use hues no class uses. Past five hosts, the five that
   stand out most are named, and the rest are one grey line, the slowest of them in each bin.
 
+## Which tabs are opened
+
+```bash
+uv run --frozen rc-dashboard usage              # the last 30 days; --days 7
+```
+
+prints each tab and how many times readers opened it, most opened first, so a site can see
+which tabs earn their place on its own use. The page counts a tab each time it opens it and
+posts the counts at most once a minute, and when it is put away (`src/lib/usage.ts`,
+`POST /api/usage`); the service keeps them a day at a time in `<cache.dir>/usage/<day>.json`
+(UTC days, 400 of them; `rc_dashboard/usage.py`). **Nothing else is kept**: no user, address,
+window, filter or time of day. A view is one of the page's own tabs (`usage.TABS`, which a test
+holds to the page's): any other key a post holds is dropped, so nothing a client writes is kept
+but a count, and a refused post's error never repeats what it sent. A count is worth losing, not
+a failed request: where the folder cannot be written (read-only, full), a post still gets its 204,
+its counts are dropped, and the log says so once. `ui.count_views` (`RC_DASH_COUNT_VIEWS=0`) turns
+it off: the page sends nothing, and the route keeps nothing. It is in neither saved-state
+fingerprint, and the counts never leave the host but by this command.
+
 ## Trend: up to a year
 
 **Trend** is a tab of its own: each class's processes, CPU, users and Slurm submissions per day,
@@ -1535,6 +1555,7 @@ GPU-hours count only jobs with GPUs and a time limit on the command line, as the
 | `rc_dashboard/roles.py` | what a classifier-tagged process is: agent, tool-shell, probe, sandbox, infra, ... |
 | `rc_dashboard/procindex.py` | per-window index of tagged processes; folds session keys into their agent |
 | `rc_dashboard/buckets.py` | rolling per-minute aggregates; exact sub-window slicing |
+| `rc_dashboard/usage.py` | which tabs readers open, a count a day for the site's own use: `POST /api/usage` and the `usage` command ([Which tabs are opened](#which-tabs-are-opened)) |
 | `rc_dashboard/rollup.py` | the roll-up table: each local day's sums, fed beside the live tier as records are ingested and written to SQLite as days end; the Trend tab's `/api/trend`, and the `rollup` command that fills older days from the day-files ([Trend](#trend-up-to-a-year)) |
 | `rc_dashboard/nodehist.py` | the node tier over time, read on its own thread and binned to a window ([Over the window](#over-the-window)) |
 | `rc_dashboard/reducers/` | tools, io, resources, risk, sandbox, trajectories, cascades (agent trees), workspace (where each agent worked), slurm (sessions at the scheduler), facets (the page filters' choices), own_io (each process's own disk bytes), live |
