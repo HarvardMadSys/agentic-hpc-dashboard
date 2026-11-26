@@ -70,6 +70,7 @@ INSTALLER_KEYS = ("SITE_NAME", "SITE_DESCRIPTION", "SLURM", "NODE_NOUN", "ANONYM
 # which release it is here; a checkout has no such file.
 VERSION_FILE = os.environ.get("RC_DEPLOY_VERSION_FILE", os.path.join(HERE, "VERSION"))
 RELEASE_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+REPO_URL = "https://github.com/HarvardMadSys/agentic-hpc-dashboard"
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -447,6 +448,11 @@ def cmd_init(args):
                 "# then `sudo deploy/rc-deploy apply` from any kit. Names: deploy/README.md,\n"
                 "# \"Settings\".\n" % kit)
     else:
+        rel = kit_release()
+        if rel:
+            # deploy.sh ships a commit of the checkout it runs from (git archive HEAD).
+            raise Refused("the hpc kit ships a git commit, and this is %s's kit, not a checkout: "
+                          "`git clone --branch %s %s`, then run init there" % (rel, rel, REPO_URL))
         path = args.site or HPC_SITE
         for other in (ROOT_SITE, DEPLOY_SITE):
             if os.path.exists(other) and not args.site:

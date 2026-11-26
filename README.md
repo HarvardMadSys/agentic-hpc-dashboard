@@ -173,9 +173,10 @@ Start from a release's kit, `agentic-hpc-dashboard-X.Y.Z.tar.gz` on the
 [releases page](https://github.com/HarvardMadSys/agentic-hpc-dashboard/releases), unpacked
 where any account can read it and it can stay (`/opt/agentic-hpc-dashboard`): it installs
 that release's wheel, checked against the release's checksums, with nothing to build. A
-checkout works the same way and builds its own code. One front door picks the layout from
-four questions (Slurm? which nodes? root on the nodes? root on the dashboard's host?) and
-runs its scripts:
+checkout works the same way and builds its own code. The login nodes' layout ships a commit
+from where it runs, so it needs a checkout: `git clone --branch vX.Y.Z` for a release. One
+front door picks the layout from four questions (Slurm? which nodes? root on the nodes? root
+on the dashboard's host?) and runs its scripts:
 
 ```bash
 sudo deploy/rc-deploy init      # writes the settings file, and records the layout in it (hpc: no sudo)

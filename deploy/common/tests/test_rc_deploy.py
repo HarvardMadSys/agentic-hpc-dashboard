@@ -550,6 +550,16 @@ class TestRelease(Rig):
         self.tool("rollback", code=1, RC_DEPLOY_ECHO_FAIL="install-dashboard.sh")
         self.assertEqual(self.keys()["RELEASE"], "v1.3.0")
 
+    def test_the_hpc_kit_is_refused_from_a_release_kit(self):
+        """The hpc kit's deploy.sh ships a commit of its checkout, which a release's kit is
+        not: init says to clone at that tag, and writes nothing."""
+        self.release("v1.2.3")
+        out = self.tool("init", "--yes", "--set", "NODES=n1", "--set", "ROOT_ON_NODES=no",
+                        "--set", "ROOT_ON_DASHBOARD=no", "--set", "DASH_SSH=alice@dash",
+                        "--set", "DASH_ROOT=/data/rc", code=1)
+        self.assertIn("git clone --branch v1.2.3 ", out)
+        self.assertFalse(os.path.exists(self.site))
+
     def test_a_release_that_is_no_release_is_refused(self):
         out = self.tool("init", "--yes", "--set", "NODES=", "--set", "ROOT_ON_DASHBOARD=yes",
                         "--set", "RELEASE=latest", code=1)
