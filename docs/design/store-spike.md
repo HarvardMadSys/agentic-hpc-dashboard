@@ -1,8 +1,9 @@
 # Store spike: could one columnar store replace the cache layers?
 
-*Status: an experiment. Nothing in the service changed.*
+*Status: an experiment, which changed nothing in the service. Its one finding about the service
+itself is fixed (item 1 of [What to do with it](#what-to-do-with-it)).*
 
-An experiment, not a feature: nothing in the service changed. The question was whether the
+An experiment, not a feature: it changed nothing in the service. The question was whether the
 dashboard's three cache layers (saved window builds, hours, payloads) could give way to one
 query engine over the store it already keeps: the history store's Parquet replicas of the
 sealed days and the newest day's plain JSONL. The test was one panel family, the Resources
@@ -67,6 +68,33 @@ day window, whose reach and ageing span the hours before it, is kept and reused 
 That is a research-integrity question (a number that depends on the cache's history), worth its own
 investigation before anything here is acted on.
 
+**Fixed.** The cause was the hours layer (`hours.HourStore.ensure`), not the join itself. The day
+window, built first, saved its 24 hours (its edge hour and the 23 whole ones after it) from a join
+state begun afresh at its edge hour. The week's run, begun six days further back, reached them
+holding what the children that exited before that edge had carried, for their parents, and reduced
+only the first of the 24 again with it: the other 23 kept the day's. A parent that exited in them
+kept its reaped children's bytes, which the week had already counted at the children's own exits,
+so it counted them twice, in every panel that sums disk bytes. Each saved hour now says where its
+join state began, a run reduces again every saved hour after it whose state began later, and a run
+stopped part-way resumes where it stopped ([Hourly merge-reduce](../../dashboard/README.md#hourly-merge-reduce);
+`BuildOrderTest` in `dashboard/tests/test_hours.py` builds the week both ways). Run again after the
+fix (`run --days 8 --hosts 3`, a new feed of 193,433 eBPF records): the week built in one cache
+after the day and the hour equals the week built alone in all 7,778 values, where a run before the
+fix on a feed made the same way had 8 differ; the day (6,866) and the hour (3,674) do too, each warm
+restart equals its cold build, and the SQL still gives the service's numbers (the week's 7,718
+equal, 60 ties). The cost is the day's hours once more: built after the day, the week reduces 168
+hours, as many as it does built alone, where it reduced 145 before the fix.
+
+What is left: the saved hours are one chain, begun at the edge hour of the widest window built so
+far, so the week (retention's) holds still and a narrower window moves once. Built first, the day
+takes off only the children that exited after its own edge hour; from its next build after a week
+it is the week's slice, and a parent whose children exited before the day's edge has them taken
+off, their bytes then in no bin of the day (in `BuildOrderTest`, the `claude` reads 1005 MB in the
+day built first and 5 MB in every build after the week). Beginning every chain at retention's edge,
+as `panels.preprocess` does, would leave no window moving with what was built before it, at the
+cost of reducing all of retention before the first window shows: seven times the day's hours, and
+here 45.9 s against the day's 7.8 s.
+
 ## What it does not show
 
 - **Scale.** The feed is about a thousandth of a busy site's: 8 login nodes write 35 to 47 GB of
@@ -96,7 +124,10 @@ in less memory than the service's whole process, with no cache to keep or invali
 enough to justify the next experiment and not enough to replace anything:
 
 1. Find out why the service's week window depends on what its cache built before (above), and fix
-   it; until then, any comparison is against a moving target.
+   it; until then, any comparison is against a moving target. Done for the week: a wider window's
+   run reduced again only the first of the hours a narrower window had saved, and now reduces them
+   all (above), so the week holds still. A narrower window still moves once, when a wider one is
+   first built, unless every chain begins at retention's edge (above): compare it after the week.
 2. Run the spike on a captured feed at a site's scale (`--reuse` over a copy of real day-files),
    with the history store converted, for the long windows only.
 3. If it holds, move the long-window aggregate families (Resources, the Trend tab's daily sums) to

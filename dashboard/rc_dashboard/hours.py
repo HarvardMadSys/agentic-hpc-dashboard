@@ -35,7 +35,19 @@ what its own records produced (`strip`). A window merged from them gets the
 join state of its last hour (`install`), so its tail and its live feed join as
 one pass would. The carried state is aged: what was last touched more than
 `CARRY_KEEP_H` ago is dropped, so a service that runs for a month carries
-about a day of it, not a month.
+about a day of it, not a month. A run begins where the window that needed
+its hours begins (its edge hour), afresh, so a narrower window's hours,
+saved first, were reduced from a join state that began later than a wider
+window's run that reaches them. Each hour says where its join state began
+(`began`), and that run reduces every one of them again with its own
+(`HourStore.ensure`). So the saved hours are one chain, begun at the edge
+hour of the widest window built so far, and the widest window (retention's)
+is the same whichever window was built first. A narrower window is not: its
+joins reach back to its own edge hour until a wider window is built, and from
+its next build after that it is its slice of the wider chain, its figures
+moved once. A parent whose children exited before its edge then has them
+taken off, and their bytes, counted at their own exits in the wider window,
+are in no bin of the narrower one.
 
 **Own figures.** The one join a reader that skips records cannot make is the
 one that takes a process's reaped children's disk bytes off its own
@@ -124,7 +136,9 @@ from .normalize import Normalizer
 from .reducers.own_io import FIELDS, LEDGER, OWN, Ledger, cap_of, figure_key
 
 # 2: each hour saves its exits' own figures beside it (`o<hour>`, `Ledger`).
-FORMAT = 2
+# 3: each hour says where the join state it was reduced with began (`began`), so the
+#    saved hours after a run begun further back are reduced again with its (`ensure`).
+FORMAT = 3
 HOUR = 3600
 # Every window's bin width is a whole number of these, so an hour's series
 # folds into any window's exactly (resources.ResourceReducer.merge).
@@ -895,7 +909,9 @@ class HourStore:
         self.chains = set()             # hours whose chain is saved
         self.figs = set()               # hours whose own figures are saved (`Ledger`)
         self.chain = None               # (hour, carry, ages): the newest chain
-        self.stats = {"hours_reduced": 0, "records": 0, "bytes": 0, "stragglers": 0,
+        # `hours_reduced_again`: of those, hours that were saved already (`ensure`)
+        self.stats = {"hours_reduced": 0, "hours_reduced_again": 0, "records": 0, "bytes": 0,
+                      "stragglers": 0,
                       "stragglers_lost": 0, "patched_hours": 0, "reduce_s": 0.0,
                       "merged_states": 0, "days_built": 0, "pruned": 0, "chains_saved": 0,
                       "chain_bytes": 0, "figures_saved": 0, "figure_bytes": 0,
@@ -1147,18 +1163,36 @@ class HourStore:
                 return got
         return None
 
-    def _stale(self, h):
-        """Whether saved hour `h` started afresh though the hour before it now has a chain: a run
-        before it ended there after `h` was saved (a narrower window's hours, then a wider
-        window), and stopped before it reduced `h` again with its join state."""
-        if h not in self.have or h - 1 not in self.chains or h - 1 not in self.have:
+    def _began_at(self, h):
+        """Where the join state saved hour `h` ends with began: the hour its run started afresh
+        in (`began`), or `h` itself, the latest it can be, when that cannot be read."""
+        m = self.meta(h)
+        b = None if m is None else m.get("began")
+        return h if b is None else b
+
+    def _later(self, h, began):
+        """Whether saved hour `h` was reduced with a join state begun later than `began`, so a run
+        begun there reduces it again (`ensure`). One whose meta cannot be read is reduced again
+        too: a join state that begins no later serves it as well as its own did."""
+        if h not in self.have:
             return False
         m = self.meta(h)
-        return m is not None and not m.get("carried")
+        return m is None or m.get("began", h) > began
+
+    def _stale(self, h):
+        """Whether saved hour `h` was reduced with a join state begun later than the one the hour
+        before it ends with now, which saved its chain: a run begun further back ended there
+        after `h` was saved (a narrower window's hours, then a wider window), and stopped before
+        it reduced `h` again with its join state (`ensure`). `h` started afresh, or was carried
+        on from an hour that did."""
+        if h not in self.have or h - 1 not in self.chains or h - 1 not in self.have:
+            return False
+        return self._later(h, self._began_at(h - 1))
 
     def _prune_chains(self):
         """Keep the chains a run can start from: the newest, and each whose next hour is not
-        saved, or is saved afresh and waits to be reduced again from it (`_stale`)."""
+        saved, or is saved from a later join state and waits to be reduced again from it
+        (`_stale`)."""
         newest = None if self.chain is None else self.chain[0]
         for h in sorted(self.chains):
             if h == newest or (h in self.have and (h + 1 not in self.have or self._stale(h + 1))):
@@ -1177,10 +1211,22 @@ class HourStore:
         A run of missing hours carries on from the chain of the hour just
         before it, when that hour saved one; else it continues the newest
         chain when that is within MAX_GAP_H before it, filling the gap; else
-        it starts afresh. If a saved hour that started afresh follows it,
-        that hour is reduced again with the run's join state, so the seam
-        between the two holds no unjoined records; and a run stopped before
-        it did so leaves that hour `_stale`, reduced again here.
+        it starts afresh. Each hour it saves says where its join state began
+        (`began`): the hour the run started afresh in.
+
+        The saved hours after a run, up to the first not saved (and before
+        `h_hi`), are reduced again with its join state when theirs began
+        later: a narrower window's hours, saved from a join state begun
+        afresh at its edge hour, then a wider window, whose run began
+        further back. Its join state holds what the children that exited
+        before that edge carried, for the parents that exit after it, and
+        every hour carried on from the narrower window's state lacked it,
+        not the first alone: a parent that exited in them kept its
+        children's bytes, which then counted twice in the wider window, and
+        a window's figures depended on which window its cache built first
+        (docs/design/store-spike.md). A run stopped before it reduced them
+        all leaves the first it did not `_stale`, and they are reduced again
+        from there by the next call whose window holds any of them.
 
         Every hour a run saves also saves its chain (`_reduce_run`), so a
         build stopped after any hour resumes there and reduces nothing
@@ -1190,15 +1236,15 @@ class HourStore:
         chain), stopped or not. Hours saved with no chain (one that could
         not be written or read) still resume where their run began, afresh
         as it did, and are reduced again (`_began`).
-
-        Still open (pre-existing): the saved hours after that reduced-again
-        hour were carried on from its afresh state, and are not reduced
-        again.
         Returns the number of hours reduced.
         """
         self._sync(roots)
         need = {h for h in range(h_lo, h_hi) if h not in self.have}
-        need.update(h + 1 for h in self.chains if h_lo <= h + 1 < h_hi and self._stale(h + 1))
+        # A stale hour starts a run, and the saved hours after it that it was carried on to
+        # follow: when the window holds it, or any of them (they run on to `h_lo`).
+        need.update(h + 1 for h in self.chains
+                    if h + 1 < h_hi and all(k in self.have for k in range(h + 1, h_lo))
+                    and self._stale(h + 1))
         need = sorted(need)
         if not need:
             return 0
@@ -1217,14 +1263,23 @@ class HourStore:
 
         files = self._files(roots, runs[0][0])
         n = 0
+        upto = None                 # where the last run, and the hours it reduced again, ended
         try:
             for a, b in runs:
+                if upto is not None and a < upto:
+                    # stale hours the run before reduced again with the rest
+                    total -= min(b, upto) - a
+                    if b <= upto:
+                        continue
+                    a = upto
                 chain = self.chain
                 prev = chain if chain is not None and chain[0] == a - 1 else self._load_chain(a - 1)
                 if prev is not None:
                     carry, ages = prev[1], prev[2]
+                    began = self._began_at(a - 1)
                 elif chain is not None and a > chain[0] and a - chain[0] - 1 <= MAX_GAP_H:
                     total += a - chain[0] - 1
+                    began = self._began_at(chain[0])
                     a, carry, ages = chain[0] + 1, chain[1], chain[2]
                 else:
                     # never past the chain: hours before it are its run's, and a hole among them
@@ -1235,18 +1290,16 @@ class HourStore:
                         total += a - began
                         files = self._files(roots, min(began, runs[0][0]))
                     a, carry, ages = began, None, {}
-                carry, ages = self._reduce_run(files, a, b, carry, ages, tick)
-                n += b - a
-                if chain is None or b - 1 >= chain[0]:
-                    self.chain = (b - 1, carry, ages)
-                elif b in self.have:
-                    m = self.meta(b)
-                    if m is not None and not m.get("carried"):
-                        total += 1
-                        carry, ages = self._reduce_run(files, b, b + 1, carry, ages, tick)
-                        n += 1
-                        if b == self.chain[0]:
-                            self.chain = (b, carry, ages)
+                # the saved hours after it whose join state began later: reduced again with its
+                e = b
+                while e < h_hi and self._later(e, began):
+                    e += 1
+                total += e - b
+                carry, ages = self._reduce_run(files, a, e, carry, ages, began, tick)
+                n += e - a
+                upto = e
+                if chain is None or e - 1 >= chain[0]:
+                    self.chain = (e - 1, carry, ages)
         except BaseException:
             # A run stopped mid-way may have changed the join state it was handed in place:
             # the newest chain is read again from where it was saved.
@@ -1278,22 +1331,23 @@ class HourStore:
         days = int((time.time() - (oldest_hour - MAX_GAP_H) * HOUR) // 86400) + 2
         return day_files(roots, max(1, days))
 
-    def _reduce_run(self, files, a, b, carry, ages, tick=None):
+    def _reduce_run(self, files, a, b, carry, ages, began, tick=None):
         """Hours `[a, b)`, each seeded with the join state the one before
-        ended with. Each saves that state for itself, its chain, then itself,
-        and drops the chain of the hour before. Returns the join state the
-        last one ended with."""
+        ended with, which began in hour `began` (`a` when `carry` is None).
+        Each saves that state for itself, its chain, then itself, and drops
+        the chain of the hour before. Returns the join state the last one
+        ended with."""
         if self.split:
-            return self._reduce_nodes(files, a, b, carry, ages, tick)
+            return self._reduce_nodes(files, a, b, carry, ages, began, tick)
         # An hour's time search and its read open each file in turn, and the next
         # hour's search lands where that read ended: one inflation of a span
         # serves them all, kept for every file the hour reads (`shared_files`;
         # none past SHARED_FILES_MAX).
         n = shared_files(files)
         with gz.shared_spans(n) if n else contextlib.nullcontext():
-            return self._reduce_here(files, a, b, carry, ages, tick)
+            return self._reduce_here(files, a, b, carry, ages, began, tick)
 
-    def _reduce_here(self, files, a, b, carry, ages, tick=None):
+    def _reduce_here(self, files, a, b, carry, ages, began, tick=None):
         """`_reduce_run` in this process."""
         norm = Normalizer(self.cfg)
         pm = self.meta(a - 1)
@@ -1325,10 +1379,11 @@ class HourStore:
             # out, so a build stopped after it resumes there (R67). One saved for an hour
             # whose own save did not complete belongs to no saved hour, and is never used.
             # Its figures between the two: a saved hour has them too.
+            again = h in self.have
             self._save_chain(h, carry, ages)
             self._save_figures(h, figures)
             self._save_hour(h, red, {"records": n, "newest": newest, "carried": carried,
-                                     "files": files_meta, "stragglers": 0,
+                                     "began": began, "files": files_meta, "stragglers": 0,
                                      "reduced_at": time.time()})
             del red
             # no run starts at this hour now
@@ -1338,6 +1393,7 @@ class HourStore:
                 self._patch(strays, norm)
             prev = {f["path"]: f for f in files_meta}
             self.stats["hours_reduced"] += 1
+            self.stats["hours_reduced_again"] += again
             self.stats["records"] += n
             self.stats["bytes"] += stats["bytes"]
             self.stats["reduce_s"] += time.monotonic() - t0
@@ -1426,7 +1482,7 @@ class HourStore:
         self.stats["node_in_process"] += 1
         return fut
 
-    def _reduce_nodes(self, files, a, b, carry, ages, tick=None):
+    def _reduce_nodes(self, files, a, b, carry, ages, began, tick=None):
         """`_reduce_run` split by node (`ingest.workers`), and each node's hour by
         reducer group (`ingest.reducer_groups`). Each unit -- a node, or a node
         and a group -- reduces its share of each hour in a worker process,
@@ -1516,7 +1572,7 @@ class HourStore:
                     by[u[0]] = round(by.get(u[0], 0.0) + got["cpu_s"], 1)
                 while h < b and len(done.get(h, ())) == len(units):
                     n, nbytes = self._save_node_hour(h, done.pop(h), nodes, len(groups),
-                                                     carried_in or h > a)
+                                                     carried_in or h > a, began)
                     self.stats["reduce_s"] += time.monotonic() - t_hour
                     t_hour = time.monotonic()
                     if tick:
@@ -1553,12 +1609,12 @@ class HourStore:
             self._groups = reducer_groups(self.fresh(), self.n_groups)
         return self._groups
 
-    def _save_node_hour(self, h, got, nodes, n_groups, carried):
+    def _save_node_hour(self, h, got, nodes, n_groups, carried, began):
         """Put each node's groups together, merge the nodes in node order, and
         save hour `h` as `_reduce_run` saves an hour: its chain first (every
         node's join state as its own hour ended), then its own figures (every
-        node's, whose keys are each its own), then the hour. Returns its
-        records and bytes."""
+        node's, whose keys are each its own), then the hour, with where the
+        run's join state `began`. Returns its records and bytes."""
         t0 = time.monotonic()
         red = None
         chain, chain_ages = {}, {}
@@ -1592,11 +1648,12 @@ class HourStore:
             for p, d in (x.get("figures") or {}).items():
                 figures.setdefault(p, {}).update(d)
             x["figures"] = None
+        again = h in self.have
         self._save_chain(h, {NODES: chain}, {NODES: chain_ages})
         self._save_figures(h, figures)
         del figures
         self._save_hour(h, red, {"records": n, "newest": newest, "carried": carried,
-                                 "files": files_meta, "stragglers": 0,
+                                 "began": began, "files": files_meta, "stragglers": 0,
                                  "reduced_at": time.time(), "nodes": len(nodes),
                                  "groups": n_groups})
         del red
@@ -1607,6 +1664,7 @@ class HourStore:
             self._patch(strays)
         nbytes = sum(x["bytes"] for x in first)
         self.stats["hours_reduced"] += 1
+        self.stats["hours_reduced_again"] += again
         self.stats["records"] += n
         self.stats["bytes"] += nbytes
         self.stats["node_merge_s"] += time.monotonic() - t0
@@ -1981,9 +2039,17 @@ def build(reg, view):
                     pct=min(99, int(100 * weight["done"] / weight["total"])),
                     elapsed_s=round(time.monotonic() - m0, 1))
 
+    def reducing(i, n, records=0, bytes=0):
+        # `n` is every hour the call reduces, as far as it knows them: the missing ones,
+        # and the saved ones after a run that it reduces again (`ensure`), less those it
+        # counted twice
+        weight["total"] = n + 2 + 0.1 * len(parts)
+        step(1, records, bytes)
+
+    again = store.stats["hours_reduced_again"]
     try:
-        reduced = store.ensure(roots, h_from, h_hi, progress=lambda i, n, records=0,
-                               bytes=0: step(1, records, bytes))
+        reduced = store.ensure(roots, h_from, h_hi, progress=reducing)
+        again = store.stats["hours_reduced_again"] - again
     except Exception as e:      # a store that cannot be written is no store
         view.cache["note"] = "scanned: reducing the hours failed (%s)" % e
         return False
@@ -2054,10 +2120,11 @@ def build(reg, view):
             view.cache["source"] = "hours"
             view.cache["saved_at"] = None
             view.cache["note"] = (
-                "merged %d saved hour state(s)%s, reducing %d new hour(s); read %s "
+                "merged %d saved hour state(s)%s, reducing %d new hour(s)%s; read %s "
                 "record(s) before the first whole hour and %s since the last closed "
                 "one%s" % (len(parts) - days, " and %d day(s)" % days if days else "",
-                           reduced, "{:,}".format(n_edge), "{:,}".format(n_tail),
+                           reduced - again, " and %d again" % again if again else "",
+                           "{:,}".format(n_edge), "{:,}".format(n_tail),
                            "" if joined else "; the newest hour's join state was not at "
                            "hand, so the open hour joins only within itself"))
             pending, view._replay = view._replay, None

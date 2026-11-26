@@ -27,6 +27,7 @@ from rc_dashboard import hours                     # noqa: E402
 from rc_dashboard.aggregator import Aggregator     # noqa: E402
 from rc_dashboard.reducers.own_io import AgentHeld  # noqa: E402
 from rc_dashboard.windows import HOURS_JOB, ViewFilter, WindowRegistry   # noqa: E402
+from test_count_once import iob, person, raw      # noqa: E402
 from test_ingest import DAY, FeedCase, exit_rec   # noqa: E402
 import test_merge as TM                           # noqa: E402
 
@@ -582,6 +583,154 @@ class InterruptedBuildTest(HourCase):
         view = self.build(again)
         self.assertEqual(again.hours.stats["hours_reduced"], 0)
         self.same(want, view)
+
+
+class BuildOrderTest(HourCase):
+    """A window is the same whatever its cache built before it (docs/design/store-spike.md).
+
+    A narrower window built first saves its hours from a join state begun afresh at its edge
+    hour. A wider window's run, begun further back, reaches them holding what the children
+    that exited before that edge carried, for parents that exit after it. The week was built
+    after the day, the default 24 h first, as a deployment holds them, and only the day's first
+    hour was reduced again with that join state: the hours after it kept the day's, so a parent
+    that exited in them kept its children's bytes, and the week's series counted them twice.
+
+    alice's `claude` 100 read 5 MB itself, and the `cat` 111 it ran read 1000 MB and exited in
+    the hour before the day window's edge hour; claude exits two hours into the day, so the
+    kernel's figure on its exit is 1005 MB. Its own is 5 MB in the week however the week's
+    hours came to be saved. The saved hours are one chain, begun at the widest window built so
+    far: the day built first reads 1005 MB, its joins reaching back to its own edge hour only,
+    and from its next build after the week 5 MB, its slice of the week's chain."""
+
+    WEEK, DAY_W, HOUR_W = 10080, 1440, 60
+
+    def setUp(self):
+        super().setUp()
+        h = int(NOW // HOUR)                # the open hour: the day window's edge hour is h - 24
+        self.t_cat = (h - 25) * HOUR + 1800.0
+        self.t_claude = (h - 22) * HOUR + 1800.0
+        kw = dict(agent_pid=100, tree_root=100)
+        self.write([
+            raw("exit", self.t_cat, 111, 100, "cat", "cat big.bin", io=iob(1000.0, 1000.0),
+                depth=1, **kw),
+            raw("exit", self.t_claude, 100, 50, "claude", "claude", is_agent=True,
+                io=iob(1005.0, 1300.0), duration_s=self.t_claude - self.t_cat + 600.0, **kw),
+            # past the hour's grace, so every hour before the open one is closed
+            person("exit", NOW - 30, 900, 1, "ls", "ls", "bob", io=iob(1.0, 1.0), host="h2"),
+        ])
+
+    @staticmethod
+    def own_rd(view, t):
+        """The agent class's own disk read in the bin `t` falls in."""
+        s = view.payload["resources"]["series"]
+        return s["by_class"]["agent"]["rd_mb"][s["t"].index(t // s["bin_s"] * s["bin_s"])]
+
+    def same(self, want, view):
+        got = self.payload(view)
+        self.assertEqual(sorted(got), sorted(want))
+        for key in sorted(want):
+            with self.subTest(reducer=key):
+                self.assertEqual(TM.diff(want[key], got[key]), [])
+
+    def wipe(self):
+        shutil.rmtree(os.path.join(self.tmp, "cache"), ignore_errors=True)
+
+    def test_the_week_built_after_the_day_and_the_hour_is_the_week_built_alone(self):
+        cfg = self.cfg()
+        alone = self.build(self.registry(cfg), self.WEEK)
+        self.assertEqual(alone.cache["source"], "hours")
+        self.assertEqual(self.own_rd(alone, self.t_cat), 1000.0)
+        self.assertEqual(self.own_rd(alone, self.t_claude), 5.0)
+        want = self.payload(alone)
+        self.wipe()
+        reg = self.registry(cfg)
+        day = self.build(reg, self.DAY_W)
+        # the day's chain began at its edge hour, after the cat: claude kept it
+        self.assertEqual(self.own_rd(day, self.t_claude), 1005.0)
+        self.build(reg, self.HOUR_W)
+        week = self.build(reg, self.WEEK)
+        self.assertEqual(self.own_rd(week, self.t_claude), 5.0)
+        self.same(want, week)
+        # its own hours, then every one of the day's again, from the week's join state
+        self.assertIn("reducing 144 new hour(s) and 24 again", week.cache["note"])
+        # The day's next build is its slice of the week's chain: the cat is taken off claude
+        # in it now, and its 1000 MB, counted in the week at its own exit, is in no bin of the
+        # day. The day's figures moved once, when the week was built, and stay there.
+        day = self.build(reg, self.DAY_W)
+        self.assertEqual(self.own_rd(day, self.t_claude), 5.0)
+        series = day.payload["resources"]["series"]
+        self.assertNotIn(self.t_cat // series["bin_s"] * series["bin_s"], series["t"])
+        # a restart over that cache: the saved builds resumed, then the saved hours merged
+        again = self.registry(cfg)
+        self.same(want, self.build(again, self.WEEK))
+        self.assertEqual(self.own_rd(self.build(again, self.DAY_W), self.t_claude), 5.0)
+        hours_only = self.registry(self.cfg(cache_windows=False))
+        merged = self.build(hours_only, self.WEEK)
+        self.assertIn("reducing 0 new hour", merged.cache["note"])
+        self.same(want, merged)
+        self.assertEqual(self.own_rd(self.build(hours_only, self.DAY_W), self.t_claude), 5.0)
+
+    def stopped_week(self, cfg):
+        """The day built, then the week, stopped once it has reduced its own hours and the day's
+        first again with its join state, as a killed service would be. Returns the week built
+        alone, and the registry of a restart over that cache."""
+        want = self.payload(self.build(self.registry(cfg), self.WEEK))
+        self.wipe()
+        self.build(self.registry(cfg), self.DAY_W)
+        h = int(NOW // HOUR)
+        real, saved = hours.HourStore._save_hour, []
+
+        def save_then_stop(store, hour, red, meta):
+            size = real(store, hour, red, meta)
+            saved.append(hour)
+            if hour == h - 24:
+                raise RuntimeError("stopped")
+            return size
+        with mock.patch.object(hours.HourStore, "_save_hour", save_then_stop):
+            self.build(self.registry(cfg), self.WEEK)      # the build falls back to a scan
+        self.assertEqual(saved, list(range(h - 168, h - 23)))
+        return want, self.registry(cfg)
+
+    def test_a_week_stopped_while_it_reduced_the_days_hours_again_resumes_there(self):
+        # No saved builds: what is resumed is the hours alone.
+        want, again = self.stopped_week(self.cfg(cache_windows=False))
+        week = self.build(again, self.WEEK)
+        # the rest of the day's hours, from the chain of the one reduced again: nothing twice
+        self.assertEqual(again.hours.stats["hours_reduced"], 23)
+        self.assertEqual(again.hours.stats["hours_reduced_again"], 23)
+        self.assertEqual(self.own_rd(week, self.t_claude), 5.0)
+        self.same(want, week)
+
+    def test_the_rebuild_tick_finishes_what_a_stopped_week_left(self):
+        # The tick asks for the hours past the newest saved one, and the ones left behind its
+        # chain come first: the hours it then reduces are not carried on from the day's state.
+        want, again = self.stopped_week(self.cfg(cache_windows=False))
+        self.assertEqual(again.hours.advance([self.root]), 23)
+        week = self.build(again, self.WEEK)
+        self.assertIn("reducing 0 new hour", week.cache["note"])
+        self.same(want, week)
+
+
+class NodeSplitBuildOrderTest(BuildOrderTest):
+    """The same, each node's share of an hour reduced in a worker process (`ingest.workers`)."""
+
+    def setUp(self):
+        super().setUp()
+        # the workers pin their clock to the service's; a patched `time.time` they never see
+        from rc_dashboard import clock
+        pin = mock.patch.dict(clock._state, {"pinned": True, "as_of": NOW})
+        pin.start()
+        self.addCleanup(pin.stop)
+
+    def cfg(self, merge=True, **panels):
+        c = super().cfg(merge, **panels)
+        c.tree["ingest"]["workers"] = 2
+        return c
+
+    def registry(self, cfg):
+        reg = super().registry(cfg)
+        self.addCleanup(reg.stop)
+        return reg
 
 
 class ClosingTest(HourCase):
