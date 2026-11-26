@@ -18,10 +18,9 @@ feed reports what it looked for as well as what it found, which is what the UI's
 empty states name. A root may be a glob pattern (`expand_root`).
 
 Nothing here falls back to a default quietly where that would leave names
-unmasked, the page open, or the agent on: a config file named by `--config` or
-RC_DASH_CONFIG must exist, a yes/no setting must read as yes or no (`_flag`),
-and an unknown key under `server`, `anonymize` or `ask` stops the service
-(`check_file`).
+unmasked or the page open: a config file named by `--config` or RC_DASH_CONFIG
+must exist, a yes/no setting must read as yes or no (`_flag`), and an unknown
+key under `server` or `anonymize` stops the service (`check_file`).
 """
 import datetime
 import difflib
@@ -30,6 +29,7 @@ import glob
 import json
 import os
 import re
+import textwrap
 import tomllib
 
 PKG = os.path.dirname(os.path.abspath(__file__))
@@ -55,9 +55,6 @@ HISTORY = {"enabled": True, "dir": "", "workers": 0, "days": 0}
 INGEST_WORKERS = 1
 # `ingest.reducer_groups`: processes per node's hour, one per reducer group (1 or 2).
 INGEST_REDUCER_GROUPS = 2
-# An entry of `ask.env_passthrough`: a variable's name, or a family's prefix,
-# three characters or more and then `_*`.
-PASSTHROUGH = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[A-Za-z][A-Za-z0-9_]{2,}_\*")
 
 # `reducers.own_io.max_parents`: the parents each own-I/O join holds
 # (reducers/own_io.py, whose REAPED_MAX a test holds equal).
@@ -77,11 +74,16 @@ def _csv(v):
     return [p.strip() for p in (v or "").split(",") if p.strip()]
 
 
+def _words(v):
+    """Names separated by commas, spaces, or both."""
+    return [p for p in re.split(r"[\s,]+", v or "") if p]
+
+
 def _flag(v):
     """A yes/no setting written as text -- an env var, or a string in the
     config file: 1/0, true/false, yes/no or on/off, in any case, with spaces
-    around. Anything else is refused rather than read as yes: `RC_DASH_ASK=False`
-    once left Ask on."""
+    around. Anything else is refused rather than read as yes: `False`, read as
+    yes, once left a feature on that was meant to be off."""
     s = v.strip().lower()
     if s in ("1", "true", "yes", "on"):
         return True
@@ -305,58 +307,11 @@ def defaults():
         # nothing else depends on it (the tool mix keeps its two scheduler
         # kinds, which simply stay empty there).
         "slurm": {"enabled": True},
-        # Chat with an LLM about the window on screen (ask.py). Each question
-        # runs the agent CLI on this host as the service's user -- the preset
-        # `codex` uses that user's own Codex login -- with a compact, masked
-        # snapshot of the window's panels. That snapshot leaves the host.
-        # Off unless turned on, and refused while the service has no password.
-        # The agent can read whatever the service's account can read (its
-        # sandbox is read-only, not confined): the collector's files, the
-        # cache, that account's home. Run the service as a dedicated account,
-        # not a person's.
-        "ask": {
-            "enabled": False,
-            "agent": "codex",          # a preset (ask.PRESETS), or set `command`
-            # argv, or one shell-style string; {workdir} {answer_file} {model}
-            # are filled in, the prompt arrives on stdin, and with no
-            # {answer_file} the command's stdout is the answer
-            "command": None,
-            "model": "",               # empty: the agent's own default
-            # The agent gets only what a program needs of the service's
-            # environment (ask.AGENT_ENV) and these besides: variable names, or
-            # a family's prefix -- three characters or more, then _* -- for a
-            # provider reached through a cloud: ["AWS_*",
-            # "GOOGLE_APPLICATION_CREDENTIALS", "CLOUD_ML_REGION"]. Never an
-            # RC_DASH_* one.
-            "env_passthrough": [],
-            "timeout_s": 240,
-            "max_concurrent": 1,       # a second question waits, not a second agent
-            "context_kb": 120,         # the snapshot's size budget
-            "include_commands": False,  # command lines stay out unless set
-            # The answerer's instructions. Empty: the built-in (ask.DEFAULT_SYSTEM).
-            # A file is re-read on every question, so it can be tuned live and
-            # wins over the inline text. {deployment} {site} {window} are filled in.
-            "system_prompt": "",
-            "system_prompt_file": "",
-            # the short map of where things are in the snapshot, sent after the
-            # system prompt; turn off only if your prompt describes the data itself
-            "snapshot_guide": True,
-            # every row the model is given carries a ref it cites after each
-            # figure, and the page links each to its row (ask.CITE_GUIDE)
-            "citations": True,
-            # With anonymize.enabled, Ask -- and the suggestions it keeps marked
-            # done -- is refused unless this is set: an answer is shown as the
-            # agent writes it (rewritten, a name typed into a question came back
-            # as its alias), and the agent can read what the service's account
-            # can, the raw feeds included.
-            "unmasked_answers": False,
-        },
         # Which deployment this is, on every page: two dashboards side by side
         # -- a frozen capture from one cluster, the live feed of another -- must
         # not be mistaken for each other.
         # `description`: what this deployment watches, in a few words ("FASRC
-        # login nodes", "a GPU workstation"). The chat agent is told it rather
-        # than assuming any kind of machine; empty says nothing.
+        # login nodes", "a GPU workstation"); empty says nothing.
         "site": {"name": "", "description": ""},
         "panels": {
             # Historical reducers hold no time index, so a window change rebuilds
@@ -578,8 +533,22 @@ def defaults():
                    # open page is read by anyone who reaches the port, which on
                    # a login node is every user of it. A demo serves made-up data
                    # and is open unless a hash is set.
+                   # Or the site's single sign-on (auth.Proxy): a reverse proxy in
+                   # front of the service signs the reader in and names them in
+                   # the header `proxy_header` names (X-Forwarded-User); empty, it
+                   # is off. The header is believed only with the secret in
+                   # `proxy_secret_file`, which the proxy sends on every request
+                   # (X-RC-Proxy-Secret), and only from a connection whose own
+                   # address is in `proxy_trusted` (addresses or networks).
+                   # With `proxy_groups`, the user must be in one of them, as
+                   # `proxy_groups_header` lists theirs. Under it Sign out goes to
+                   # `proxy_logout_url`, and with none is not offered. A request it
+                   # does not sign in falls back to the password, if there is one.
                    "auth": {"password_hash": "", "password_hash_file": "",
-                            "session_days": 30, "open": False},
+                            "session_days": 30, "open": False,
+                            "proxy_header": "", "proxy_groups_header": "",
+                            "proxy_groups": [], "proxy_trusted": ["127.0.0.1", "::1"],
+                            "proxy_logout_url": "", "proxy_secret_file": ""},
                    # Who may connect (guard.py). A websocket opened by a page on
                    # any origin but the dashboard's own -- another port of the
                    # same host included -- is refused, unless its origin is
@@ -593,7 +562,8 @@ def defaults():
                    # With no password, a request is answered only under a
                    # loopback name, `host` above, or a name listed here ("*": any):
                    # another site's page cannot read the dashboard by pointing its
-                   # own name at 127.0.0.1 (DNS rebinding). Unused with a password.
+                   # own name at 127.0.0.1 (DNS rebinding). Unused with a password,
+                   # unless proxy sign-in is on: such a page could send the header.
                    "allowed_hosts": [],
                    # Name the endpoints on the Network bytes panel by reverse
                    # DNS (endpoints.py): `workers` lookups at a time, from this
@@ -649,13 +619,7 @@ ENV_MAP = {
     "filters.drop_self_observation": ("RC_DASH_DROP_SELF_OBS", _flag),
     "risk.profile": ("RC_DASH_RISK_PROFILE", str),
     "slurm.enabled": ("RC_DASH_SLURM", _flag),
-    "ask.enabled": ("RC_DASH_ASK", _flag),
     "anonymize.enabled": ("RC_DASH_ANONYMIZE", _flag),
-    "ask.agent": ("RC_DASH_ASK_AGENT", str),
-    "ask.model": ("RC_DASH_ASK_MODEL", str),
-    "ask.command": ("RC_DASH_ASK_CMD", str),
-    "ask.env_passthrough": ("RC_DASH_ASK_ENV_PASSTHROUGH", _csv),
-    "ask.system_prompt_file": ("RC_DASH_ASK_PROMPT_FILE", str),
     "site.name": ("RC_DASH_SITE_NAME", str),
     "ui.node_noun": ("RC_DASH_NODE_NOUN", str),
     "site.description": ("RC_DASH_SITE_DESC", str),
@@ -666,6 +630,12 @@ ENV_MAP = {
     "server.auth.password_hash": ("RC_DASH_PASSWORD_HASH", str),
     "server.auth.password_hash_file": ("RC_DASH_PASSWORD_HASH_FILE", str),
     "server.auth.open": ("RC_DASH_OPEN", _flag),
+    "server.auth.proxy_header": ("RC_DASH_PROXY_HEADER", str),
+    "server.auth.proxy_groups_header": ("RC_DASH_PROXY_GROUPS_HEADER", str),
+    "server.auth.proxy_groups": ("RC_DASH_PROXY_GROUPS", _words),
+    "server.auth.proxy_trusted": ("RC_DASH_PROXY_TRUSTED", _words),
+    "server.auth.proxy_logout_url": ("RC_DASH_PROXY_LOGOUT_URL", str),
+    "server.auth.proxy_secret_file": ("RC_DASH_PROXY_SECRET_FILE", str),
     "ui.show_internal": ("RC_DASH_SHOW_INTERNAL", _flag),
     "status.transport_files": ("RC_DASH_TRANSPORT_FILES", _csv),
     "status.stale_s": ("RC_DASH_STATUS_STALE_S", int),
@@ -677,9 +647,7 @@ ENV_MAP = {
 }
 
 # Secrets: /api/config and --print-config say whether each is set, never what it is.
-# An agent's command and its instructions can carry a provider's key
-# (`env ANTHROPIC_API_KEY=... claude -p`, the shape tests/test_ask.py pins).
-HIDDEN = ("anonymize.salt", "server.auth.password_hash", "ask.command", "ask.system_prompt")
+HIDDEN = ("anonymize.salt", "server.auth.password_hash")
 
 # The feeds removed once nothing read them -- the scheduler's accounting (sacct,
 # sacctmgr) and the domain and user CSVs -- and every way there was to set one.
@@ -695,10 +663,12 @@ RETIRED_WHY = "is retired, with the feed it set, which nothing read; it is ignor
 # variable there was to set one. Each is named in a warning and dropped, never
 # refused, as a retired feed is: a unit, a wrapper or a config file written for
 # one still starts, and nothing of it reaches /api/config -- where a key under
-# `annotate` was hidden -- or a saved build's fingerprint (`load`).
+# `annotate` or `ask` (an agent's command, its instructions) was hidden -- or a
+# saved build's fingerprint (`load`).
 RETIRED_SECTIONS = {
     "annotate": "is retired, with the tool-call purposes a model wrote; it is ignored",
     "export": "is retired, with the Search & export tab and its download; it is ignored",
+    "ask": "is retired: Ask LLM was removed in this version, and the setting is ignored",
 }
 RETIRED_SECTION_ENV = {
     "RC_DASH_ANNOTATE": "annotate", "RC_DASH_ANNOTATE_PROVIDER": "annotate",
@@ -706,6 +676,9 @@ RETIRED_SECTION_ENV = {
     "RC_DASH_ANNOTATE_KEY_ENV": "annotate", "RC_DASH_ANNOTATE_KEY_FILE": "annotate",
     "RC_DASH_ANNOTATE_CMD": "annotate",
     "RC_DASH_EXPORT_MAX_ROWS": "export",
+    "RC_DASH_ASK": "ask", "RC_DASH_ASK_AGENT": "ask", "RC_DASH_ASK_MODEL": "ask",
+    "RC_DASH_ASK_CMD": "ask", "RC_DASH_ASK_ENV_PASSTHROUGH": "ask",
+    "RC_DASH_ASK_PROMPT_FILE": "ask",
 }
 
 # CLI dest -> leaf path
@@ -760,8 +733,8 @@ def _deep_merge(base, over):
 
 
 # Sections where an unknown key stops the service instead of being ignored: a
-# misspelt key there would leave names unmasked, the page open, or the agent on.
-STRICT = ("server", "anonymize", "ask")
+# misspelt key there would leave names unmasked or the page open.
+STRICT = ("server", "anonymize")
 # Keys the code reads with a default of its own, so not in defaults(): known,
 # never warned about. Shell patterns over dotted paths; a key that matches is
 # known with everything under it.
@@ -778,11 +751,11 @@ def check_file(filetree, where):
     a yes/no setting written as a string is read by `_flag` (`"false"` was
     true), or as 0 or 1.
 
-    An unknown key under `server`, `anonymize` or `ask` -- or a top-level key
-    one slip away from one of them, `anonymise` -- stops the service, naming
-    the nearest key there is, as does a section there given as a single value
-    (`"anonymize": true`): each would leave names unmasked, the page open or
-    the agent on, without a word. Elsewhere an unknown key is a warning, since
+    An unknown key under `server` or `anonymize` -- or a top-level key one slip
+    away from one of them, `anonymise` -- stops the service, naming the nearest
+    key there is, as does a section there given as a single value
+    (`"anonymize": true`): each would leave names unmasked or the page open,
+    without a word. Elsewhere an unknown key is a warning, since
     an old file may carry the keys of a feature since removed. Returns the
     warnings; raises SystemExit with every error."""
     errors, warnings = [], []
@@ -877,8 +850,7 @@ class Config:
             entry = {"_value": val, "_origin": self.origin(path)}
             if path in HIDDEN and val:
                 # With the salt, a list of candidate names turns every alias
-                # back. The password hash is no use to a reader either, and the
-                # agent's command or prompt may hold a key.
+                # back. The password hash is no use to a reader either.
                 entry["_value"] = "(hidden)"
             if path.endswith(".roots") or path.endswith(".dir") or path.endswith(".path") \
                     or path == "status.transport_files":
@@ -981,7 +953,7 @@ def read_file(path):
 # `risk.profile`, which has always been under dashboard/ (`load`).
 PATH_KEYS = ("feeds.ebpf.roots", "feeds.ebpf_node.roots", "cache.dir", "history.dir",
              "rollup.dir", "server.static_dir", "server.auth.password_hash_file",
-             "ask.system_prompt_file", "status.transport_files")
+             "server.auth.proxy_secret_file", "status.transport_files")
 
 
 def path_base(config_file):
@@ -1118,24 +1090,21 @@ def load(args=None, config_path=None):
         raise SystemExit("ingest.reducer_groups: %r is not 1 or 2 (set by %s)" % (
             groups, origins.get("ingest.reducer_groups", "default")))
 
-    # Who may connect (guard.py): lists of names, or the service refuses to
-    # start rather than take a string for a list of its letters.
-    for key in ("server.allowed_origins", "server.dev_origins", "server.allowed_hosts"):
+    # Who may connect (guard.py), and whom the proxy sign-in believes (auth.Proxy):
+    # lists of names, or the service refuses to start rather than take a string
+    # for a list of its letters. What each name must be, auth.proxy_from_config says.
+    for key in ("server.allowed_origins", "server.dev_origins", "server.allowed_hosts",
+                "server.auth.proxy_groups", "server.auth.proxy_trusted"):
         val = _get(tree, key, [])
         if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
             raise SystemExit("%s: %r is not a list of names (set by %s)" % (
                 key, val, origins.get(key, "default")))
-    # What of the service's environment the agents get besides ask.AGENT_ENV:
-    # variable names, or a family's prefix -- three characters or more, then
-    # `_*` (AWS_*). A shorter one, or one with no `_` (S*), takes in whatever
-    # else begins so; such a variable is named whole instead.
-    val = _get(tree, "ask.env_passthrough", [])
-    if not isinstance(val, list) or not all(
-            isinstance(x, str) and PASSTHROUGH.fullmatch(x) for x in val):
-        raise SystemExit("ask.env_passthrough: %r is not a list of variable names, or of a "
-                         "family's prefix written NAME_* with three characters or more before "
-                         "the _* (AWS_*) (set by %s)" % (
-                             val, origins.get("ask.env_passthrough", "default")))
+    for key in ("server.auth.proxy_header", "server.auth.proxy_groups_header",
+                "server.auth.proxy_logout_url", "server.auth.proxy_secret_file"):
+        val = _get(tree, key, "")
+        if not isinstance(val, str):
+            raise SystemExit("%s: %r is not text (set by %s)" % (
+                key, val, origins.get(key, "default")))
     # The parents each own-I/O join holds (reducers/own_io.py): a count of one
     # or more, or the service refuses to start rather than guess -- 0 is neither
     # "unbounded" nor "no join". Null is the default.
@@ -1278,21 +1247,104 @@ def _is_array_of_tables(v):
     return isinstance(v, list) and bool(v) and all(isinstance(x, dict) for x in v)
 
 
-def reference_toml():
-    """Every setting with its built-in default on this host, as a TOML config
-    file would set it, each with the RC_DASH_* variable that sets it too:
-    `rc-dashboard print-config --reference`. Made from `defaults()`, so it cannot
-    drift from the code (tests/test_config.py reads it back). A setting whose
-    default is unset (null, which TOML cannot write) is a comment."""
+# The settings a site chooses, each with its line of help: the ones the README's table,
+# `init`'s starter and `print-config --reference` name. Every other key is internal: it
+# loads from the file, a variable or a flag as it always did, but it tunes the reducers,
+# caches and workers, and its default is the answer; `print-config --reference --all`
+# lists every one. A new setting is internal unless every site must choose it.
+PUBLIC = (
+    ("feeds.ebpf.roots", "where the collector's eBPF tier writes (its EBPFM_OUTPUT_DIR); "
+                         "every candidate that exists is read, and a glob may name many"),
+    ("feeds.ebpf_node.roots", "where its node tier writes (EBPFM_NODE_OUTPUT_DIR), the same way"),
+    ("site.name", "the name every page and the sign-in form show; empty is this host's name"),
+    ("site.description", "a few words on what it watches, shown under the name"),
+    ("slurm.enabled", "the HPC tab, and reducing for it: false on servers without Slurm"),
+    ("ui.node_noun", "what every page calls the hosts, such as \"servers\""),
+    ("anonymize.enabled", "an alias for every user name, on every way out of the service"),
+    ("filters.drop_global", "accounts whose every record is dropped, such as the deployment's own"),
+    ("live.retention_min", "minutes held in memory, and the widest window the page offers: "
+                           "more costs memory and a longer refill"),
+    ("history.days", "the newest days kept as Parquet beside the day-files: 0 keeps every one"),
+    ("cache.dir", "where the saved builds, the history store, the roll-up table and the "
+                  "anonymization salt are kept"),
+    ("risk.profile", "a cluster's risk rules, merged over the built-in ones: a file under "
+                     "dashboard/, such as risk-profiles/gpu-dev.json"),
+    ("clock.as_of", "the present pinned for a capture from elsewhere: a local time, or auto "
+                    "for its newest record; empty is the wall clock"),
+    ("server.host", "the address to listen on: 127.0.0.1 behind a proxy or an ssh tunnel"),
+    ("server.port", "the port to listen on"),
+    ("server.allowed_hosts", "names the page may be reached by besides loopback and "
+                             "server.host, such as a proxy's"),
+    ("server.auth.password_hash_file", "the password's hash (rc-dashboard new-password "
+                                       "--install), read again whenever it changes"),
+    ("server.auth.open", "no password: only where every account that can reach the port may "
+                         "read the data"),
+    ("server.auth.proxy_header", "the header a reverse proxy names the signed-in user in, "
+                                 "for the site's single sign-on; empty is off"),
+    ("server.auth.proxy_secret_file", "the secret that proxy sends on every request, which a "
+                                      "request needs for its user header to count"),
+)
+PUBLIC_KEYS = tuple(k for k, _ in PUBLIC)
+
+
+def is_public(dotted):
+    return dotted in PUBLIC_KEYS
+
+
+def public_view(tree):
+    """print-config's tree, {_value, _origin} leaves, cut to what a site reads: every public
+    setting, each internal one that is not at its default, and `_meta`. Returns it and how
+    many internal settings were left out."""
+    left = [0]
+
+    def walk(node, prefix):
+        out = {}
+        for k, v in node.items():
+            path = "%s.%s" % (prefix, k) if prefix else k
+            if path == "_meta":
+                out[k] = v
+            elif isinstance(v, dict) and "_origin" in v and "_value" in v:
+                if is_public(path) or v["_origin"] != "default":
+                    out[k] = v
+                else:
+                    left[0] += 1
+            elif isinstance(v, dict):
+                sub = walk(v, path)
+                if sub:
+                    out[k] = sub
+        return out
+    return walk(tree, ""), left[0]
+
+
+def reference_toml(everything=False):
+    """The settings a site chooses (`PUBLIC`), each with its line of help and its built-in
+    default on this host, as a TOML config file would set it, each with the RC_DASH_*
+    variable that sets it too: `rc-dashboard print-config --reference`; with `everything`
+    (`--all`), every setting there is. Made from `defaults()`, so it cannot drift from the
+    code (tests/test_config.py reads it back). A setting whose default is unset (null,
+    which TOML cannot write) is a comment."""
     env_of = {k: var for k, (var, _c) in ENV_MAP.items()}
-    out = ["# Every rc-dashboard setting, with its built-in default on this host.",
-           "# Generated by `rc-dashboard print-config --reference`; dashboard/README.md",
-           "# says what each does. Set any of them in dashboard/dashboard.toml (or the",
-           "# file --config or RC_DASH_CONFIG names): a key left out keeps its default,",
-           "# and per key a flag beats its RC_DASH_* variable, which beats the file.",
-           "# A relative path in the file is under the repository's root.",
-           "# feeds.*.roots: every candidate that exists is read; set roots to name your",
-           "# own folders instead (a glob pattern may name many)."]
+    helps = dict(PUBLIC)
+    tree = defaults()
+    if not everything:
+        cut = {}
+        for path in PUBLIC_KEYS:
+            _set(cut, path, _get(tree, path))
+        internal = sum(1 for _ in _leaf_paths(tree)) - len(PUBLIC_KEYS)
+        tree = cut
+    out = ["# %s on this host."
+           % ("Every rc-dashboard setting, with its built-in default" if everything
+              else "The settings a site chooses, each with its built-in default"),
+           "# Generated by `rc-dashboard print-config --reference%s`; dashboard/README.md"
+           % (" --all" if everything else ""),
+           "# says more. Set any of them in dashboard/dashboard.toml (or the file --config or",
+           "# RC_DASH_CONFIG names): a key left out keeps its default, and per key a flag",
+           "# beats its RC_DASH_* variable, which beats the file. A relative path in the",
+           "# file is under the repository's root."]
+    if not everything:
+        out += ["# %d more settings are internal: they tune the reducers, caches and workers,"
+                % internal,
+                "# and their defaults are the answer. `--all` lists them."]
 
     def emit(node, prefix):
         scalars = [(k, v) for k, v in node.items()
@@ -1300,8 +1352,11 @@ def reference_toml():
         if prefix and scalars:
             out.extend(["", "[%s]" % ".".join(_toml_key(p) for p in prefix)])
         for k, v in scalars:
-            var = env_of.get(".".join(prefix + [k]))
+            dotted = ".".join(prefix + [k])
+            var = env_of.get(dotted)
             note = "  # %s" % var if var else ""
+            if dotted in helps:
+                out.extend("# " + line for line in textwrap.wrap(helps[dotted], 86))
             if v is None:
                 out.append("# %s = (unset)%s" % (_toml_key(k), note))
             else:
@@ -1316,5 +1371,16 @@ def reference_toml():
                     out.extend("%s = %s" % (_toml_key(kk), _toml_value(vv))
                                for kk, vv in item.items())
 
-    emit(defaults(), [])
+    emit(tree, [])
     return "\n".join(out) + "\n"
+
+
+def _leaf_paths(node, prefix=""):
+    """Every setting's dotted name in a defaults() tree: a section with something in it is
+    no setting, its leaves are."""
+    for k, v in node.items():
+        path = "%s.%s" % (prefix, k) if prefix else k
+        if _is_table(v):
+            yield from _leaf_paths(v, path)
+        else:
+            yield path

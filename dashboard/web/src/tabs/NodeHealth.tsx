@@ -297,7 +297,6 @@ export function NodeHealth({ P, live }: { P: Panels; live: LiveResponse | null }
     <Panel
       title={`${nodes.One} health`}
       id="sec-node-health"
-      ask={[{ panel: 'node', keys: ['hosts', 'nfs', 'disk', 'thresholds'] }]}
       p={n}
       span
       empty={!hosts.length}

@@ -26,6 +26,21 @@ export function isConfigLeaf(n: ConfigNode): n is ConfigLeaf {
   return !!n && typeof n === 'object' && '_value' in n && '_origin' in n;
 }
 
+/** How the reader of this page got in: `/api/config`'s `_meta.auth._value`, with
+ *  `_origin` `request` (rc_dashboard/auth.py `reader`). Through the site's single
+ *  sign-on, a proxy in front of the service (`proxy`); with the dashboard's own
+ *  password (`password`); or neither, on a page served open (`open`). */
+export type AuthMethod = 'proxy' | 'password' | 'open';
+export interface AuthInfo {
+  method: AuthMethod;
+  /** the user the proxy named; null unless `method` is `proxy` */
+  user: string | null;
+  /** where Sign out goes when the proxy signed the reader in
+   *  (`server.auth.proxy_logout_url`); null otherwise, and then, under the proxy,
+   *  no Sign out. After the password, Sign out is the service's own form. */
+  logout_url: string | null;
+}
+
 /* ----------------------------------------------------------------- feeds */
 
 export type FeedStatus = 'ok' | 'stale' | 'empty' | 'missing';
@@ -2268,118 +2283,6 @@ export interface RiskPanel extends PanelEnvelope {
     undercount?: string;
   };
   totals?: { events: number; cpu_s: number };
-}
-
-/* ------------------------------------------------------------------ ask */
-
-/** The agent behind "Chat with LLM", and whether it can run on this host. */
-export interface AskInfo {
-  enabled: boolean;
-  agent: string;
-  model: string | null;
-  command: string;
-  available: boolean;
-  error: string | null;
-  timeout_s: number;
-}
-
-/** Part of one panel's data, as the service keys it: a window panel
- * (`tool_mix`, `risk`, ...) or some of its fields, the live tier's small
- * sections (`live`: now, users, hosts, submits), or the ranked sessions
- * (`trajectories`, by `rank`). */
-export interface AskPart {
-  panel: string;
-  keys?: string[];
-  rank?: string;
-}
-/** What a question is about: one panel's parts, or one session. Omitted, it is
- * the whole window. `title` and `tab` are what the page calls the panel. */
-export type AskContext =
-  | { parts: AskPart[]; title?: string; tab?: string; classes?: string[] }
-  | { session: string; title?: string }
-  /** the operator's suggestions: the whole window on screen, one fixed question */
-  | { suggest: true; classes?: string[] };
-/** One thing the cluster operator could do, as the model put it, checked by
- * the service (ask.parse_suggestions). */
-export interface OperatorSuggestion {
-  priority: 'high' | 'medium' | 'low';
-  title: string;
-  action: string | null;
-  evidence: string | null;
-  /** the accounts it concerns, as the page names them */
-  users: string[];
-  /** where on the page it shows, and the tab that is (null when not known) */
-  panel: string | null;
-  tab: string | null;
-}
-/** A suggestion an operator marked done, as the service kept it. */
-export interface DoneSuggestion extends OperatorSuggestion {
-  id: string;
-  /** the answer it came from, and its place in it */
-  job: string;
-  index: number;
-  window: string | null;
-  /** epoch seconds */
-  done_at: number;
-}
-export interface DoneList {
-  /** newest first */
-  items: DoneSuggestion[];
-}
-/** One question, as the service runs it. */
-export interface AskJob {
-  id: string;
-  state: 'queued' | 'running' | 'done' | 'error';
-  question: string;
-  window: string;
-  /** the panel or session it was asked about; null for the whole window */
-  about?: string | null;
-  /** epoch seconds it was asked at */
-  submitted?: number;
-  /** a "suggest actions" answer, read; null when it could not be */
-  suggestions?: { summary: string | null; suggestions: OperatorSuggestion[] } | null;
-  agent: string;
-  model: string | null;
-  progress: string | null;
-  answer: string | null;
-  error: string | null;
-  elapsed_s: number;
-  snapshot_kb: number;
-  /** what each ref the answer cites was (ask.Asker._cites); null until answered,
-   *  absent from a job asked before citations */
-  cites?: Record<string, AskCite> | null;
-  /** what the question was read over, so a citation opens the page on it */
-  view?: AskView | null;
-}
-
-/** A moment of one session's tree to open the inspector at. */
-export interface CiteJump {
-  t: number;
-  by: 'start' | 'end';
-  pid?: number | null;
-  zoom?: [number, number];
-}
-
-/** One cited ref: where it sits in the snapshot, what the model saw of it (its
- *  refs taken out, a long list said as a count; an outline's line is the line),
- *  and the hints that open it -- a session, or a moment of this session. */
-export interface AskCite {
-  path: (string | number)[];
-  data: unknown;
-  go: { sid?: string | null; jump?: CiteJump } | null;
-  /** for a part of a row that names no one (a folder an agent read): who the
-   *  row above it is -- its user, host, pid, agent type, class */
-  of?: Record<string, unknown> | null;
-}
-
-/** The window, filter, classes, and session a question was read over, in the
- *  page's own URL keys. No filter is no filter, not "whatever is on screen". */
-export interface AskView {
-  window_min: number | null;
-  users: string[];
-  atypes: string[];
-  cls: string[] | null;
-  sid: string | null;
 }
 
 /* ------------------------------------------------- every command behind I/O

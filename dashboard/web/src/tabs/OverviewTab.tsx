@@ -176,14 +176,8 @@ export const OverviewTab = memo(function OverviewTab({
       <Panel
         title={`Who uses what · ${win}`}
         // a fixed anchor: the title carries the window, and a link to the old
-        // Overview tab, or a citation of `facets`, lands here on Live
+        // Overview tab lands here on Live
         id="sec-who-uses-what"
-        ask={[
-          { panel: 'tool_mix', keys: ['by_class'] },
-          { panel: 'resources', keys: ['by_class', 'top', 'oncpu_set_aside'] },
-          { panel: 'io_process', keys: ['by_class'] },
-          { panel: 'slurm', keys: ['by_class'] },
-        ]}
         p={tm}
         span
         empty={!units.length}

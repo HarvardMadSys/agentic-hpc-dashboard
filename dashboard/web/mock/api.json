@@ -77,6 +77,14 @@
    "host": {
     "_value": "dash01",
     "_origin": "runtime"
+   },
+   "auth": {
+    "_value": {
+     "method": "proxy",
+     "user": "jdoe",
+     "logout_url": "/oauth2/sign_out"
+    },
+    "_origin": "request"
    }
   }
  },

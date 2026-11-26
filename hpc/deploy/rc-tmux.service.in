@@ -18,7 +18,7 @@ StartLimitBurst=5
 Type=forking
 UMask=0077
 LimitCORE=0
-# The dashboard's PATH, with the Codex CLI's folder first when Ask is on.
+# The dashboard's PATH.
 Environment=RC_DASH_PATH=@DASH_PATH@
 # The deployment's folder, which holds everything, and the dashboard's memory cap: the
 # windows' loops (keep-running.sh) read both.

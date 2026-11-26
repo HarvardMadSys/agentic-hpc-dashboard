@@ -40,7 +40,7 @@ _OPTS = orjson.OPT_NON_STR_KEYS
 
 # Basis notes: how a panel counts, in words -- `notes`, `basis` and every
 # `*_basis`. The page shows none of them, so the routes it reads leave them out
-# (`strip_basis`); Ask LLM reads the same payloads in process, and keeps them.
+# (`strip_basis`).
 BASIS_KEYS = frozenset(("notes", "basis"))
 
 

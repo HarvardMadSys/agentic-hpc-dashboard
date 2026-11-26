@@ -218,10 +218,14 @@ class ConfigKeys(unittest.TestCase):
     def test_no_password_and_not_open_by_default(self):
         # An app built with no hash has no gate; `serve` refuses to start so
         # unless `open` is set (test_serve.py).
+        # Nor single sign-on: no header named (tests/test_proxy_signin.py).
         self.assertEqual(configmod.defaults()["server"]["auth"],
                          {"password_hash": "", "password_hash_file": "", "session_days": 30,
-                          "open": False})
+                          "open": False, "proxy_header": "", "proxy_groups_header": "",
+                          "proxy_groups": [], "proxy_trusted": ["127.0.0.1", "::1"],
+                          "proxy_logout_url": "", "proxy_secret_file": ""})
         self.assertIsNone(auth.from_config(self.cfg()))
+        self.assertIsNone(auth.proxy_from_config(self.cfg()))
 
     def test_env_sets_the_hash(self):
         stored = auth.hash_password("pw", **FAST)
@@ -344,7 +348,6 @@ class EveryRoute(unittest.TestCase):
         tree["server"]["static_dir"] = ui
         tree["server"]["port"] = cls.port
         tree["panels"]["prewarm_min"] = []
-        tree["ask"]["command"] = [sys.executable, "-c", "print('ok')"]
         cls.stored = auth.hash_password(cls.PASSWORD, **FAST)
         tree["server"]["auth"]["password_hash"] = cls.stored
         cfg = configmod.Config(tree, {}, None)
@@ -400,10 +403,11 @@ class EveryRoute(unittest.TestCase):
 
     def test_every_route_wants_the_password(self):
         routes = self.api_routes()
-        self.assertIn(("POST", "/api/ask"), routes)
         self.assertGreater(len(routes), 15)
+        # and what no route takes, which is told to sign in first, never a 405 or a 415
         pages = [("GET", "/"), ("GET", "/index.html"), ("GET", "/assets/app.js"),
-                 ("GET", "/favicon.ico"), ("HEAD", "/"), ("GET", "/ws"), ("POST", "/")]
+                 ("GET", "/favicon.ico"), ("HEAD", "/"), ("GET", "/ws"), ("POST", "/"),
+                 ("POST", "/api/panels"), ("DELETE", "/api/panels")]
         for method, path in routes + pages:
             with self.subTest(method=method, path=path):
                 body = b"{}" if method in ("POST", "PUT", "PATCH") else None

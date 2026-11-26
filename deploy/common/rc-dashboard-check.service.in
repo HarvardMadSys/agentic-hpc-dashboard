@@ -7,7 +7,7 @@
 # webhook URL. The unit ends failed on crit, so `systemctl --failed` shows it too.
 [Unit]
 Description=rc dashboard: the hourly check (rc-dashboard status)
-Documentation=file://@REPO@/deploy/README.md
+Documentation=@DOCS@/deploy/README.md
 
 [Service]
 Type=oneshot
@@ -15,12 +15,12 @@ User=@USER@
 Group=@USER@
 # The group the collector writes for, on a host whose own collector it reads (single).
 SupplementaryGroups=@GROUP@
-WorkingDirectory=@REPO@/dashboard
+WorkingDirectory=@WORKDIR@
 EnvironmentFile=@ETC@/dashboard.env
 EnvironmentFile=@ETC@/paths.env
 Environment=RC_CHECK_ETC=@ETC@
 Environment=RC_CHECK_VENV=@VENV@
-ExecStart=@REPO@/deploy/common/check.sh
+ExecStart=@KIT@/deploy/common/check.sh
 # 1 is warn: logged (and posted), but the unit ends failed on crit (2) or a check that
 # could not run (3) alone.
 SuccessExitStatus=1

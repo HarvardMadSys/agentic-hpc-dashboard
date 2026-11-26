@@ -2338,11 +2338,14 @@ function build() {
       static_dir: { _value: 'dashboard/web/dist', _origin: 'default' },
     },
     /* What the service says of itself (config.py `as_dict`): the zone every time on the page is
-     * in, which code it is, and its host, which names the deployment where no site name is set. */
+     * in, which code it is, and its host, which names the deployment where no site name is set.
+     * And how this reader got in (app.py `api_config`, auth.py `reader`): here the site's single
+     * sign-on signed them in, so the head names them and Sign out links to the proxy's. */
     _meta: {
       tz: { _value: { name: 'America/New_York', abbrev: 'EDT', utc_offset_s: -14400 }, _origin: 'runtime' },
       version: { _value: { version: '0.1.0', commit: 'fixture' }, _origin: 'build' },
       host: { _value: 'dash01', _origin: 'runtime' },
+      auth: { _value: { method: 'proxy', user: 'jdoe', logout_url: '/oauth2/sign_out' }, _origin: 'request' },
     },
   };
 
@@ -2380,10 +2383,9 @@ function build() {
   };
 }
 
-/* The service's notes on how a panel counts -- `notes`, `basis`, every `*_basis` -- are kept for
- * Ask LLM, which reads its payloads in process, and left out of the routes the page reads
- * (`jsonout.strip_basis`): every object reached through objects loses them, and lists are not
- * walked. The fixture is what those routes send. */
+/* The service's notes on how a panel counts -- `notes`, `basis`, every `*_basis` -- are left out
+ * of the routes the page reads (`jsonout.strip_basis`): every object reached through objects
+ * loses them, and lists are not walked. The fixture is what those routes send. */
 const isBasis = (k) => k === 'notes' || k === 'basis' || k.endsWith('_basis');
 function stripBasis(o) {
   if (!o || typeof o !== 'object' || Array.isArray(o)) return o;

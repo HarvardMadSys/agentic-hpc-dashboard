@@ -1,5 +1,6 @@
 """Who may talk to the service at all: the Origin of a websocket, and while
-the service has no password, the Host of every request.
+the service has no password, or signs readers in through a proxy, the Host of
+every request.
 
 The service listens on 127.0.0.1, and a browser is a way in to that from
 anywhere. A page on another site may open a websocket to 127.0.0.1:<port>
@@ -24,7 +25,12 @@ checks cover the rest:
   (`server.host`), or one of `server.allowed_hosts` ("*" for any) gets a 403:
   a rebound name is none of them. With a password the check is off, so a
   tunnel or a proxy that keeps its public name in the Host (hpc/deploy)
-  needs no list; the cookie already defeats rebinding.
+  needs no list; the cookie already defeats rebinding. Not so the header a
+  proxy signs readers in with (auth.Proxy): a rebound page on the reader's
+  own host -- or at the far end of their ssh tunnel -- connects from a trusted
+  address and may send any header it likes. So with proxy sign-in on, the
+  check is on whatever else is set, and a proxy that passes its public name
+  in the Host needs that name listed.
 
 Outside the sign-in (auth.py), so a request refused here costs no password
 check, and outside every route and the static mount, so a route added later
@@ -73,11 +79,14 @@ def is_loopback(name):
 
 class SiteGuard:
     """ASGI: the checks in the module's docstring. `check_host` is on while
-    the service has no password."""
+    the service has no password, or signs readers in through a proxy;
+    `host_why` says which, in the 403."""
 
-    def __init__(self, app, check_host, bind_host="", allowed_hosts=(), allowed_origins=()):
+    def __init__(self, app, check_host, bind_host="", allowed_hosts=(), allowed_origins=(),
+                 host_why="has no password"):
         self.app = app
         self.check_host = bool(check_host)
+        self.host_why = host_why
         names = {host_name(h) for h in allowed_hosts if str(h).strip()}
         self.any_host = "*" in names
         self.hosts = names | ({host_name(bind_host)} if bind_host else set())
@@ -111,9 +120,9 @@ class SiteGuard:
             elif k == b"origin":
                 origins.append(v.decode("latin-1"))
         if self.check_host and not self.host_ok(host):
-            why = ("this dashboard has no password, so it answers only under a loopback name, "
+            why = ("this dashboard %s, so it answers only under a loopback name, "
                    "its own address, or one of server.allowed_hosts; %s is none of them"
-                   % host_name(host)[:100])
+                   % (self.host_why, host_name(host)[:100]))
         elif kind == "websocket" and not all(self.origin_ok(o, host) for o in origins):
             why = None
         else:
@@ -129,8 +138,9 @@ class SiteGuard:
 
 class JsonOnly:
     """ASGI: a request under /api with any method but GET, HEAD and OPTIONS --
-    one that may change something, or start an agent -- must say its body is
-    JSON, or gets a 415 before it is read. A form or a text/plain body is what
+    one that may change something -- must say its body is JSON, or gets a 415
+    before it is read. No route under /api takes one today; this holds for any
+    added later. A form or a text/plain body is what
     a page on another site can send without the browser first asking this
     service (a CORS preflight, which it never answers); a JSON one it cannot.
     Inside the sign-in, so a request without the password is told that first."""

@@ -13,13 +13,11 @@
  *
  * Rule: data only. A panel carries a title, the feed that fills it, and the
  * chart or table: no method notes. The service's `notes`, `basis` and
- * `*_basis` texts are not served to the page; Ask LLM reads them.
+ * `*_basis` texts are not served to the page (`jsonout.strip_basis`).
  */
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { FeedStatus, PanelEnvelope, WindowStatus } from '../api/types';
-import { AskBox, canAsk, useAskScope } from './Ask';
-import type { AskRef } from './Ask';
 import { Boundary } from './Boundary';
 import { AboutButton } from './About';
 import { CopyCsvButton } from './CopyCsv';
@@ -179,9 +177,6 @@ export interface PanelProps {
   empty?: boolean;
   emptyWhat?: string;
   header?: ReactNode;
-  /** What an "ask" about this panel reads (components/Ask.tsx): the service's
-   *  panel data it is drawn from, or one session. No button without it. */
-  ask?: AskRef | null;
   children?: ReactNode;
 }
 
@@ -199,11 +194,8 @@ export function Panel({
   empty,
   emptyWhat,
   header,
-  ask,
   children,
 }: PanelProps) {
-  const scope = useAskScope();
-  const [asking, setAsking] = useState(false);
   const secRef = useRef<HTMLElement>(null);
   // a panel that draws a table offers it as CSV (components/CopyCsv.tsx); read
   // after each draw, since its table comes with its data
@@ -212,9 +204,8 @@ export function Panel({
     const t = !!secRef.current?.querySelector('table');
     if (t !== hasTable) setHasTable(t);
   });
-  const askable = !!ask && canAsk(scope.info);
   const feedName = p?._feed ?? feed ?? '';
-  // no body to show, ask about or qualify: an absent feed, or a panel the
+  // no body to show or qualify: an absent feed, or a panel the
   // service could not reduce (which reads its own state below)
   const missing = p != null && (p._present === false || p._error != null);
   // Feed-absent outranks window-building: if the collector wrote nothing, no
@@ -226,18 +217,6 @@ export function Panel({
   // still has the previous reduction, which is valid and older -- it keeps the
   // numbers and wears a pill, rather than blanking a panel that was fine.
   const blank = building != null && !building.has_payload;
-  const askBtn = askable && !missing && !blank ? (
-    <button
-      className={`btn askbtn${asking ? ' on' : ''}`}
-      aria-pressed={asking}
-      onClick={() => setAsking(!asking)}
-      data-tip={`ask ${scope.info?.agent ?? 'the LLM'} about ${
-        Array.isArray(ask) ? 'this panel: it is sent this panel’s data and nothing else' : 'this session: it is sent this session’s process tree and nothing else'
-      }`}
-    >
-      {Array.isArray(ask) ? 'ask' : 'ask about this session'}
-    </button>
-  ) : null;
   return (
     <section ref={secRef} className={`panel${span ? ' span2' : ''}`} id={id ?? slug(title)} data-title={title}>
       <header>
@@ -248,9 +227,6 @@ export function Panel({
           <h3>{title}</h3>
         </div>
         <div className="wrapctl" style={{ gap: 6 }}>
-          {/* a panel's "ask" sits at the end; a session's leads, so the
-              inspector's "close" stays last */}
-          {!Array.isArray(ask) && askBtn}
           {header}
           {building && !blank && (
             <span
@@ -264,20 +240,11 @@ export function Panel({
             </span>
           )}
           {live && !missing && <StatusPill status="live" text="live" beat />}
-          {Array.isArray(ask) && askBtn}
           {/* every explanation this panel's labels hold, in one place (components/About.tsx) */}
           {!missing && !blank && hasTable && <CopyCsvButton root={secRef} />}
           {!missing && !blank && <AboutButton title={title} root={secRef} />}
         </div>
       </header>
-      {askable && asking && !missing && !blank && (
-        <AskBox
-          what={ask!}
-          title={title}
-          threadKey={Array.isArray(ask) ? `${id ?? slug(title)}` : `session:${ask!.session}`}
-          onClose={() => setAsking(false)}
-        />
-      )}
       {p?._waiting ? (
         <div className="none">waiting for the dashboard service…</div>
       ) : p?._error != null ? (

@@ -40,7 +40,6 @@ def setup(feed, cache, merge_reduce=True, cache_windows=False):
         "RC_DASH_NODE_ROOTS": os.path.join(feed, "feed", "node"),
         "RC_DASH_CACHE_DIR": cache,
         "RC_DASH_AS_OF": "auto",
-        "RC_DASH_ASK": "0",
         "RC_DASH_RDNS": "0",
         "RC_DASH_MERGE_REDUCE": "1" if merge_reduce else "0",
         "RC_DASH_CACHE_WINDOWS": "1" if cache_windows else "0",

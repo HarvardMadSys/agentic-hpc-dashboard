@@ -84,10 +84,9 @@ as sub-tabs. The page opens on the first.
 | **Usage** › Login nodes · HPC · Trend | node health, the window's series and each login node's responsiveness, the worst processes; the Slurm scheduler, abnormal use first, each rule a threshold the site sets; each class's use per day, week or month over up to a year |
 | **System** › Feeds | each collector and feed: where it was looked for, its status, how fresh it is, and the version of each; every resolved setting |
 
-**Ask LLM** opens beside any tab, from the head's Ask button, where a site turns it on:
-questions about the window on screen, answered by an agent that cites the panels it read. With
-no data at all, the tabs give way to a setup screen that says where the dashboard looked and
-how to fix it; Trend stays, since its roll-up table outlives the day-files it was made from. Ctrl+K (or `/`) goes to any tab, section, user, login node or session.
+With no data at all, the tabs give way to a setup screen that says where the dashboard looked and
+how to fix it; Trend stays, since its roll-up table outlives the day-files it was made from.
+Ctrl+K (or `/`) goes to any tab, section, user, login node or session.
 
 The whole page can be narrowed to classes, users and agent types, over any window the
 service offers. What each tab holds: [`dashboard/web/README.md`](dashboard/web/README.md#tabs);
@@ -170,11 +169,17 @@ and an image with the page built in, needing no Node ([`docker`](docker/README.m
 Three layouts, the same collector and dashboard in each, the dashboard behind a password on
 127.0.0.1:
 
-One front door picks the layout from four questions (Slurm? which nodes? root on the nodes?
-root on the dashboard's host?) and runs its scripts:
+Start from a release's kit, `agentic-hpc-dashboard-X.Y.Z.tar.gz` on the
+[releases page](https://github.com/HarvardMadSys/agentic-hpc-dashboard/releases), unpacked
+where any account can read it and it can stay (`/opt/agentic-hpc-dashboard`): it installs
+that release's wheel, checked against the release's checksums, with nothing to build. A
+checkout works the same way and builds its own code. The login nodes' layout ships a commit
+from where it runs, so it needs a checkout: `git clone --branch vX.Y.Z` for a release. One
+front door picks the layout from four questions (Slurm? which nodes? root on the nodes? root
+on the dashboard's host?) and runs its scripts:
 
 ```bash
-deploy/rc-deploy init           # writes the settings file, and records the layout in it
+sudo deploy/rc-deploy init      # writes the settings file, and records the layout in it (hpc: no sudo)
 sudo deploy/rc-deploy plan      # what it would do; nothing done (hpc runs as you, no sudo)
 sudo deploy/rc-deploy apply
 sudo deploy/rc-deploy password  # makes the password; its hash goes where the dashboard reads it
@@ -197,14 +202,15 @@ Each setting resolves on its own: a command-line flag wins over an `RC_DASH_*` e
 variable, which wins over the config file (`dashboard/dashboard.toml` or
 `dashboard/dashboard.config.json`, TOML or JSON), which wins over the default.
 [`dashboard.example.toml`](dashboard/dashboard.example.toml) is a dozen lines to start from.
-`rc-dashboard print-config --reference` prints every setting with its default, and
+`rc-dashboard print-config --reference` prints the twenty settings a site chooses, each
+with its default and a line of help (`--all`: every setting, the internal ones too), and
 `rc-dashboard print-config` prints each resolved setting and where it came from. How they
 resolve, and what each does: [`dashboard/README.md`](dashboard/README.md#configuration).
 
 The deployment kits take the same names for the same settings: `SITE_NAME`, `SITE_DESCRIPTION`,
 `SLURM`, `NODE_NOUN`, `ANONYMIZE` (1/0, true/false, yes/no, on/off), `MEMORY_MAX` and
-`FREE_MIN_GB`. They go in `deploy/site.env` (rc-deploy), the deploy/ installers' environment,
-or `hpc/deploy/site.env`; each sets the dashboard's own setting (`deploy/README.md`,
+`FREE_MIN_GB`. They go in `/etc/rc-dashboard/site.env` (rc-deploy), the deploy/ installers'
+environment, or `hpc/deploy/site.env`; each sets the dashboard's own setting (`deploy/README.md`,
 "Settings"). The collector reads `/etc/default/ebpfm` (`ebpfm config` shows every setting).
 
 ## Data and privacy
@@ -218,11 +224,11 @@ The records name real users and show what they ran, so both halves keep them clo
   `[REDACTED-PROMPT]` (`EBPFM_REDACT`). Its records go only to its output folders; its one use of the network is
   resolving host names that command lines mention, to name the endpoints a process talked to
   (`EBPFM_ARGV_HOSTS=0` turns that off).
-- **The dashboard** will not start without a password unless told to (`--open`), and masks
-  credentials again on every way out. `RC_DASH_ANONYMIZE=1` replaces every name with an alias.
+- **The dashboard** will not start without a password, or the site's single sign-on through a
+  proxy, unless told to (`--open`), and masks credentials again on every way out.
+  `RC_DASH_ANONYMIZE=1` replaces every name with an alias.
   It names network endpoints by reverse DNS from its own host (`RC_DASH_RDNS=0` turns that
-  off). **Ask LLM**, off by default, sends masked data to a model's provider when a site turns
-  it on.
+  off). Nothing it reads or shows leaves the host for a model's provider.
 - **The fleet stream** carries the files over ssh, with a key that can run the sender and
   nothing else, and only from the dashboard's host.
 - **The fleet's copy** ([`deploy/fleet`](deploy/fleet/README.md)) is pulled by an account in
@@ -295,4 +301,5 @@ made once.
   only `/proc`, `/sys` and standard tools (procps-ng, sysstat, nfs-utils, iproute); a missing
   tool blanks only its own section. The RPM pulls in everything.
 - **Dashboard:** Python 3.11 or later with what [`dashboard/pyproject.toml`](dashboard/pyproject.toml)
-  lists, installed by `uv`; Node.js and npm to build the page.
+  lists, installed by `uv`. A release's wheel has the page built in; from a checkout, Node.js
+  and npm build it.

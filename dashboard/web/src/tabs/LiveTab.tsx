@@ -344,7 +344,6 @@ export const LiveTab = memo(function LiveTab({
 
         <Panel
           title={`${nodes.Many} right now`}
-          ask={[{ panel: 'live', keys: ['hosts'] }]}
           span
           live
           feed={liveFeed?.name ?? 'live'}

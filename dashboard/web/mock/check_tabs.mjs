@@ -2,9 +2,8 @@
  * Sessions tab, a sub-tab of the Agents entry, with its list of every session and the inspector beside
  * it, and a user's own sessions opening under their portrait on Users (`src/App.tsx`,
  * `src/tabs/OpenSession.tsx`). Every way to a session -- a saved `?tab=trajectories` or `?tab=agents&traj=`
- * link, a citation, the popped-out tree's way back -- lands on one of the two, and a session open on one
- * tab does not open again on the other. Ask LLM is a drawer beside the open tab, not a stop; Internal is
- * listed only where the site asks.
+ * link, the popped-out tree's way back -- lands on one of the two, and a session open on one tab does not
+ * open again on the other. Internal is listed only where the site asks; Ask LLM, removed, is nowhere.
  *
  *   npm run check:tabs          (node --test mock/check_tabs.mjs)
  *
@@ -35,12 +34,12 @@ test('seven stops in the rail, Summary first, Sessions a sub-tab of Agents, and 
   for (const [k, parent] of [['security', 'risk'], ['risk', 'risk'], ['resources', 'usage'], ['slurm', 'usage'], ['trend', 'usage'], ['feeds', 'system'], ['internal', 'system']]) {
     assert.match(tabs, new RegExp(`k: '${k}',[^\\n]*parent: '${parent}'`), `${k} under ${parent}`);
   }
-  // the stops: Summary, Live and Users, then the four parents; Ask is not one
+  // the stops: Summary, Live and Users, then the four parents
   assert.match(tabs, /^\s*\{ k: 'summary', lbl: 'Summary',[^\n]*\n\s*\{ k: 'live', lbl: 'Live',/);
   assert.doesNotMatch(/\{ k: 'summary'[^\n]*/.exec(tabs)?.[0] ?? '', /parent:/);
   const parents = /const PARENTS: Record<Parent, [^>]*> = \{([\s\S]*?)\n\};/.exec(app)?.[1] ?? '';
   for (const k of ['agents', 'risk', 'usage', 'system']) assert.match(parents, new RegExp(`\\b${k}: \\{ lbl: '`));
-  assert.match(app, /if \(t\.k === 'chat' \|\| \(t\.k === 'internal' && !showInternal && tab\.k !== 'internal'\)\) continue;/);
+  assert.match(app, /if \(t\.k === 'internal' && !showInternal && tab\.k !== 'internal'\) continue;/);
   const { parseUrl } = await ui.load('lib/filters.ts');
   const u = parseUrl(`?tab=trajectories&traj=${encodeURIComponent(SID)}&tuser=alice&torder=newest&rank=cpu_s`);
   assert.equal(u.tab, 'sessions');
@@ -81,12 +80,19 @@ test('with nothing picked, the first row is shown beside the list, and held whil
   assert.match(agents, /const cur = sel \?\? \(auto\.current \? \{ entry: auto\.current, agent: null \} : null\);/);
 });
 
-test('Ask LLM opens beside the open tab, only where a site turned it on; its old link opens it', () => {
+test('Ask LLM is gone: no tab, drawer, button or route, and a link to its old tab opens the first', () => {
   const app = source('App.tsx');
-  assert.match(app, /const askOn = askInfo\?\.enabled === true;/);
-  assert.match(app, /useState<boolean>\(\(\) => OPENED_ON === 'chat'\)/);
-  assert.match(app, /\{askOn && askOpen && \(\s*<AskDrawer onClose=\{closeAsk\}>/);
-  assert.doesNotMatch(app, /case 'chat':/);
+  const tabs = /const TABS: Tab\[\] = \[([\s\S]*?)\n\];/.exec(app)?.[1] ?? '';
+  assert.ok(tabs, 'App.tsx keeps its TABS');
+  assert.doesNotMatch(tabs, /k: 'chat'/);
+  assert.doesNotMatch(app, /AskDrawer|ChatTab|AskScope|askOn|getAskInfo|case 'chat':/);
+  // `?tab=chat`, like any tab that is not here, opens the first
+  assert.match(app, /const tab = tabs\.find\(\(t\) => t\.k === url\.tab\) \|\| tabs\[0\];/);
+  assert.doesNotMatch(source('components/Panel.tsx'), /\bask\?:|AskBox/);
+  assert.doesNotMatch(source('api/client.ts'), /'\/ask|\/suggestions\/done/);
+  for (const f of ['components/Ask.tsx', 'components/AskDrawer.tsx', 'components/Cite.tsx', 'tabs/ChatTab.tsx', 'tabs/chat.css']) {
+    assert.throws(() => source(f), /ENOENT/, `${f} is gone`);
+  }
 });
 
 test('a session opens on the Sessions tab from anywhere else, and in place under a portrait on Users', () => {
@@ -143,33 +149,9 @@ test('another tab closes the session open on this one, unless it opens one itsel
   assert.equal(patched(open, { win: 60 }).traj, SID);
   assert.equal(patched(open, { tab: 'users' }).traj, SID);
   assert.equal(patched(open, { tab: 'agents', traj: 'other' }).traj, 'other');
-  // the page's one way to write its URL, and a citation's, go through it
+  // the page's one way to write its URL, and a link's (lib/cites.ts `go`), go through it
   assert.match(source('lib/useUrlState.ts'), /const next: UrlState = patched\(cur\.current, patch\);/);
-  assert.match(source('lib/cites.ts'), /const q = urlQuery\(patched\(parseUrl\(location\.search\), a\.patch\)\);/);
-  assert.match(source('lib/cites.ts'), /const q = urlQuery\(patched\(from, at\.patch\)\);/);
-});
-
-test('a citation of a session opens it beside the Sessions tab’s list, and one open under a portrait is cited there', async () => {
-  const C = await ui.load('lib/cites.ts');
-  const view = { window_min: 60, users: [], atypes: [], cls: null, sid: SID };
-  // the list of sessions: the tab's own name, not "Sessions" twice
-  const list = C.target({ path: ['sessions', 'rows', 0], data: { user: 'alice' }, go: null }, view);
-  assert.equal(list.arrival.patch.tab, 'sessions');
-  assert.equal(list.arrival.anchor, 'sec-ranked-sessions');
-  assert.match(list.where, /^Agents › Sessions$/);
-  // the session asked about, as a whole
-  const whole = C.target({ path: ['session', 'gist'], data: 'x', go: null }, view);
-  assert.equal(whole.arrival.patch.tab, 'sessions');
-  assert.equal(whole.arrival.patch.traj, SID);
-  // an agent's row that is a session opens the session, its panel a link of its own
-  const other = 'login1|2026-11-20|agent|apid:7';
-  const row = C.target({ path: ['panels', 'cascades', 'trees', 0], data: { sid: other, user: 'bob' }, go: null }, view);
-  assert.equal(row.arrival.patch.tab, 'sessions');
-  assert.equal(row.arrival.patch.traj, other);
-  assert.equal(row.where, 'Agents › Sessions › Session inspector');
-  assert.ok(row.also, 'the panel it was read from');
-  // a session open on this page, under a portrait on Users as beside the list, is cited where it is open
-  assert.match(source('lib/cites.ts'), /a\.patch\.traj != null && a\.patch\.traj === from\.traj \? \{ \.\.\.a, patch: \{ \.\.\.a\.patch, tab: from\.tab \} \}/);
+  assert.match(source('lib/cites.ts'), /const q = urlQuery\(patched\(from, a\.patch\)\);/);
 });
 
 test("the popped-out tree's way back opens its session on the Sessions tab", async () => {

@@ -232,7 +232,7 @@ test('the bare address opens Summary; a link the page wrote before it was first 
   // App: Summary is the first tab, so a tab that is not there opens it too, and the setup screen takes it over
   const app = source('App.tsx');
   assert.equal(tabsOf(app)[0][0], 'summary');
-  assert.match(app, /const tab = tabs\.find\(\(t\) => t\.k === url\.tab && t\.k !== 'chat'\) \|\| tabs\[0\];/);
+  assert.match(app, /const tab = tabs\.find\(\(t\) => t\.k === url\.tab\) \|\| tabs\[0\];/);
   assert.match(app, /case 'summary':\s*return <SummaryTab P=\{P\} traj=\{traj\.data\} trajError=\{traj\.error\} cls=\{cls\} go=\{goPart\} href=\{hrefTo\} \/>;/);
   assert.match(app, /const setup = empty && tab\.k !== 'feeds' && tab\.k !== 'trend';/);
   // one request of its own: /api/status, asked by the tab while it is open
