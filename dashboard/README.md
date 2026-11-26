@@ -100,19 +100,52 @@ missing, the exact `serve` command, and `ssh -N -L <port>:127.0.0.1:<port> <you>
 
 ## Configuration
 
-Each key resolves **separately**: **CLI flag > `RC_DASH_*` env var > config file > built-in
-default**, and a flag you don't pass never outranks the file. `print-config` prints the resolved
-tree with each key's `_origin`; `print-config --reference` prints **every setting with its
-built-in default** as a TOML file, each with the variable that sets it (made from `config.py`'s
-defaults, so it cannot drift from the code; `tests/test_config.py` reads it back).
+Each setting resolves **separately**: **CLI flag > `RC_DASH_*` env var > config file > built-in
+default**, and a flag you don't pass never outranks the file. A site chooses the eighteen below.
+[`dashboard.example.toml`](dashboard.example.toml) sets four of them, and `init` writes a file with
+the ones it asks. `print-config --reference` prints all eighteen as a TOML file, each with its
+default on this host and a line of help; `print-config` prints each one resolved, with where it
+came from (`_origin`).
+
+| Setting | Variable | Default | What |
+|---|---|---|---|
+| `feeds.ebpf.roots` | `RC_DASH_EBPF_ROOTS`, `--ebpf-root` | where the collector writes by default | where its eBPF tier writes: every candidate that exists is read, and a glob may name many ([The two feeds](#the-two-feeds)) |
+| `feeds.ebpf_node.roots` | `RC_DASH_NODE_ROOTS`, `--node-root` | the same | where its node tier writes |
+| `site.name` | `RC_DASH_SITE_NAME` | this host's name | under the sidebar title, in the browser tab and on the sign-in form, so two instances side by side are told apart |
+| `site.description` | `RC_DASH_SITE_DESC` | none | a few words on what it watches |
+| `slurm.enabled` | `RC_DASH_SLURM` | `true` | the HPC tab and reducing for it; *Who uses what*'s units asked of Slurm go with it |
+| `ui.node_noun` | `RC_DASH_NODE_NOUN` | `login nodes` | what every page calls the hosts |
+| `anonymize.enabled` | `RC_DASH_ANONYMIZE` | `false` | an alias for every user name ([Anonymized names](#anonymized-names)) |
+| `filters.drop_global` | `RC_DASH_DROP_USERS`, comma-separated | none | accounts whose every record is dropped, such as a deployment's own; `/api/feeds` counts them (`excluded.users`) |
+| `live.retention_min` | `RC_DASH_RETENTION_MIN`, `--retention-min` | `10080`, 7 days | what the service holds, and the widest window ([The time window](#the-time-window)) |
+| `history.days` | `RC_DASH_HISTORY_DAYS` | `0`, every day | the newest days kept as Parquet ([History in Parquet](#history-in-parquet)) |
+| `cache.dir` | `RC_DASH_CACHE_DIR` | `dashboard/.cache` | the saved builds, the history store, the roll-up table and the salt ([Backup and restore](#backup-and-restore)) |
+| `risk.profile` | `RC_DASH_RISK_PROFILE` | none | a cluster's risk rules ([Risk rules differ by cluster](#risk-rules-differ-by-cluster)) |
+| `clock.as_of` | `RC_DASH_AS_OF`, `--as-of` | the wall clock | the present, pinned for a capture ([A capture from another cluster](#a-capture-from-another-cluster)) |
+| `server.host` | `RC_DASH_HOST`, `--host` | `127.0.0.1` | the address to listen on |
+| `server.port` | `RC_DASH_PORT`, `--port` | `8080` | the port |
+| `server.allowed_hosts` | `RC_DASH_ALLOWED_HOSTS` | none | names the page may be reached by besides loopback and `server.host` ([Password](#password)) |
+| `server.auth.password_hash_file` | `RC_DASH_PASSWORD_HASH_FILE` | none | the password's hash ([Password](#password)) |
+| `server.auth.open` | `RC_DASH_OPEN`, `--open` | `false` | no password ([Password](#password)) |
+
+Every other setting is **internal**: it tunes the reducers, caches and workers, and its default is
+the answer. It still loads from the file, a variable or a flag, and `print-config` shows one that
+is set; `print-config --reference --all` (or `print-config --all`, resolved) lists every one, and
+the sections below name those each mechanism reads. A new setting is internal unless every site
+must choose it (`config.PUBLIC`, which a test holds to this table). Two internal settings a site
+may still meet:
+
+- `filters.drop_agent` (`RC_DASH_DROP_AGENT_USERS`, comma-separated) drops only the records classed
+  agent of the accounts it names, such as a site's monitoring account's, where `filters.drop_global`
+  drops every record of theirs. Neither names anyone by default (`run-dev.sh` and `run-fasrc.sh` set
+  both for their site); `/api/feeds` counts what was dropped (`excluded.users`).
+- `ui.show_internal` (`RC_DASH_SHOW_INTERNAL=1`, off by default) lists the Internal tab, the figures
+  whose reading is not settled yet, in the page's rail. Like the rest of `ui`, it changes no number
+  and no saved build.
 
 - **The file is TOML or JSON**, the same settings in the same shape: TOML when its name ends in
-  `.toml` (read with `tomllib`), JSON otherwise (`//`-prefixed keys are comments). Start from
-  [`dashboard.example.toml`](dashboard.example.toml), a dozen lines: copy it to
-  `dashboard/dashboard.toml`, or let `init` write one. [`dashboard.config.example.json`](dashboard.config.example.json)
-  is a commented JSON example whose every value is the built-in default (a test holds them equal).
-  Both checks below apply to either format, and a TOML date (`as_of = 2026-11-02T09:00:00`) reads
-  as the text it was written as.
+  `.toml` (read with `tomllib`), JSON otherwise (`//`-prefixed keys are comments). A TOML date
+  (`as_of = 2026-11-02T09:00:00`) reads as the text it was written as.
 - **Which file.** `--config` or `RC_DASH_CONFIG`; else `dashboard/dashboard.toml` or
   `dashboard/dashboard.config.json`, whichever exists. Both existing stops the service, naming the
   one changed last: keep one.
@@ -120,8 +153,9 @@ defaults, so it cannot drift from the code; `tests/test_config.py` reads it back
   `server.static_dir = "dashboard/web/dist"`), wherever the service is started from, and `~` is a
   home; installed without a checkout, a relative path is beside the file. The settings this applies
   to are `config.PATH_KEYS`: the feed roots, `cache.dir`, `history.dir`, `rollup.dir`,
-  `server.static_dir`, `server.auth.password_hash_file` and `status.transport_files`. `risk.profile` stays under `dashboard/`, as it always was. A path given
-  by a flag or a variable is the shell's, under the working directory.
+  `server.static_dir`, `server.auth.password_hash_file` and `status.transport_files`.
+  `risk.profile` stays under `dashboard/`, as it always was. A path given by a flag or a
+  variable is the shell's, under the working directory.
 - Path defaults are **candidate lists**, and every candidate that exists is read: `print-config`
   lists those (`_existing`, a glob pattern's matches included), and `check-feeds` prints every
   candidate and what it found there.
@@ -139,22 +173,6 @@ defaults, so it cannot drift from the code; `tests/test_config.py` reads it back
   removed) and every variable that set one (`RC_DASH_ANNOTATE`, `RC_DASH_ANNOTATE_*`,
   `RC_DASH_EXPORT_MAX_ROWS`, `RC_DASH_ASK` and its `RC_DASH_ASK_*`), which `/api/config` never
   shows.
-- `history` and `ingest` are under [History in Parquet](#history-in-parquet) and
-  [Hourly merge-reduce](#hourly-merge-reduce).
-- `filters.drop_global` (`RC_DASH_DROP_USERS`, comma-separated) drops every record of the accounts
-  it names; `filters.drop_agent` (`RC_DASH_DROP_AGENT_USERS`) only their records classed agent,
-  such as a site's monitoring account's. Neither names anyone by default (`run-dev.sh` and
-  `run-fasrc.sh` set both for their site). `/api/feeds` counts what was dropped (`excluded.users`).
-- `site.name` (`RC_DASH_SITE_NAME`) is shown under the sidebar title, in the browser tab and on the
-  sign-in form, so two instances open side by side are not mistaken for each other. Empty, the
-  page and the form name the dashboard's host instead (`/api/config`'s `_meta.host`).
-- `slurm.enabled` (`RC_DASH_SLURM=0`) turns the HPC tab off and skips reducing it, for a cluster
-  without Slurm; *Who uses what*'s units asked of Slurm go with it.
-- `ui.show_internal` (`RC_DASH_SHOW_INTERNAL=1`, off by default) lists the Internal tab, the
-  figures whose reading is not settled yet, in the page's rail. Like the rest of `ui`, it changes
-  no number and no saved build.
-- `status.transport_files` and `status.stale_s` are under
-  [Is the collection working?](#is-the-collection-working-status).
 
 ### The time zone
 
