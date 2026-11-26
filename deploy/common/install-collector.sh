@@ -24,7 +24,7 @@
 # for deploy/common/uninstall.sh. Run it again after a `git pull`: the units are written
 # again, and a running collector keeps running -- a restart flushes every live process as
 # `truncated` -- so restart it when you choose:
-#   systemctl restart ebpfm ebpfm-node
+#   systemctl restart ebpfm          (both tiers: ebpfm-node.service is part of it)
 # Except one started without EBPFM_GROUP=<the group>, which reads it only at start and would
 # give every file it makes from now on to root alone: that is refused, unless --restart lets
 # this restart it.

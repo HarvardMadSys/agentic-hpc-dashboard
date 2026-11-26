@@ -35,8 +35,8 @@ page has an HPC tab is asked (`SLURM`), never guessed from root. Edit the file a
 
 | Unit | Runs | As | Made by |
 |---|---|---|---|
-| `ebpfm.service` | the collector's eBPF tier, `collector/ebpf_trace.py` | root | [`common/install-collector.sh`](common/install-collector.sh) (`ebpfm.sh install-unit`) |
-| `ebpfm-node.service` | the collector's node tier, a snapshot every 5 minutes | root | the same |
+| `ebpfm.service` | the collector's eBPF tier, `collector/ebpf_trace.py`; starting, stopping or restarting it does the same to the node tier's unit | root | [`common/install-collector.sh`](common/install-collector.sh) (`ebpfm.sh install-unit`) |
+| `ebpfm-node.service` | the collector's node tier, a snapshot every 5 minutes; part of `ebpfm.service`, and alone where the eBPF tier cannot run | root | the same |
 | `rc-dashboard.service` | `rc_dashboard serve`, on `127.0.0.1:8080` behind a password; its memory cap in `rc-dashboard.service.d/50-memory.conf` | `rc-dashboard` | [`common/install-dashboard.sh`](common/install-dashboard.sh) |
 | `rc-dashboard-check.timer` | [`common/check.sh`](common/check.sh) every hour: `rc-dashboard status` ([Watching it](#watching-it)) | `rc-dashboard` | the same |
 | `rc-pull.service` (fleet) | [`fleet/pull.py`](fleet/pull.py) `loop`, the copy of every node | `rc-dashboard` | the same, `fleet` |
@@ -155,7 +155,7 @@ change:
 | `NODE_NOUN` | what every page calls the hosts (`RC_DASH_NODE_NOUN`) | "servers", or "login nodes" with `SLURM=yes` |
 | `SITE_NAME`, `SITE_DESCRIPTION` | the name every page shows, and a few words on what it watches (`RC_DASH_SITE_NAME`, `RC_DASH_SITE_DESC`) | "servers · live" |
 | `ANONYMIZE` | an alias for every user name (`RC_DASH_ANONYMIZE`) | off |
-| `MEMORY_MAX` (or `DASH_MEMORY_MAX`) | the dashboard's hard memory cap (the drop-in) | 8G |
+| `MEMORY_MAX` (or `DASH_MEMORY_MAX`) | the dashboard's hard memory cap (the drop-in) | half the host's memory, from 2G to 32G |
 | `FREE_MIN_GB` | (fleet) nothing copied below this much free space (`FLEET_FREE_MIN_GB`) | 10 |
 | `NODES` | (fleet) the nodes of the `fleet.env` the first install makes; after it, `add-node` and `remove-node` (a fleet emptied by `remove-node` stays empty) | |
 
@@ -175,9 +175,9 @@ The installers' own answers come from their environment, else from
 | `COLLECTOR_GROUP` | `ebpfm` | the group that may read it (saved as `EBPFM_GROUP`) |
 | `SERVICE_USER`, `PULL_USER` | `rc-dashboard`, `rc-pull` | the dashboard's account; the account the copy logs in to the nodes as |
 | `ETC`, `STATE`, `OPT` | `/etc/rc-dashboard`, `/var/lib/rc-dashboard`, `/opt/rc-dashboard` | the folders above (`install.env` stays at `/etc/rc-dashboard/install.env`, so a run finds it whatever `ETC` is) |
-| `MEMORY_MAX` | `8G` | the dashboard's hard memory cap, in `rc-dashboard.service.d/50-memory.conf`: written when there is none, or when `MEMORY_MAX` is given; a plain rerun leaves it, so `systemctl edit rc-dashboard` stays |
+| `MEMORY_MAX` | half the host's memory (to the nearest gigabyte), from 2G to 32G; 8G where `/proc/meminfo` cannot be read | the dashboard's hard memory cap, in `rc-dashboard.service.d/50-memory.conf`: written when there is none, or when `MEMORY_MAX` is given; a plain rerun leaves it, so `systemctl edit rc-dashboard` stays. The first install's choice is saved, and kept; a run says when the cap is more than the host has, which then caps nothing |
 
-Raise `MEMORY_MAX` with the fleet: [Memory and disk](../hpc/deploy/README.md#memory-and-disk)
+Past 32G, raise `MEMORY_MAX` with the fleet: [Memory and disk](../hpc/deploy/README.md#memory-and-disk)
 has measurements over 8 busy login nodes, and the settings that trade history for memory.
 
 ## Upgrading
@@ -207,7 +207,7 @@ the memory drop-in): an upgrade is the same command, with nothing to repeat.
 after a kernel upgrade, which needs matching headers. The dashboard is installed again and
 restarted. The collector's units are written again, but a running collector keeps
 running: its restart flushes every live process as `truncated`, so choose the moment,
-`sudo systemctl restart ebpfm ebpfm-node`. The exception is a collector started before its
+`sudo systemctl restart ebpfm` (both tiers: `ebpfm-node` is part of it). The exception is a collector started before its
 output had a group: it reads the group only at start, and would make every new file
 root's alone, the dashboard's reads included. The installer refuses to leave it so, and
 restarts it only when given `--restart`. An install made before `install.env` existed has

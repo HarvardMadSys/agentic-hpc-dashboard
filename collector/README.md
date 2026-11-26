@@ -57,9 +57,10 @@ then waits for evidence that each collects, the eBPF tier's `meta` record and th
 tier's first snapshot, and prints the log's last lines if one dies (exit 1; 4 if a tier is
 not confirmed within the wait). `install-unit` writes two persistent units with this
 folder's paths filled in: `ebpfm.service` (`Restart=on-failure`, `Slice=system.slice`) and
-`ebpfm-node.service`, the node tier's loop. It enables neither:
-`systemctl enable --now ebpfm ebpfm-node`; `install` does that and the rest of a first
-install. While `ebpfm-node` is active, `start`, `stop` and `status` defer to it, and
+`ebpfm-node.service`, the node tier's loop, which is part of `ebpfm.service`: starting,
+stopping or restarting `ebpfm` does the same to both tiers, and `ebpfm-node` runs on alone
+where the eBPF tier cannot. It enables neither: `systemctl enable --now ebpfm ebpfm-node`;
+`install` does that and the rest of a first install. While `ebpfm-node` is active, `start`, `stop` and `status` defer to it, and
 `install-unit` refuses while a loop `start` began still runs, so the loop never runs twice.
 The node unit collects in `SNAPSHOT_MODE=node`; on a host without the eBPF tier, set
 `SNAPSHOT_MODE=full` in `/etc/default/ebpfm` (`install` does, while the eBPF tier fails

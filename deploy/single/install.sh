@@ -15,7 +15,7 @@
 # deploy/common/password.sh.
 #
 # Run it again after a `git pull`: the dashboard restarts on the new code; the collector
-# keeps running until you restart it (systemctl restart ebpfm ebpfm-node).
+# keeps running until you restart it (systemctl restart ebpfm: both tiers).
 set -euo pipefail
 common=$(cd "$(dirname "$0")/../common" && pwd)
 collector=() dashboard=()
