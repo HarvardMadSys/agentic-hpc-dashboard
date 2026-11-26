@@ -18,12 +18,6 @@
  "//filters": "The account that runs the senders on the nodes: its processes are the stream, not a user's work. DROP_USERS and DROP_AGENT_USERS in site.env add accounts: every record of theirs, or their agents' only.",
  "filters": {"drop_global": @DROP_GLOBAL_JSON@, "drop_agent": @DROP_AGENT_JSON@},
  "anonymize": {"enabled": @ANONYMIZE@},
- "ask": {
-  "enabled": @ASK_ENABLED@,
-  "command": ["systemd-run", "--user", "--scope", "--quiet", "--collect", "-p", "MemoryMax=1G",
-              @CODEX_JSON@, "exec", "--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only",
-              "--color", "never", "--json", "-C", "{workdir}", "-o", "{answer_file}", "{model_flag}", "-"]
- },
  "site": {"name": @SITE_NAME_JSON@, "description": @SITE_DESCRIPTION_JSON@},
  "//slurm": "A cluster's login nodes run Slurm: the HPC tab, unless site.env says SLURM=no. NODE_NOUN is what every page calls them.",
  "slurm": {"enabled": @SLURM@},

@@ -138,8 +138,11 @@ class Settings(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(cfg.get("server.auth." + key), val)
                 self.assertEqual(cfg.origin("server.auth." + key), "env:" + var)
-                self.assertIn("%s = " % key, configmod.reference_toml())
-                self.assertIn("# " + var, configmod.reference_toml())
+                # in the whole reference; the two that turn it on in a site's own too
+                self.assertIn("%s = " % key, configmod.reference_toml(everything=True))
+                self.assertIn("# " + var, configmod.reference_toml(everything=True))
+                self.assertEqual("%s = " % key in configmod.reference_toml(),
+                                 key in ("proxy_header", "proxy_secret_file"))
         p = auth.proxy_from_config(cfg)
         self.assertEqual((p.header, p.groups_header, p.groups, p.logout_url),
                          ("X-Forwarded-User", "X-Forwarded-Groups",

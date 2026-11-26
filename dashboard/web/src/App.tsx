@@ -9,10 +9,7 @@ import { Fragment, Suspense, useCallback, useEffect, useMemo, useRef, useState }
 import { useConfig, useFeeds, usePanels, useTrajectories, useWindows } from './api/hooks';
 import { useLive } from './api/useLive';
 import type { Transport } from './api/useLive';
-import { getAskInfo } from './api/client';
-import type { AskInfo, Cls, Facets, FeedReport, FeedStatus, TrajOrder, TrajRank } from './api/types';
-import { AskScopeCtx } from './components/Ask';
-import type { AskScope } from './components/Ask';
+import type { Cls, Facets, FeedReport, FeedStatus, TrajOrder, TrajRank } from './api/types';
 import { ClassFilter } from './components/ClassFilter';
 import { WhoFilter } from './components/WhoFilter';
 import { IoCmdsDrawer } from './components/IoCmds';
@@ -25,7 +22,7 @@ import { TooltipLayer } from './components/Tooltip';
 import { ago, fint, lagStr } from './lib/format';
 import { whoQuery } from './lib/filters';
 import type { Who } from './lib/filters';
-import { UrlCtx, useUrlState } from './lib/useUrlState';
+import { useUrlState } from './lib/useUrlState';
 import type { Panels } from './lib/panels';
 import { useStickyBar } from './lib/sticky';
 import { FrameCtx, PinnedCtx } from './lib/useNow';
@@ -36,7 +33,6 @@ import { LogoGlyph } from './components/Logo';
 import type { IconName } from './components/Icon';
 import { CommandPalette } from './components/CommandPalette';
 import type { PaletteItem } from './components/CommandPalette';
-import { arriveFromHash } from './lib/cites';
 import type { SessionNav } from './tabs/OpenSession';
 import { LiveTab } from './tabs/LiveTab';
 import { OverviewTab } from './tabs/OverviewTab';
@@ -55,7 +51,6 @@ import { zoneLabel } from './lib/zone';
 import { useServiceZone } from './lib/useZone';
 import { SetupScreen, noData } from './components/SetupScreen';
 import { signIn } from './lib/auth';
-import { AskDrawer } from './components/AskDrawer';
 
 /* Live is the first paint, with the shell; every other tab loads its code
  * apart, fetched as soon as the page is idle (lib/lazyTab.tsx). The sessions
@@ -71,7 +66,6 @@ const AgentsTab = lazyTab(() => import('./tabs/AgentsTab').then((m) => m.AgentsT
 const TrajectoriesTab = lazyTab(() => import('./tabs/TrajectoriesTab').then((m) => m.TrajectoriesTab));
 const SlurmTab = lazyTab(() => import('./tabs/SlurmTab').then((m) => m.SlurmTab));
 const FeedsTab = lazyTab(() => import('./tabs/FeedsTab').then((m) => m.FeedsTab));
-const ChatTab = lazyTab(() => import('./tabs/ChatTab').then((m) => m.ChatTab));
 const UsersTab = lazyTab(() => import('./tabs/UsersTab').then((m) => m.UsersTab));
 const TrendTab = lazyTab(() => import('./tabs/TrendTab').then((m) => m.TrendTab));
 
@@ -88,12 +82,10 @@ const TrendTab = lazyTab(() => import('./tabs/TrendTab').then((m) => m.TrendTab)
  *   Usage   › Login nodes (CPU, memory, I/O) · HPC (the scheduler) · Trend (each class over a year)
  *   System  › Feeds · Internal (only where `ui.show_internal` lists it)
  *
- * Ask LLM is not a stop: it asks about the window on screen, so it opens beside
- * whatever tab is open (the head's Ask button), and only where a site turned it
- * on. Every tab keeps its key, so `?tab=resources`, a citation and every link
- * into a tab land where they always did; old keys still open (lib/filters.ts
- * TAB_ALIAS): cascades -> agents, trajectories -> sessions, io -> resources,
- * sandbox -> security, overview -> live, hpc -> slurm; `?tab=chat` opens Ask. */
+ * Every tab keeps its key, so `?tab=resources` and every link into a tab land
+ * where they always did; old keys still open (lib/filters.ts TAB_ALIAS):
+ * cascades -> agents, trajectories -> sessions, io -> resources, sandbox ->
+ * security, overview -> live, hpc -> slurm. */
 /* `also`: the names a tab had before, which "go to" still finds it by. */
 type Parent = 'agents' | 'risk' | 'usage' | 'system';
 type Tab = { k: string; lbl: string; eyebrow: string; icon: IconName; group: string; parent?: Parent; also?: string };
@@ -109,8 +101,6 @@ const TABS: Tab[] = [
   { k: 'trend', lbl: 'Trend', eyebrow: 'each class’s use over up to a year, from the roll-up table', icon: 'trend', group: 'Monitor', parent: 'usage', also: 'year history growth' },
   { k: 'feeds', lbl: 'Feeds', eyebrow: 'where the data comes from, and how fresh it is', icon: 'feeds', group: 'More', parent: 'system', also: 'provenance data sources collectors settings version' },
   { k: 'internal', lbl: 'Internal', eyebrow: 'panels not settled yet', icon: 'internal', group: 'More', parent: 'system' },
-  // not a stop in the rail: a drawer beside the open tab (`AskDrawer`); kept so `?tab=chat` opens it
-  { k: 'chat', lbl: 'Ask LLM', eyebrow: 'ask a language model about this window', icon: 'chat', group: 'More' },
 ];
 /** A parent entry: the rail's stop for its sub-tabs, and the head's title. The
  *  usage entry's first sub-tab is named in the site's own word for its hosts
@@ -272,8 +262,6 @@ export default function App() {
   const setTfrom = useCallback((t: number | null) => setUrl({ tfrom: t }, true), [setUrl]);
   const setTorder = useCallback((o: TrajOrder) => setUrl({ torder: o }), [setUrl]);
   const clearUser = useCallback(() => setUrl({ tuser: null }), [setUrl]);
-  // a page opened from an answer's citation goes to what it cites, once
-  useEffect(() => arriveFromHash(), []);
   // The other tabs' code, fetched once the page is idle after its first
   // paint: a tab opened later is drawn at once, with no wait.
   useEffect(() => {
@@ -355,10 +343,10 @@ export default function App() {
   // A cluster without Slurm sets `slurm.enabled: false`; its tab goes away.
   const slurmLeaf = (config.data?.slurm as Record<string, { _value?: unknown }> | undefined)?.enabled;
   const tabs = TABS.filter((t) => t.k !== 'slurm' || slurmLeaf?._value !== false);
-  // A tab that is not here -- an old link to Search & export (`?tab=events`),
-  // since removed, or HPC where it is off -- opens the first; so does `?tab=chat`,
-  // with Ask open beside it (`askOpen`).
-  const tab = tabs.find((t) => t.k === url.tab && t.k !== 'chat') || tabs[0];
+  // A tab that is not here -- an old link to Search & export (`?tab=events`) or
+  // to Ask LLM (`?tab=chat`), both since removed, or HPC where it is off --
+  // opens the first.
+  const tab = tabs.find((t) => t.k === url.tab) || tabs[0];
   // Internal's panels are not settled: listed in the rail only where the site
   // asks (`ui.show_internal`), or while it is the tab open. A link still opens it.
   const showInternal =
@@ -380,7 +368,7 @@ export default function App() {
   type RailItem = { key: string; lbl: string; icon: IconName; group: string; tabs: Tab[] };
   const railItems: RailItem[] = [];
   for (const t of tabs) {
-    if (t.k === 'chat' || (t.k === 'internal' && !showInternal && tab.k !== 'internal')) continue;
+    if (t.k === 'internal' && !showInternal && tab.k !== 'internal') continue;
     const key = t.parent ?? t.k;
     const have = railItems.find((r) => r.key === key);
     if (have) have.tabs.push(t);
@@ -557,37 +545,6 @@ export default function App() {
       document.body.classList.remove('noscroll');
     };
   }, [navOpen]);
-  // The agent behind every "ask" button: asked for once. Failing that, the
-  // buttons stay hidden -- a question that cannot run is not offered.
-  const [askInfo, setAskInfo] = useState<AskInfo | null>(null);
-  useEffect(() => {
-    const ac = new AbortController();
-    getAskInfo(ac.signal).then(setAskInfo).catch(() => {});
-    return () => ac.abort();
-  }, []);
-  // Ask LLM asks about the window on screen, so it opens beside the open tab
-  // (a drawer, from the head's Ask button) rather than in place of it; and only
-  // where a site turned it on (`ask.enabled`): a rail stop that said "chat is
-  // turned off" on every dashboard that had not was a dead end.
-  const askOn = askInfo?.enabled === true;
-  const [askOpen, setAskOpen] = useState<boolean>(() => OPENED_ON === 'chat');
-  const closeAsk = useCallback(() => setAskOpen(false), []);
-  // a link to the old Ask tab (`?tab=chat`) opens Live, with Ask beside it
-  useEffect(() => {
-    if (OPENED_ON === 'chat') setUrl({ tab: 'live' });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  const askScope: AskScope = useMemo(
-    () => ({
-      info: askInfo,
-      windowMin: resolvedWin?.minutes ?? null,
-      windowLabel: resolvedWin?.label ?? null,
-      who,
-      cls: url.cls,
-      tab: tab.lbl,
-    }),
-    [askInfo, resolvedWin?.minutes, resolvedWin?.label, who, url.cls, tab.lbl],
-  );
   const hl = headline(feeds.data);
   // The header says one thing about the data: the pill (pillOf). What stands
   // behind it -- the newest record's age, each feed past its own limit, the
@@ -744,7 +701,7 @@ export default function App() {
   // it is open; closed, it is handed nothing and is not drawn again.
   const paletteItems: PaletteItem[] = !paletteOpen ? NO_ITEMS : [
     ...tabs
-      .filter((t) => (t.k !== 'chat' || askOn) && (t.k !== 'internal' || showInternal))
+      .filter((t) => t.k !== 'internal' || showInternal)
       .map((t) => ({
         id: `tab:${t.k}`,
         group: 'Tabs',
@@ -754,7 +711,7 @@ export default function App() {
         icon: t.icon,
         // the old tab names still find where their panels went
         keywords: `${t.group}${t.also ? ` ${t.also}` : ''}`,
-        run: t.k === 'chat' ? () => setAskOpen(true) : () => goTab(t.k),
+        run: () => goTab(t.k),
       })),
     ...secs.map((s) => ({
       id: `sec:${s.id}`,
@@ -1087,17 +1044,6 @@ export default function App() {
                 fake data
               </span>
             )}
-            {askOn && (
-              <button
-                className={`btn askhead${askOpen ? ' on' : ''}`}
-                aria-pressed={askOpen}
-                onClick={() => setAskOpen((o) => !o)}
-                data-tip="ask a language model about the window on screen"
-              >
-                <Icon name="chat" size={16} />
-                Ask
-              </button>
-            )}
             {/* the one zone every time on the page is in: a tab stop, so its
                 words reach the keyboard and a screen reader */}
             <span className="pill zone" data-tip={zl.tip} tabIndex={0}>
@@ -1189,30 +1135,12 @@ export default function App() {
           </>
         )}
 
-        <AskScopeCtx.Provider value={askScope}>
-          {/* a tab whose code has not come yet draws nothing under the controls until it has */}
-          <TabBoundary key={`${tab.k}|${tzKey}`}>
-            <Suspense fallback={null}>{body}</Suspense>
-          </TabBoundary>
-        </AskScopeCtx.Provider>
+        {/* a tab whose code has not come yet draws nothing under the controls until it has */}
+        <TabBoundary key={`${tab.k}|${tzKey}`}>
+          <Suspense fallback={null}>{body}</Suspense>
+        </TabBoundary>
       </main>
       <IoCmdsDrawer win={url.win} who={who} cls={cls} />
-      {askOn && askOpen && (
-        <AskDrawer onClose={closeAsk}>
-          <AskScopeCtx.Provider value={askScope}>
-            <TabBoundary key="chat">
-              <Suspense fallback={null}>
-                <ChatTab
-                  windowMin={resolvedWin?.minutes ?? null}
-                  windowLabel={resolvedWin?.label ?? null}
-                  openUserTraj={openUserTraj}
-                  goto={goto}
-                />
-              </Suspense>
-            </TabBoundary>
-          </AskScopeCtx.Provider>
-        </AskDrawer>
-      )}
       <CommandPalette open={paletteOpen} onClose={closePalette} items={paletteItems} />
       <TooltipLayer />
     </div>
@@ -1220,12 +1148,9 @@ export default function App() {
   return (
     <NodeNounCtx.Provider value={nodeNoun}>
       {/* Text read against the clock renders again with each live frame, and
-          the frozen-capture wording when the clock's pin flips (lib/useNow.ts);
-          what is drawn from the URL itself, when it changes (UrlCtx). */}
+          the frozen-capture wording when the clock's pin flips (lib/useNow.ts). */}
       <FrameCtx.Provider value={live.receivedAt}>
-        <PinnedCtx.Provider value={live.live?.clock?.pinned === true}>
-          <UrlCtx.Provider value={url}>{page}</UrlCtx.Provider>
-        </PinnedCtx.Provider>
+        <PinnedCtx.Provider value={live.live?.clock?.pinned === true}>{page}</PinnedCtx.Provider>
       </FrameCtx.Provider>
     </NodeNounCtx.Provider>
   );

@@ -1,6 +1,5 @@
 """Basis notes -- `notes`, `basis` and every `*_basis` key, which say in words how a
-panel counts -- stay off the page's payloads, which show none of them, and stay in
-what Ask LLM reads: its one-panel questions keep them (`ask.LOCAL_KEEP`).
+panel counts -- stay off the page's payloads, which show none of them.
 
     cd dashboard && .venv/bin/python -m unittest tests.test_basis -q
 """
@@ -61,19 +60,6 @@ class PagePayloadTest(Served):
                 status, body = self.get(path)
                 self.assertEqual(status, 200, body[:200])
                 self.assertEqual(basis_keys(json.loads(body)), [])
-
-    def test_ask_still_reads_them(self):
-        # the payloads Ask reads, in process, still hold them...
-        agg = self.app.state.agg
-        panels = agg.panels(None)
-        self.assertIn("notes", panels["panels"]["io_process"])
-        self.assertIn("cpu_basis", panels["panels"]["resources"])
-        self.assertIn("basis", agg.trajectories(None))
-        # ... and a question about one panel hands them to the model
-        prompt = self.asked({"parts": [{"panel": "resources", "keys": ["by_class", "cpu_basis"]},
-                                       {"panel": "io_process"}]})
-        self.assertIn('"cpu_basis"', prompt)
-        self.assertIn('"notes"', prompt)
 
 
 if __name__ == "__main__":

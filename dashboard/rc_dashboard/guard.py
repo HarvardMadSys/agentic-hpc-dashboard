@@ -138,8 +138,9 @@ class SiteGuard:
 
 class JsonOnly:
     """ASGI: a request under /api with any method but GET, HEAD and OPTIONS --
-    one that may change something, or start an agent -- must say its body is
-    JSON, or gets a 415 before it is read. A form or a text/plain body is what
+    one that may change something -- must say its body is JSON, or gets a 415
+    before it is read. No route under /api takes one today; this holds for any
+    added later. A form or a text/plain body is what
     a page on another site can send without the browser first asking this
     service (a CORS preflight, which it never answers); a JSON one it cannot.
     Inside the sign-in, so a request without the password is told that first."""

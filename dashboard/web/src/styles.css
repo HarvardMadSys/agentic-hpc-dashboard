@@ -3532,44 +3532,46 @@ th.sortable:focus-visible {
   font-size: 12px;
 }
 
-/* Ask LLM beside the open tab (components/AskDrawer.tsx) */
-.askhead {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+/* where a link lands (lib/cites.ts `go`): a table row lights its cells, since
+   an outline on a row is not drawn by every browser */
+.cite-hit:not(tr) {
+  animation: cite-ring 2.6s ease-out;
 }
-.askhead.on {
-  border-color: var(--ink-2);
+tr.cite-hit > td,
+tr.cite-hit > th {
+  animation: cite-wash 2.6s ease-out;
 }
-.askdrawer-wrap {
-  position: fixed;
-  inset: 0;
-  z-index: 30;
-  background: color-mix(in srgb, var(--ink) 12%, transparent);
+@keyframes cite-ring {
+  0%,
+  35% {
+    outline: 2px solid var(--crimson);
+    outline-offset: 2px;
+  }
+  100% {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+  }
 }
-.askdrawer {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(760px, 96vw);
-  display: flex;
-  flex-direction: column;
-  background: var(--bg, var(--surface));
-  border-left: 1px solid var(--edge);
-  box-shadow: -8px 0 24px color-mix(in srgb, var(--ink) 14%, transparent);
-  outline: none;
+@keyframes cite-wash {
+  0%,
+  35% {
+    background-color: var(--crimson-wash);
+  }
+  100% {
+    background-color: transparent;
+  }
 }
-.askdrawer-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding: 14px 18px 10px;
-  border-bottom: 1px solid var(--rule);
-}
-.askdrawer-body {
-  overflow-y: auto;
-  padding: 14px 16px 18px;
+@media (prefers-reduced-motion: reduce) {
+  .cite-hit:not(tr) {
+    animation: none;
+    outline: 2px solid var(--crimson);
+    outline-offset: 2px;
+  }
+  tr.cite-hit > td,
+  tr.cite-hit > th {
+    animation: none;
+    background-color: var(--crimson-wash);
+  }
 }
 
 /* "copy CSV" on a panel that draws a table (components/CopyCsv.tsx): quiet,

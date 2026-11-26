@@ -26,10 +26,11 @@ module; `docs/README.md` indexes the rest.
     `*.md` alone) builds the dashboard's wheel and image; a push to `develop` also pushes the
     image to GHCR as `edge`.
   - A `v*.*.*` tag runs all four whatever it changes: it publishes the collector's and the
-    dashboard's `X.Y.Z`, `X.Y` and `latest` images and attaches the RPM and the dashboard's
-    wheel to the tag's GitHub Release, creating the release if there is none (the dashboard
-    takes only `vX.Y.Z`, whose version it stamps into the wheel and image). Push a tag only
-    when a release is asked for.
+    dashboard's `X.Y.Z`, `X.Y` and `latest` images and attaches the RPM, the dashboard's
+    wheel, its pinned requirements, their checksums and the deploy kit's tarball to the tag's
+    GitHub Release, creating the release if there is none (the dashboard takes only
+    `vX.Y.Z`, whose version it stamps into the wheel, image and kit; the kits' installers
+    download from that release). Push a tag only when a release is asked for.
 
 ## Commands
 
@@ -85,10 +86,11 @@ Each is a past mistake.
 - A copy of a day-file must grow in place, never be replaced by rename (rsync's default): the
   dashboard knows a file by inode and offset, and would count a renamed copy again.
 - `dashboard/web/src/api/types.ts` mirrors the service's payloads: change them together.
-- `dashboard.config.example.json`'s values are the built-in defaults (a test holds them equal);
-  `rc-dashboard print-config --reference` is the full list. A new config section that no
-  reduction reads goes in `config.UNREDUCED`, or it changes the saved builds' and hours'
-  fingerprints and discards them.
+- A new setting is internal unless every site must choose it: then it joins `config.PUBLIC`
+  and the table in `dashboard/README.md#configuration` (a test holds them equal).
+  `rc-dashboard print-config --reference` prints the public ones, `--all` every one, both
+  generated from the defaults. A new config section that no reduction reads goes in
+  `config.UNREDUCED`, or it changes the saved builds' and hours' fingerprints and discards them.
 - `dashboard/web/mock/api.json` is generated: edit `mock/gen_fixture.mjs` and run
   `TZ=America/New_York npm run fixture`.
 - **Docs track the code**: a change to a setting, route, panel, module or command updates the

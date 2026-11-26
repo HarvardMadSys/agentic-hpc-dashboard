@@ -86,9 +86,9 @@ It says why and exits; the reasons a newcomer meets most:
 - `refusing to serve: there is no password`: make one (`rc-dashboard new-password --install …`,
   or `rc-dashboard init`), or serve open on a machine only you can reach (`--open`).
 - `<key> is not a setting; the nearest is <key>`: a typo in the config's `server`, `anonymize`
-  or `ask` section stops it; elsewhere it is a warning. `rc-dashboard print-config` shows every
-  setting and where it came from, and `rc-dashboard print-config --reference` every setting
-  there is.
+  or `ask` section stops it; elsewhere it is a warning. `rc-dashboard print-config --all` shows
+  every setting and where it came from, and `rc-dashboard print-config --reference --all` every
+  setting there is.
 - `config file <path>, named by --config, does not exist` (or by `RC_DASH_CONFIG`): a config
   file the command line or the environment names must be there.
 
@@ -130,5 +130,14 @@ roots are a pattern (`…/mirror/ebpf/*`). Sizing and measured times:
 
 ## Ask LLM is missing
 
-The head's Ask button shows only where a site turned Ask on (`ask.enabled`, `RC_DASH_ASK=1`)
-and the agent CLI it runs is on the service's host ([dashboard/README.md](../dashboard/README.md#ask-llm)).
+It was removed: it ran an agent CLI on the dashboard's host over the window, a read-only
+sandbox rather than a confined one, and sent what it read to a model's provider. A config
+that still has an `ask` section, or an `RC_DASH_ASK*` variable, starts with one warning that
+says so, and the setting is ignored.
+
+A host that had it on keeps two things it left until you remove them: `<cache.dir>/ask/`,
+whose `done.json` holds the suggestions marked done as the model wrote them (with real names
+in them if `ask.unmasked_answers` was on), and the agent CLI's login for the account the
+dashboard runs as (`~/.codex/` for Codex). Delete the folder; unless that account uses the CLI
+for anything else, log it out (`codex logout`) and revoke its key with the provider, since the
+agent's reach on this host is why Ask was removed.

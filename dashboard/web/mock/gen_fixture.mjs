@@ -2318,10 +2318,9 @@ function build() {
   };
 }
 
-/* The service's notes on how a panel counts -- `notes`, `basis`, every `*_basis` -- are kept for
- * Ask LLM, which reads its payloads in process, and left out of the routes the page reads
- * (`jsonout.strip_basis`): every object reached through objects loses them, and lists are not
- * walked. The fixture is what those routes send. */
+/* The service's notes on how a panel counts -- `notes`, `basis`, every `*_basis` -- are left out
+ * of the routes the page reads (`jsonout.strip_basis`): every object reached through objects
+ * loses them, and lists are not walked. The fixture is what those routes send. */
 const isBasis = (k) => k === 'notes' || k === 'basis' || k.endsWith('_basis');
 function stripBasis(o) {
   if (!o || typeof o !== 'object' || Array.isArray(o)) return o;

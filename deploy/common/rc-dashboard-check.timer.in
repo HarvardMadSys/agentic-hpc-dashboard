@@ -3,7 +3,7 @@
 # `journalctl -u rc-dashboard-check`.
 [Unit]
 Description=rc dashboard: run the check every hour
-Documentation=file://@REPO@/deploy/README.md
+Documentation=@DOCS@/deploy/README.md
 
 [Timer]
 OnBootSec=15min

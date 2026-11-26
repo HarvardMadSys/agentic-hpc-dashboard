@@ -47,6 +47,7 @@ MODE=${MODE:-single}
 if [ "$(id -u)" = 0 ] && [ -z "${RC_CHECK_AGAIN:-}" ]; then
   id "$SERVICE_USER" >/dev/null 2>&1 || die "no account $SERVICE_USER: is the dashboard installed here?"
   pass=(RC_CHECK_AGAIN=1 "RC_CHECK_ETC=$ETC" "RC_CHECK_VENV=$VENV" "INSTALL_ENV=$INSTALL_ENV")
+  [ -n "${UNIT_DIR:-}" ] && pass+=("UNIT_DIR=$UNIT_DIR")
   [ -n "${DRY_SLACK:-}" ] && pass+=("DRY_SLACK=$DRY_SLACK")
   [ -n "${RC_STATUS_CMD:-}" ] && pass+=("RC_STATUS_CMD=$RC_STATUS_CMD")
   exec runuser -u "$SERVICE_USER" -- env "${pass[@]}" bash "$0" "$@"
@@ -66,11 +67,26 @@ load_env() {
 load_env "$ETC/dashboard.env"
 load_env "$ETC/paths.env"
 
+# Where the unit runs the dashboard (its WorkingDirectory), so the status imports the code
+# the dashboard runs: a checkout's dashboard/ folder, whose rc_dashboard comes first on the
+# path, or a release's state folder, which holds none, so the venv's wheel imports. Not
+# this script's own kit: one from another release than the installed one (rc-deploy status
+# from a newer kit, after a rollback) holds other code. With no unit to read, a checkout's
+# folder as before.
+workdir() {
+  local wd
+  wd=$(sed -n 's/^WorkingDirectory=//p' "${UNIT_DIR:-/etc/systemd/system}/rc-dashboard.service" \
+       2>/dev/null | tail -n 1)
+  if [ -n "$wd" ] && [ -d "$wd" ]; then printf '%s' "$wd"
+  elif [ -d "$repo/dashboard/rc_dashboard" ]; then printf '%s' "$repo/dashboard"
+  else printf '/'
+  fi
+}
 status() {      # ARGS...: the dashboard's status command
   if [ -n "${RC_STATUS_CMD:-}" ]; then
     bash -c "$RC_STATUS_CMD" -- "$@"
   else
-    (cd "$repo/dashboard" && "$VENV/bin/python" -m rc_dashboard status "$@")
+    (cd "$(workdir)" && "$VENV/bin/python" -m rc_dashboard status "$@")
   fi
 }
 

@@ -15,7 +15,6 @@ the reverse-DNS names -- and is deliberately left out. What is not:
   session.key      <cache.dir>/session.key: a new one signs everyone out
   config/<name>    the config file the service reads, if it reads one
   password.hash    `server.auth.password_hash_file`, if set
-  ask-done.json    <cache.dir>/ask/done.json: Ask's suggestions marked done
 
 Each is in the tar under that name, with MANIFEST.json saying where it was, its
 mode, size and SHA-256. The tar is written 0600 beside its name and renamed into
@@ -27,6 +26,10 @@ and flags, for where the rest goes now: a backup made on one host restores onto
 another's layout. A file already there and different is replaced only with
 --force; nothing is written until every target is known to be free. Stop the
 service first: it holds the table open, and keeps the salt and key it read.
+
+A backup made before Ask LLM was removed also holds `ask-done.json`, its
+suggestions marked done (<cache.dir>/ask/done.json): `restore` leaves it out
+and says so (`RETIRED`), since nothing reads it now.
 """
 import datetime
 import hashlib
@@ -47,6 +50,9 @@ NOT_INCLUDED = ("the saved window builds, hours and panels (<cache.dir>/windows,
                 "payloads), the history store's Parquet (history.dir) and the reverse-DNS "
                 "names (rdns.json): each is rebuilt from the collector's day-files or by "
                 "asking again")
+# What a backup made before a feature was removed may hold, by role, and why
+# `restore` leaves it out: nothing reads it now.
+RETIRED = {"ask_done": "Ask LLM was removed in this version, and nothing reads it"}
 
 
 class BackupError(Exception):
@@ -63,8 +69,7 @@ def targets(cfg, manifest=None):
     from . import auth, rollup
     cache = _cache(cfg)
     out = {"rollup": ("rollup.sqlite", rollup.path_of(cfg)),
-           "session_key": ("session.key", os.path.join(cache, "session.key")),
-           "ask_done": ("ask-done.json", os.path.join(cache, "ask", "done.json"))}
+           "session_key": ("session.key", os.path.join(cache, "session.key"))}
     if not cfg.get("anonymize.salt"):
         out["salt"] = ("anonymize.salt", os.path.join(cache, "anonymize.salt"))
     try:
@@ -262,6 +267,9 @@ def restore(args, src, force=False, out=None):
         rollup_path = where["rollup"][1]
         for role, f in by_role.items():
             if role == "config":
+                continue
+            if role in RETIRED:
+                print("  %s: left out: %s" % (f["name"], RETIRED[role]), file=out)
                 continue
             if role not in where:
                 print("  %s: left out, as this config keeps it elsewhere (%s)"

@@ -5,15 +5,9 @@
  * screen, and the Download button can be built from the same string the table
  * was fetched with.
  */
-import { createContext, useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { parseUrl, patched, urlQuery } from './filters';
 import type { UrlState } from './filters';
-
-/** The page's URL state, provided by App. What is drawn from the URL itself
- *  reads it, so it is drawn again when the URL changes though the component
- *  is memoized: a citation's link is the page's query with the citation's
- *  patch (lib/cites.ts `hrefOf`, which reads `location.search`). */
-export const UrlCtx = createContext<UrlState | null>(null);
 
 export function useUrlState(): [UrlState, (patch: Partial<UrlState>, push?: boolean) => void] {
   const [state, setState] = useState<UrlState>(() => parseUrl(location.search));
