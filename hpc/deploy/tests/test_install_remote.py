@@ -111,6 +111,21 @@ class TestInstall(Rig):
         self.assertIn("node folder 700", self.calls())
         self.assertNotIn("node folder 755", self.calls())
 
+    def test_a_chmod_that_does_not_finish_does_not_stop_the_deploy(self):
+        """The running copy can remove a file while chmod -R walks the copy (a sealed day's
+        plain twin), and GNU chmod then exits 1. Under set -e that stopped the deploy
+        before the start, the copy's SIGHUP and linger; it is said, and the deploy goes on."""
+        self.payload()
+        with open(os.path.join(self.bin, "chmod"), "w") as fh:
+            fh.write('#!/bin/bash\nreal=$(PATH=/usr/bin:/bin command -v chmod)\n'
+                     '"$real" "$@"; rc=$?\n[ "$1" = -R ] && exit 1\nexit $rc\n')
+        os.chmod(os.path.join(self.bin, "chmod"), 0o700)
+        out = self.install(windows="no")
+        self.assertIn("chmod -R did not finish", out)
+        self.assertIn("systemctl --user restart rc-tmux.service", self.calls())
+        self.assertIn("loginctl enable-linger", self.calls())
+        self.assertIn("installed %s" % SHA, out)
+
     def test_modes_are_left_alone_when_not_private(self):
         """PRIVATE_TREE=false: a deploy keeps the modes and ACLs the user set (an ACL that
         lets one more account read the copy, say). etc/, which holds the secrets, is still

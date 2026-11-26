@@ -109,9 +109,12 @@ done
 # pip writes executables and libraries with fixed modes (755, 711) whatever the umask;
 # owner-only everywhere keeps the hourly audit quiet and the tree private. Done before the
 # session starts: each window's start checks judge the folders (check-local.sh), and one
-# that an earlier release left open would stop both until the next hourly check.
+# that an earlier release left open would stop both until the next hourly check. A walk
+# that does not finish (the running copy removes a file under it, as a sealed day's plain
+# twin goes) must not stop the deploy before the start, the copy's SIGHUP and linger:
+# what it left open, the start checks refuse and the hourly audit names.
 if [ "$private" = yes ]; then
-  chmod -R go-rwx "$R"
+  chmod -R go-rwx "$R" || echo "note: chmod -R did not finish; the hourly check names what is still open"
 fi
 # Start the session (a no-op when it runs), then turn linger on, so it outlives this
 # login.

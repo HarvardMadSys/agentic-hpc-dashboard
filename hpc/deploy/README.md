@@ -403,7 +403,7 @@ needs it.
 | `COPY <node> FAILED`, or `never copied` | the error after it is rsync's or ssh's: a key line missing or wrong on the node (step 3), a host key that changed (`data/mirror/.state/known_hosts`), or the guard refusing what was asked (it says why) |
 | `COPY <node> STALE` | the copy stopped: the `copy` window's log, `DASH_ROOT/logs/rc-fleet-copy.log`; a wrong `fleet.env` (exit 2) or one naming no node (exit 4) stops it until a deploy fixes it |
 | `STATUS crit: <node> silent` | the copy works but the collector on the node writes nothing: the site's collector (`ebpfm status` on the node) |
-| `UNSAFE` | the folder it names (`DASH_ROOT`, or a folder in it such as `data/mirror`) is a symlink, or (with `PRIVATE_TREE=true`) not this account's own 700 folder: `ls -la` it, put it right, and the next hourly check starts both again |
+| `UNSAFE` | the folder it names (`DASH_ROOT`, or a folder in it such as `data/mirror`) is a symlink, or (with `PRIVATE_TREE=true`) not this account's own 700 folder: `ls -la` it, put it right, and the next hourly check starts both again. Every folder in `data/mirror` counts, a retired node's old copy or one made by hand too: `chmod 700` it, or move it out of `DASH_ROOT` |
 | `deploy.sh`: a value is still the example's | fill `site.env` in: `--strict` refuses `your-account` and `*.example.org` |
 
 ## Tests

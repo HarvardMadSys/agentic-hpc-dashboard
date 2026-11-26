@@ -107,7 +107,10 @@ copy_ok() {
   for d in "$BASE/mirror" "$BASE/mirror/.state"; do
     if [ -e "$d" ] || [ -L "$d" ]; then private_dir "$d" || return 1; fi
   done
-  for d in "$BASE"/mirror/*; do        # each node's folder; .state is judged above
+  # Each node's folder, in the flat layout fleet.env.in sets (FLEET_LAYOUT=flat): under
+  # tiers they would be a level further down. Every folder here is judged, a retired
+  # node's old copy or a hand-made one too; .state is judged above.
+  for d in "$BASE"/mirror/*; do
     if [ -L "$d" ] || [ -d "$d" ]; then private_dir "$d" || return 1; fi
   done
 }
