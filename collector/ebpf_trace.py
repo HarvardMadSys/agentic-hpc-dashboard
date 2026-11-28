@@ -2305,8 +2305,8 @@ def _ends_mid_line(fd, path):
 class _JsonlSink(object):
     """One stream's JSONL day-file.
 
-    The bytes are json.dumps(rec) + '\\n' per record, exactly what the text-mode
-    handle this replaces wrote, buffered until flush(), which hands them to ONE
+    The bytes are one compact JSON object a line, buffered until flush(),
+    which hands them to ONE
     os.write (looping only on a short write). That handle split any round over
     8 KiB into several write(2)s; this is one per round, so the count in
     stop.output.jsonl.writes is exact. A failed write keeps the bytes it did not
@@ -2328,7 +2328,7 @@ class _JsonlSink(object):
 
     def add(self, rec):
         try:
-            line = json.dumps(rec)
+            line = json.dumps(rec, separators=(',', ':'))
         except Exception:
             self.errors += 1
             raise
