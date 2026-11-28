@@ -311,9 +311,6 @@ conversion's leftovers, removed), `read_failures`, `progress` (`todo`, `done`, `
 current replica and how much is left to convert. A root given as a glob pattern is matched again
 each round, so its new folders are converted too.
 
-A binary `.ebr` day-file under a root is skipped. To read an EBR-only capture, convert it with the
-last `ebr.py`: `git show 2f16731:collector/lib/ebr.py > ebr.py && python3 ebr.py cat x.ebr > x.jsonl`.
-
 ## Demo mode
 
 ```bash
