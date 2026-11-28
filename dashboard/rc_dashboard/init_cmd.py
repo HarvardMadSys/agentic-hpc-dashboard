@@ -16,6 +16,7 @@ its hash file written from it when missing, unless `--force`.
 """
 import datetime
 import getpass
+import grp
 import os
 import shutil
 import socket
@@ -218,6 +219,12 @@ def _main(args, asker, out):
     if code:
         say("! The eBPF feed is not readable yet (see above): the service starts, and reads "
             "the folder once it is there and readable.")
+    fix = access_fix([p for r in reports.values() for p in r.get("denied") or ()])
+    if fix:
+        say("To let %s read the collector's folders:" % getpass.getuser())
+        for line in fix:
+            say("  " + line)
+        say("")
     static = cfg.get("server.static_dir")
     say("Next:")
     if not os.path.isfile(os.path.join(static or "", "index.html")):
@@ -230,6 +237,45 @@ def _main(args, asker, out):
     say("                         ssh -N -L %d:127.0.0.1:%d %s@%s" % (port, port, user, fqdn))
     say("  and open http://127.0.0.1:%d, signing in with the password in %s." % (port, pw_file))
     return 0
+
+
+def access_fix(denied, user=None):
+    """The commands that let `user` (this account) read the collector's folders
+    in `denied`, as lines to print; [] when none is denied. The collector makes
+    its folders 0750 and gives them to EBPFM_GROUP from /etc/default/ebpfm, so:
+    no group set, make one and give it the folders (the units read EBPFM_GROUP
+    only at start); a group this account is not in, join it; a group it joined
+    after this login began, log in again, which is all that is missing."""
+    paths = list(dict.fromkeys(denied))
+    if not paths:
+        return []
+    user = user or getpass.getuser()
+    name = configmod.env_file(configmod.EBPFM_DEFAULTS).get("EBPFM_GROUP", "")
+    try:
+        g = grp.getgrnam(name) if name else None
+    except KeyError:
+        g = None
+    # this config was written while the folders were unreadable: write it again
+    relogin = ("log out and in again (`id -nG` lists %s), and run `rc-dashboard init --force`, "
+               "which writes the config again with the folders it can then read "
+               "(and a new password)")
+    if g is None:
+        name = name or "ebpfm"
+        folders = " ".join(_quote(p) for p in paths)
+        return ["sudo groupadd --system %s" % name,
+                "echo EBPFM_GROUP=%s | sudo tee -a %s" % (name, configmod.EBPFM_DEFAULTS),
+                "sudo chgrp -R %s %s && sudo chmod -R g+rX %s" % (name, folders, folders),
+                "sudo systemctl restart ebpfm ebpfm-node   # they read EBPFM_GROUP only at start;"
+                " the eBPF tier flushes its live processes as `truncated`",
+                "sudo usermod -aG %s %s" % (name, user),
+                "then " + relogin % name]
+    if g.gr_gid in os.getgroups():
+        return ["this login is in %s, yet may not read them: %s"
+                % (name, "; ".join(feedmod._denied_note(p) for p in paths))]
+    if user in g.gr_mem:
+        return ["%s is in %s, but this login began before it joined: %s"
+                % (user, name, relogin % name)]
+    return ["sudo usermod -aG %s %s" % (name, user), "then " + relogin % name]
 
 
 def _refuse_config(path, force):

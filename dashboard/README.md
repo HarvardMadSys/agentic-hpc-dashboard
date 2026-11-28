@@ -97,6 +97,10 @@ It never replaces a config without `--force`, nor writes `dashboard.toml` beside
 `--password-dir` is kept, and its hash file written from it when missing. Then it loads the config
 it wrote, prints `check-feeds`' table, and the next commands: building the page if `web/dist` is
 missing, the exact `serve` command, and `ssh -N -L <port>:127.0.0.1:<port> <you>@<this host>`.
+A folder it may not read also gets the commands that open it (`access_fix`), from the group
+`/etc/default/ebpfm` names: with none, make the group, give it the folders and restart the units;
+a group this account is not in, join it; one it joined after this login began, log in again.
+Each ends with `init --force`, since the config just written names the folders it could read.
 
 ## Configuration
 

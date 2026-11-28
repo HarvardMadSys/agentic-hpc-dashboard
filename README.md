@@ -118,9 +118,15 @@ and as an image ([`docker/demo`](docker/README.md#the-demo)).
 
 ### 2. Start the collector
 
-From the repository's root, as root:
+From the repository's root, as root. The collector's files name real users and what they ran,
+so it keeps them from other accounts; the first three lines make a group that may read them and
+put you in it, since the dashboard runs as you:
 
 ```bash
+sudo groupadd --system ebpfm                              # who may read the collector's files
+echo EBPFM_GROUP=ebpfm | sudo tee -a /etc/default/ebpfm   # the collector gives them to it
+sudo usermod -aG ebpfm "$USER"                            # you, from your next login
+
 sudo ./collector/ebpfm.sh install --dry-run   # the plan; changes nothing
 sudo ./collector/ebpfm.sh install             # both tiers, as systemd units that start at every boot
 sudo ./collector/ebpfm.sh status              # exit 0: both tiers running and writing
@@ -130,6 +136,10 @@ sudo ./collector/ebpfm.sh status              # exit 0: both tiers running and w
 FAIL with its fix; fix it and run `install` again. It writes to `/scratch/ebpfm` and
 `/scratch/ebpfm-login` where `/scratch` is writable, else to `/var/log/ebpfm` and
 `/var/log/ebpfm-login`.
+
+**Then log out and in again**: a login keeps the groups it began with, and step 3 needs
+`ebpfm` (`id -nG` lists it). A collector already installed without the group: `rc-dashboard
+init` in step 3 says it may not read the folders and prints the commands that open them.
 
 **No root?** `./collector/ebpfm.sh start` runs the node tier alone, into `~/.ebpfm/login`,
 until a reboot: half of the data, not a degraded mode.
