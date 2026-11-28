@@ -1,39 +1,17 @@
 """Turn a raw collector record into the shape the reducers consume.
 
-The contract is SCHEMA_VERSION 8.  A thin shim keeps the pre-v4 capture usable as
-an offline test input, but the shim's job is to make older records *honest*, not
-to pretend they are current: a field the old collector could not measure must
-arrive as None, never as 0.
+The contract is SCHEMA_VERSION 8; schemas 5-7 still read. Schemas below 4
+(including a record with no `schema_version`) are not read: counted in
+`schema_versions` and `unsupported_schema`, then skipped. Their 0-for-absent
+fields cannot be told from measured zeros, and guessing would break rule 2.
 
-Schema 6 removed the `tcp` and `accept` events; a closed connection now arrives
-as the `conns` block on the owning process's `exit`/`truncated` record. Nothing
-here reads either event, so the gates below are all `sv >= 5` / `sv < 4` and a v6
-record needs no shim -- but a capture that mixes 5 and 6 will have connection
-data in two different shapes, which `schema_versions` is what makes visible.
-
-Schema 7 adds `net_endpoints` (bytes per endpoint) to `exit`/`truncated`, a
-`netio` event (the same per tick), `proto` on `conn`, and `collector_pid` in the
-envelope (the collector's own pid, for dropping its own process tree), and drops
-the envelope's constant `source`/`collector`, `cwd_source` and `env_flags`. Nothing here reads
-any of them. It also renames `comm` to `command`, whole rather than cut at 15
-characters; `_command` below is the one key readers use, taking whichever the
-record has. It also widens `net_tx_bytes` and
-`net_rx_bytes` to include IPv6 UDP, which the v6 collector did not count: across
-a 6/7 boundary those totals are not like for like, and `schema_versions` again is
-what shows the boundary is there.
-
-Schema 8 renames nothing this module reads, but changes what a session is (it
-also masks credentials and agent prompts in `args`). Through 7, every process
-whose own argv the classifier tagged was its own agent root, so Claude Code's shell
-for each Bash tool call, its Grep re-exec, a Codex sandbox and a `--version` probe
-each had `is_agent` true, `depth` 0, and its own `agent_pid`, `session_key` and
-`session_uuid`: one session per tool call. From 8, inside an agent tree only an
-agent runtime is a root (the collector's `agent_role()`). Every other tagged process
-carries its parent's tree, at `depth` + 1, and its tree's `agent_type`, so its
-`actor3` can change too. Outside any tree a tagged process is still its own root.
-`tree_root_pid` and `actor` do not change. Nothing here branches on the version: a
-v8 key is already a session, and a capture that spans 7 and 8 mixes the two grains,
-which `schema_versions` makes visible.
+Version notes a reader still needs: schema 6 folded `tcp`/`accept` into the
+`conns` block on `exit`/`truncated`; schema 7 renamed `comm` to `command`
+(`_command` takes either) and widened `net_tx_bytes`/`net_rx_bytes` to IPv6
+UDP, so those totals are not like for like across a 6/7 boundary; schema 8
+made only an agent runtime a session root inside a tree, so 7/8 captures mix
+two session grains. `schema_versions` makes each boundary visible. Field
+history is in `collector/README.md`.
 
 Three rules this module exists to enforce:
 
@@ -43,26 +21,20 @@ Three rules this module exists to enforce:
    also swallows the deliberate explicit `actor3: null` on an untracked-pid
    `conn` record.  Unlabelled becomes its own class, never `human`.
 
-2. Null is not zero.  `null_if_off` (ebpf_trace.py:1075) emits None for every
-   field whose BPF block was dropped, but the pre-v4 collector wrote 0 in some of
-   those slots.  A 0 there means "not measured", so it is gated back to None and
-   counted, rather than averaged in as a real zero.
+2. Null is not zero.  A field whose BPF block was dropped arrives as None
+   ("not measured"), never 0, and is never averaged in as a real zero.
 
 3. `sandbox` and `approval_mode` are separate axes.  Schema 5 carries both; for
    an older record they are simply unknown.  `sandbox` means NAMESPACE ISOLATION
    (the collector's /proc/<pid>/ns/* against pid 1's) and has FOUR states,
-   because "could not read" must not be reported as "unsandboxed".  The ebpf tier
-   runs as root, so that state is not ptrace-gating: across 2026-09-21..25 every
-   one of 163 such records lived under 6 ms -- the process had exited before the
-   read.  It is still not "not sandboxed", and the page labels it "exited before it
-   was checked".
+   because "could not read" (`denied`: the process exited before the read) must
+   not be reported as "unsandboxed". The page labels it "exited before it was
+   checked".
 
 4. Approval is a property of the agent SESSION, read off the argv of the
    process that runs it.  Only a process whose role (roles.py) is `agent` gets a
    verdict; a tool shell, a probe or an IDE helper is `na`, and an untagged child
    is `unknown` -- its session's verdict lives on the session root's record.
-   Labelling every tagged process "supervised" made 9,341 of 9,370 "agent trees"
-   on rtx6000a supervised `codex --version` polls.
 
 5. Where a session is driven from -- its launch SURFACE -- is read off that same
    process's argv, and is `unknown` where the argv does not say: a Codex
@@ -96,15 +68,7 @@ def epoch_of(rec):
     except ValueError:
         return None
 
-# Fields the v4+ collector emits as null-when-absent but pre-v4 wrote as 0.
-# On a pre-v4 record these are forced to None and counted in excluded_pre_v4.
-NULLABLE_V4_ONLY = (
-    "threads", "cmaj_flt", "child_cpu_s", "sched_wait_s", "blkio_wait_s",
-    "swapin_wait_s", "freepages_wait_s", "dstate_wait_s", "dstate_episodes",
-    "dstate_max_s", "net_tx_bytes", "net_rx_bytes", "net_calls",
-    "min_flt", "nvcsw", "nivcsw", "pgrp", "sid",
-)
-# Never let a reducer see these: permanent null placeholders in v4+.
+# Never let a reducer see these: permanent null placeholders.
 ALWAYS_NULL = ("samples", "state_last")
 
 # The collector observing its own instrumentation. node_snapshot.py:1162-1165
@@ -376,7 +340,7 @@ for _p, _cs in {
 
 
 def schema_of(rec):
-    """Declared schema version; absent means the pre-v4 tracer or the poller."""
+    """Declared schema version; absent counts as 3 (unsupported, see header)."""
     sv = rec.get("schema_version")
     if isinstance(sv, int):
         return sv
@@ -585,7 +549,7 @@ class Normalizer:
         self.unlabeled = f.get("unlabeled_class", "unlabeled")
         self.drop_self = f.get("drop_self_observation", True)
         self.stats = {
-            "schema_versions": {}, "excluded_pre_v4": {}, "dropped_users": 0,
+            "schema_versions": {}, "unsupported_schema": 0, "dropped_users": 0,
             "parse_errors": 0, "records": 0, "skew_dropped": 0, "malformed": 0,
             "dropped_self_observation": 0, "impossible_wait": {},
             "purpose_src": self.purpose_src,
@@ -622,6 +586,9 @@ class Normalizer:
         s = self.stats
         s["schema_versions"][sv] = s["schema_versions"].get(sv, 0) + 1
         s["records"] += 1
+        if sv < 4:
+            s["unsupported_schema"] += 1
+            return None
 
         user = rec.get("user")
         ev = rec.get("event")
@@ -660,13 +627,11 @@ class Normalizer:
         # What a classifier-tagged process actually is (see roles.py). Only a
         # tagged process gets one, so a missing `_role` means "not tagged".
         tagged = rec.get("is_agent")
-        if tagged is None:          # pre-v4: the collector's own rule, agent_pid == pid
-            tagged = rec.get("agent_pid") is not None and rec.get("agent_pid") == rec.get("pid")
         if tagged and ev in IDENTITY_EVENTS:
             rec["_role"] = role_of(rec.get("agent_type"), rec["_command"], rec.get("args"))
 
         if ev in ("exit", "truncated"):
-            self._gate_nulls(rec, sv)
+            self._gate_nulls(rec)
             self._gate_impossible_waits(rec)
             comm = rec["_command"] or ""
             args = rec.get("args") or ""
@@ -674,8 +639,8 @@ class Normalizer:
             rec["_eff"] = ec
             rec["_purpose"] = self.purpose_of(ec)
             rec["_shell_resolved"] = bool(comm in self.shell_comms and ec != comm)
-            # pre-v4 emitted cpu_pct on a 0-duration process; recompute, never trust.
-            # A measured 0 s of CPU is 0%, not unmeasured.
+            # Recompute, never trust an emitted cpu_pct. A measured 0 s of CPU
+            # is 0%, not unmeasured.
             d = rec.get("duration_s")
             cpu = rec.get("cpu_s")
             rec["_cpu_pct"] = (100.0 * cpu / d) if (d and d >= 0.01 and cpu is not None) else None
@@ -740,17 +705,10 @@ class Normalizer:
         if bad:
             rec["_impossible"] = bad
 
-    def _gate_nulls(self, rec, sv):
-        """A pre-v4 0 in a v4-only slot means 'block absent', not 'measured zero'."""
-        if sv < 4:
-            ex = self.stats["excluded_pre_v4"]
-            for k in NULLABLE_V4_ONLY:
-                if rec.get(k) is not None:
-                    ex[k] = ex.get(k, 0) + 1
-                rec[k] = None
+    def _gate_nulls(self, rec):
         for k in ALWAYS_NULL:
             rec[k] = None
         io = rec.get("io")
         if isinstance(io, dict) and not io.get("scope"):
-            # absent pre-v4; assuming "process" would overstate (vs leader accounting)
+            # Scope absent: assuming "process" would overstate (vs leader).
             io["scope"] = "unknown"
