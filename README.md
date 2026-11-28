@@ -95,10 +95,14 @@ what each figure computes, from which records, at what cost:
 
 ## Quick start
 
-You need [uv](https://docs.astral.sh/uv/), which fetches Python 3.11 or later if it is
-missing, and Node.js with npm to build the page.
+These steps run everything on one node: the collector records it, and a dashboard on the same
+node reads the collector's files where they are written. For more than one node, see
+[Many nodes](docs/fleet.md).
 
-### Try it without a cluster
+You need [uv](https://docs.astral.sh/uv/), which fetches Python 3.11 or later if it is
+missing, and Node.js with npm to build the page. Start from a clone of this repository.
+
+### 1. Try the demo (optional, no collector needed)
 
 ```bash
 cd dashboard
@@ -108,93 +112,80 @@ uv run --frozen rc-dashboard demo     # then open http://127.0.0.1:8080
 ```
 
 The demo runs the real service over a synthetic feed it writes itself, for fictional login
-nodes and users, and keeps appending to it; every page says *fake data*. It also runs at
-<https://dashboard-demo.agentic-system.org>, behind a password of its own
-([`deploy/cloudflare`](deploy/cloudflare/README.md)), and as an image
-([`docker/demo`](docker/README.md#the-demo)).
+nodes and users; every page says *fake data*. Stop it with Ctrl-C. It also runs at
+<https://dashboard-demo.agentic-system.org> ([`deploy/cloudflare`](deploy/cloudflare/README.md))
+and as an image ([`docker/demo`](docker/README.md#the-demo)).
 
-### Collect on a login node
+### 2. Start the collector
 
-From the source tree, as root, both tiers in one step:
+From the repository's root, as root:
 
 ```bash
 sudo ./collector/ebpfm.sh install --dry-run   # the plan; changes nothing
-sudo ./collector/ebpfm.sh install             # dependencies, /etc/default/ebpfm, both units started, check, verdict
-sudo ./collector/ebpfm.sh status              # each tier: running, and writing? exit 0 healthy, 1 degraded or stale, 3 not running
+sudo ./collector/ebpfm.sh install             # both tiers, as systemd units that start at every boot
+sudo ./collector/ebpfm.sh status              # exit 0: both tiers running and writing
 ```
 
-- `install` ends with `READY: both tiers`, `READY: node tier only` or `NOT READY: N FAIL`,
-  each FAIL with its fix; run it again once fixed, or after an upgrade. The units start both
-  tiers at every boot.
-- Without root, `./collector/ebpfm.sh start` runs the node tier alone, until a reboot: half of
-  the data, not a degraded mode. `start`, `stop` and `status` drive the tiers without units too.
-- `./collector/ebpfm.sh help` lists every command and `<command> --help` explains one;
-  `./collector/ebpfm.sh config` shows each setting and where it came from: the environment,
-  then `/etc/default/ebpfm`, then the default.
-- The [RPM](packaging/rpm/README.md) for Rocky/RHEL 8 and the
-  [container image](docker/README.md#the-collector) run the eBPF tier.
-- The `collector/` folder is self-contained: copy it to the node, or hand over the single file
-  `./collector/ebpfm.sh bundle` writes (`./ebpfm-bundle.sh --extract /opt/ebpfm` unpacks it
-  for `install`).
+`install` ends with `READY: both tiers`, `READY: node tier only` or `NOT READY: N FAIL`, each
+FAIL with its fix; fix it and run `install` again. It writes to `/scratch/ebpfm` and
+`/scratch/ebpfm-login` where `/scratch` is writable, else to `/var/log/ebpfm` and
+`/var/log/ebpfm-login`.
 
-As root it writes to `/scratch/ebpfm` and `/scratch/ebpfm-login` where `/scratch` is
-writable, else to `/var/log/ebpfm` and `/var/log/ebpfm-login`; as a user, to
-`~/.ebpfm/login`. `install` records the choice in `/etc/default/ebpfm`, and
-`EBPFM_OUTPUT_DIR` and `EBPFM_NODE_OUTPUT_DIR` override it; the RPM's unit writes to
-`/scratch/ebpfm`. Running it day to day, upgrading and removing it:
-[`collector/OPERATIONS.md`](collector/OPERATIONS.md).
+**No root?** `./collector/ebpfm.sh start` runs the node tier alone, into `~/.ebpfm/login`,
+until a reboot: half of the data, not a degraded mode.
 
-### Run the dashboard over real data
+Other ways to install it (the RPM, a container, a single-file bundle), every setting, and
+upgrading or removing it: [`collector/OPERATIONS.md`](collector/OPERATIONS.md).
+
+### 3. Start the dashboard
 
 ```bash
 cd dashboard
 uv sync --frozen
 (cd web && npm ci && npm run build)    # builds the page into web/dist/
 uv run --frozen rc-dashboard init      # finds the collector's folders, makes a password, writes dashboard.toml
-uv run --frozen rc-dashboard serve     # on 127.0.0.1:8080: the command init printed
+uv run --frozen rc-dashboard serve     # on 127.0.0.1:8080, until Ctrl-C
 ```
 
-`init` asks for each value, showing what it found (`--yes` takes them all; `rc-dashboard init
---help`). It writes a short `dashboard/dashboard.toml`, keeps the password in
-`~/.config/rc-dashboard/password` with its hash in `password.hash` beside it, checks the feeds,
-and prints the `ssh -L` command to reach the page from another machine.
-`rc-dashboard check-feeds` lists every place it looked and what it found there. `serve` refuses
-to start without a password, since on a login node every user can reach 127.0.0.1
-([Password](dashboard/README.md#password)). `rc-dashboard status` says per node whether its
-collector and its copy work (exit 0, 1 or 2, for a monitor). The page also comes as a wheel
-and an image with the page built in, needing no Node ([`docker`](docker/README.md#the-dashboard)).
+`init` shows what it found and asks you to confirm each value (`--yes` takes them all). It
+writes `dashboard/dashboard.toml`, keeps the password in `~/.config/rc-dashboard/password`,
+checks the feeds, and prints the commands for the next step. If a feed is missing,
+`uv run --frozen rc-dashboard check-feeds` lists every place it looked and what it found
+there.
 
-### Run it live
+`serve` will not start without a password, because on a shared node every user can reach
+127.0.0.1 ([Password](dashboard/README.md#password)). Without Node, use a release's wheel or
+the image, which have the page built in ([`docker`](docker/README.md#the-dashboard)).
 
-Three layouts, the same collector and dashboard in each, the dashboard behind a password on
-127.0.0.1:
+### 4. Open the page
 
-Start from a release's kit, `agentic-hpc-dashboard-X.Y.Z.tar.gz` on the
-[releases page](https://github.com/HarvardMadSys/agentic-hpc-dashboard/releases), unpacked
-where any account can read it and it can stay (`/opt/agentic-hpc-dashboard`): it installs
-that release's wheel, checked against the release's checksums, with nothing to build. A
-checkout works the same way and builds its own code. The login nodes' layout ships a commit
-from where it runs, so it needs a checkout: `git clone --branch vX.Y.Z` for a release. One
-front door picks the layout from four questions (Slurm? which nodes? root on the nodes? root
-on the dashboard's host?) and runs its scripts:
+On the node itself, open <http://127.0.0.1:8080>. From your own machine, open a tunnel first
+(`init` printed this command with your user and host filled in):
 
 ```bash
-sudo deploy/rc-deploy init      # writes the settings file, and records the layout in it (hpc: no sudo)
-sudo deploy/rc-deploy plan      # what it would do; nothing done (hpc runs as you, no sudo)
-sudo deploy/rc-deploy apply
-sudo deploy/rc-deploy password  # makes the password; its hash goes where the dashboard reads it
-deploy/rc-deploy status         # every collector's verdict and every node's copy
+ssh -N -L 8080:127.0.0.1:8080 <you>@<the node>
 ```
 
-| Layout | What runs where | Guide |
-|---|---|---|
-| **One server** | the server runs the collector and the dashboard, as systemd units | [`deploy/single`](deploy/single/README.md) |
-| **A fleet** | every node runs the collector; one more host runs the dashboard over a copy of their files, pulled with rsync every minute | [`deploy/fleet`](deploy/fleet/README.md) |
-| **A cluster's login nodes** | the same where you have no root anywhere: a host of your own copies each node's files with the same rsync, through a key the nodes let run nothing else ([`hpc/fleet/`](hpc/fleet/README.md)), set from one file and checked every hour | [`hpc/deploy`](hpc/deploy/README.md) |
+Then open <http://localhost:8080> and sign in with the password in
+`~/.config/rc-dashboard/password`. Something wrong (no data, sign-in fails, a blank page):
+[`docs/troubleshooting.md`](docs/troubleshooting.md).
 
-[`deploy/README.md`](deploy/README.md) covers what the first two share: the units, the
-password, the hourly check, settings, upgrading, backups, moving and removing.
-[`hpc/README.md`](hpc/README.md) says what is HPC-specific. `rc-deploy --help` lists the rest.
+### 5. Keep it running (optional, needs root)
+
+`serve` stops when you press Ctrl-C or log out. To run the collector and the dashboard as
+systemd units that survive both, stop `serve` and install the one-server kit:
+
+```bash
+sudo deploy/rc-deploy init      # four questions; leave "which nodes" empty for this one server
+sudo deploy/rc-deploy plan      # what it would do; nothing done
+sudo deploy/rc-deploy apply     # the collector's and the dashboard's units, and an hourly check
+sudo deploy/rc-deploy password  # a password for the installed dashboard, which then starts
+sudo deploy/rc-deploy status    # is everything working
+```
+
+The installed dashboard runs as its own account, with its own settings in
+`/etc/rc-dashboard`, on the same 127.0.0.1:8080. Install, upgrade, back up and remove:
+[`deploy/single`](deploy/single/README.md).
 
 ## Configuration
 
@@ -207,11 +198,9 @@ with its default and a line of help (`--all`: every setting, the internal ones t
 `rc-dashboard print-config` prints each resolved setting and where it came from. How they
 resolve, and what each does: [`dashboard/README.md`](dashboard/README.md#configuration).
 
-The deployment kits take the same names for the same settings: `SITE_NAME`, `SITE_DESCRIPTION`,
-`SLURM`, `NODE_NOUN`, `ANONYMIZE` (1/0, true/false, yes/no, on/off), `MEMORY_MAX` and
-`FREE_MIN_GB`. They go in `/etc/rc-dashboard/site.env` (rc-deploy), the deploy/ installers'
-environment, or `hpc/deploy/site.env`; each sets the dashboard's own setting (`deploy/README.md`,
-"Settings"). The collector reads `/etc/default/ebpfm` (`ebpfm config` shows every setting).
+The collector reads `/etc/default/ebpfm` (`./collector/ebpfm.sh config` shows every setting).
+The deployment kits (`rc-deploy`) take settings of their own that set the dashboard's:
+[Settings](deploy/README.md#settings).
 
 ## Data and privacy
 
@@ -231,11 +220,9 @@ The records name real users and show what they ran, so both halves keep them clo
   off). Nothing it reads or shows leaves the host for a model's provider. It counts which tabs
   readers open, a count a day kept on its own host and read with `rc-dashboard usage`, with no
   user, window or filter (`RC_DASH_COUNT_VIEWS=0` turns that off).
-- **The copy** of the nodes' files is pulled with a key that runs read-only rsync of the
-  collector's folders and nothing else, only from the dashboard's host, into a folder only
-  the dashboard's account can read: by an account in the collector's group, through `rrsync
-  -ro` where the node has it ([`deploy/fleet`](deploy/fleet/README.md)), or, with no root on
-  the nodes, through [`hpc/fleet`](hpc/fleet/README.md)'s guard.
+- **In a fleet**, the copy of the nodes' files is pulled with a key that runs read-only rsync
+  and nothing else, into a folder only the dashboard's account can read
+  ([The copy and privacy](docs/fleet.md#the-copy-and-privacy)).
 
 ## Documentation map
 
@@ -257,6 +244,7 @@ The records name real users and show what they ran, so both halves keep them clo
 | [`docs/feed-parquet/README.md`](docs/feed-parquet/README.md) | the feed as typed Parquet tables: the dashboard's history store, and a dataset for analysis |
 | [`docs/feed-format-v9/README.md`](docs/feed-format-v9/README.md) | a proposed feed schema 9, not implemented, with a prototype that measures it |
 | [`docs/plans/`](docs/plans/) | implementation plans, kept as the record of how the work was done |
+| [`docs/fleet.md`](docs/fleet.md) | more than one node: picking a layout, deploying the collector, the copy and the dashboard, and watching them |
 | [`deploy/README.md`](deploy/README.md) | the live service on servers where you have root: what runs where, the password, watching, settings, upgrading; [`single/`](deploy/single/README.md) and [`fleet/`](deploy/fleet/README.md) install each layout |
 | [`hpc/README.md`](hpc/README.md) | what is HPC-specific, and which HPC settings stay in the collector and the dashboard |
 | [`hpc/fleet/README.md`](hpc/fleet/README.md) | the guard that lets the copy's key read the collector's folder and nothing else |

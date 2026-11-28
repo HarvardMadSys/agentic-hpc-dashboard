@@ -6,6 +6,7 @@ maps them all.
 
 | document | status | covers |
 |---|---|---|
+| [`fleet.md`](fleet.md) | current | more than one node: picking a layout (root or not), deploying the collector, the copy and the dashboard, opening the page, watching it, and the copy's privacy |
 | [`troubleshooting.md`](troubleshooting.md) | current | what you see, its likely causes in the order to check them, and the command that tells them apart: no data, a node stopped reporting, sign-in, a service that will not start, a blank page, times, one node as two |
 | [`figures/`](figures/README.md) | current | every figure on the page: what it computes, from which records, by which read path, and at what cost |
 | [`feed-parquet/`](feed-parquet/README.md) | current: the dashboard's history store | the eBPF tier's day-files as typed Parquet tables, one per record kind: the schema, the layout, and what converting and reading them cost |
