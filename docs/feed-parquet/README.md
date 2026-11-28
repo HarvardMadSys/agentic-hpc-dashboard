@@ -4,8 +4,7 @@
 columnar copy of the eBPF tier's day-files and reads every record back from it exactly.
 The dashboard keeps such a copy of every sealed day-file and answers selective reads and time
 searches of the file from it, at the file's own offsets
-([History in Parquet](../../dashboard/README.md#history-in-parquet)). It is the columnar copy
-of sealed days that [schema 9's proposal](../feed-format-v9/README.md) left open, built for the
+([History in Parquet](../../dashboard/README.md#history-in-parquet)). It is built for the
 feed as it is, with no change to the collector: schema 7 (FAS's login nodes) and schema 8 (this
 repo's collector) both convert.
 
@@ -495,9 +494,9 @@ host-day per process, with the largest process using 3.6 GB.
 `verify` read every record of the 56 host-days from both its day-file and its table, and
 compared the two: all 179,448,351 were the same, type for type, each in its own key order, with
 0 rows needing `_extra` and 0 malformed lines. The run took 12.8 minutes with 16 processes. A
-second conversion gave the same 337 files, table for table. The synthetic schema-8 feed
-(`docs/feed-format-v9/prototype.py demo --truncated`, with `truncated`, `meta` and `stop`
-records) also reads back the same, but for one block's key order (Caveats).
+second conversion gave the same 337 files, table for table. A synthetic schema-8 feed
+(with `truncated`, `meta` and `stop` records) also reads back the same, but for one
+block's key order (Caveats).
 
 #### Asking it
 

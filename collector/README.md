@@ -242,7 +242,9 @@ loses anything, at most one round (100 ms). `meta` is flushed at once on startup
 one `write(2)` each (`stop.output.jsonl.writes`). Writing JSONL costs **13.5 µs per record**
 on Python 3.13 and 18.7 on 3.8 (one host's synthetic demo day through `DailyWriter`: 11 742
 records, 1.6 per flush, 18.78 MB in 7 279 `write(2)`s), small beside the 157 µs per decoded
-event, since only the end of a tracked process is a record.
+event, since only the end of a tracked process is a record. Records are written compact
+(no spaces after `:` or `,`), about 9% fewer plain bytes than the padded form the tables
+above were measured with; readers parse either.
 
 ---
 

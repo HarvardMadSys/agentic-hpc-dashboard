@@ -69,9 +69,8 @@ ran an exec -- one costs far more than 0.05 ms; a bare fork may not, and does
 next to no I/O -- so it takes none off (`reaped_none`): what is held for its
 pid is dropped and counted apart (`unreaped`), not with the start rule's
 refusals (`rejected`). A coarser figure would not do: /proc's, in clock
-ticks, reads 0 for a parent of a few short children. The pre-v4 tracer and
-the /proc poller wrote 0 there for "not measured", which normalize.py makes
-None (`NULLABLE_V4_ONLY`), and the collector's own /proc reads go on
+ticks, reads 0 for a parent of a few short children. The collector's own
+/proc reads go on
 `truncated` records, which `reaped_none` passes over; a producer that wrote
 an exit's from ticks would have this drop children it did reap. One that
 reaped some of its children and not others still has them all taken off --

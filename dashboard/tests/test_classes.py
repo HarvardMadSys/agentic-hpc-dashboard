@@ -74,6 +74,26 @@ class DropTest(unittest.TestCase):
         self.assertEqual(c.get("filters.drop_agent"), ["builder"])
 
 
+class UnsupportedSchemaTest(unittest.TestCase):
+    """Schemas below 4 are not read: counted, then skipped, never guessed at.
+    Schemas 4 and up still normalize."""
+
+    def test_schema_below_4_is_skipped_and_counted(self):
+        n = norm()
+        self.assertIsNone(n.normalize(rec("human", schema=3)))
+        r = rec("human", schema=8)
+        del r["schema_version"]
+        self.assertIsNone(n.normalize(r))
+        self.assertEqual(n.stats["unsupported_schema"], 2)
+        self.assertEqual(n.stats["schema_versions"], {3: 2})
+
+    def test_schema_4_and_5_still_normalize(self):
+        n = norm()
+        for sv in (4, 5):
+            self.assertIsNotNone(n.normalize(rec("human", schema=sv)))
+        self.assertEqual(n.stats["unsupported_schema"], 0)
+
+
 class CpuShareTest(unittest.TestCase):
     """An exit's CPU over its wall time: a measured 0 s of CPU is 0%; only an
     unmeasured CPU, or a duration too short to divide by, is null."""
@@ -121,9 +141,10 @@ class IdeClassTest(unittest.TestCase):
         self.assertEqual(a3(rec("human", None, "rm -rf %s/.cursor-server" % HOME)), "human")
 
     def test_a_record_from_before_actor3_gets_the_same_classes(self):
-        self.assertEqual(a3(rec(..., "cursor", actor="agent", schema=3)), "ide")
-        self.assertEqual(a3(rec(..., "vscode", actor="agent", schema=3)), "ide")
-        self.assertEqual(a3(rec(..., "codex", actor="agent", schema=3)), "agent")
+        # No actor3 key (rec(...)), on the oldest schema still read.
+        self.assertEqual(a3(rec(..., "cursor", actor="agent", schema=4)), "ide")
+        self.assertEqual(a3(rec(..., "vscode", actor="agent", schema=4)), "ide")
+        self.assertEqual(a3(rec(..., "codex", actor="agent", schema=4)), "agent")
 
     def test_the_default_classes_are_agent_human_ide(self):
         c = configmod.Config(configmod.defaults(), {}, None)

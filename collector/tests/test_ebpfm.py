@@ -1921,15 +1921,16 @@ class FlushPolicyTest(unittest.TestCase):
         return out
 
     def test_the_jsonl_bytes_are_unchanged(self):
-        """JSONL now goes out through os.write rather than a text handle, and
-        the bytes are what that handle wrote: json.dumps(rec) and a newline."""
+        """JSONL goes out through os.write rather than a text handle: one
+        compact JSON object and a newline a record."""
         w = T.DailyWriter(self.dir, 'node0')
         recs = self._varied(60)
         for r in recs:
             w.write(r)
         w.close()
         for s in T.STREAMS:
-            want = ''.join(json.dumps(r) + '\n' for r in recs if T.stream_of(r['event']) == s)
+            want = ''.join(json.dumps(r, separators=(',', ':')) + '\n'
+                           for r in recs if T.stream_of(r['event']) == s)
             with open(w.path(s), 'rb') as f:
                 self.assertEqual(f.read(), want.encode('ascii'), s)
 
@@ -2013,7 +2014,7 @@ class FlushPolicyTest(unittest.TestCase):
 
     def test_a_file_that_ends_its_lines_gets_nothing_more(self):
         meta = (json.dumps({'event': 'meta', 'schema_version': 8, 'ts': 'x',
-                            'ts_epoch': 1.0}) + '\n').encode()
+                            'ts_epoch': 1.0}, separators=(',', ':')) + '\n').encode()
         for before in (b'', b'{"event": "residency", "ts": "x"}\n'):
             got, _w = self._restart_on(before)
             self.assertEqual(got, before + meta)
@@ -2278,7 +2279,8 @@ class CompressionTest(unittest.TestCase):
             self.assertTrue(gz.endswith('.jsonl.gz'))
         # content survives the round trip
         self.assertEqual(_lines(os.path.join(d1, 'node0.exits.jsonl.gz')),
-                         [json.dumps({'event': 'exit', 'pid': 1, 'ts_epoch': 1.0})])
+                         [json.dumps({'event': 'exit', 'pid': 1, 'ts_epoch': 1.0},
+                                     separators=(',', ':'))])
         # the LIVE day stays plain -- it is still being appended to
         d2 = os.path.join(self.dir, '2026-01-02')
         self.assertEqual(sorted(os.listdir(d2)),
@@ -5542,7 +5544,7 @@ class WrapperTest(unittest.TestCase):
                     + '[ -n "$f" ] && _last_stop "$f"; true\n')
                 self.assertEqual((rc, err), (0, ''), name)
                 count, _, line = out.partition('\n')
-                want = {'node7.snapshot': (3, json.dumps(stop) + '\n'),
+                want = {'node7.snapshot': (3, json.dumps(stop, separators=(',', ':')) + '\n'),
                         'node7.exits': (5, ''), 'node7.none': ('', '')}[name]
                 self.assertEqual((count, line), ('count=%s' % want[0], want[1]), name)
         finally:
