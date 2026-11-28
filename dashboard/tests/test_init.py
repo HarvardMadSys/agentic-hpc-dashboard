@@ -103,6 +103,51 @@ class Init(unittest.TestCase):
         self.assertIn("ssh -N -L 18190:127.0.0.1:18190 ", out)
         self.assertIn(self.path("pw", "password"), out)
 
+    def write_group(self, name):
+        with open(self.path("etc-default-ebpfm"), "a") as fh:
+            fh.write("EBPFM_GROUP=%s\n" % name)
+
+    def test_no_folder_denied_needs_no_fix(self):
+        self.assertEqual(init_cmd.access_fix([]), [])
+
+    def test_no_reader_group_makes_one_gives_it_the_folders_and_joins_it(self):
+        fix = "\n".join(init_cmd.access_fix(["/var/log/ebpfm", "/var/log/ebpfm"], user="ana"))
+        self.assertIn("sudo groupadd --system ebpfm", fix)
+        self.assertIn("echo EBPFM_GROUP=ebpfm | sudo tee -a %s" % self.path("etc-default-ebpfm"), fix)
+        self.assertIn("sudo chgrp -R ebpfm /var/log/ebpfm && sudo chmod -R g+rX /var/log/ebpfm\n", fix)
+        self.assertIn("sudo systemctl restart ebpfm ebpfm-node", fix)
+        self.assertIn("sudo usermod -aG ebpfm ana", fix)
+
+    def test_a_group_this_account_is_not_in_is_joined(self):
+        self.write_group("readers")
+        g = mock.Mock(gr_gid=4242, gr_mem=["bo"])
+        with mock.patch.object(init_cmd.grp, "getgrnam", return_value=g), \
+                mock.patch.object(init_cmd.os, "getgroups", return_value=[100]):
+            fix = init_cmd.access_fix(["/var/log/ebpfm"], user="ana")
+        self.assertEqual(fix[0], "sudo usermod -aG readers ana")
+        self.assertNotIn("groupadd", "\n".join(fix))
+
+    def test_a_group_joined_after_this_login_began_needs_only_a_new_login(self):
+        self.write_group("readers")
+        g = mock.Mock(gr_gid=4242, gr_mem=["ana"])
+        with mock.patch.object(init_cmd.grp, "getgrnam", return_value=g), \
+                mock.patch.object(init_cmd.os, "getgroups", return_value=[100]):
+            fix = init_cmd.access_fix(["/var/log/ebpfm"], user="ana")
+        self.assertEqual(len(fix), 1)
+        self.assertIn("ana is in readers, but this login began before it joined", fix[0])
+        self.assertNotIn("sudo", fix[0])
+
+    def test_init_prints_the_fix_for_a_folder_it_may_not_read(self):
+        os.chmod(self.path("scratch", "ebpfm"), 0)
+        self.addCleanup(os.chmod, self.path("scratch", "ebpfm"), 0o755)
+        if os.access(self.path("scratch", "ebpfm"), os.R_OK):
+            self.skipTest("running as root: every folder is readable")
+        a = args(config=self.path("dash", "dashboard.toml"), password_dir=self.path("pw"),
+                 ebpf_root=[self.path("scratch", "ebpfm")], slurm=False)
+        code, out, err = self.run_init(a)
+        self.assertIn("read the collector's folders:", out)
+        self.assertIn("sudo groupadd --system ebpfm", out)
+
     def test_it_never_replaces_a_config_without_force(self):
         target = self.path("dash", "dashboard.toml")
         a = args(config=target, password_dir=self.path("pw"))

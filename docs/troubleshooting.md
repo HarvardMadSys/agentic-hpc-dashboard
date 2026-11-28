@@ -32,7 +32,15 @@ or `permission denied`.
    `/etc/default/ebpfm`; anywhere else, name the folders with `rc-dashboard init` or
    `RC_DASH_EBPF_ROOTS` and `RC_DASH_NODE_ROOTS` ([dashboard/README.md](../dashboard/README.md#the-two-feeds)).
 3. **`permission denied`?** The service's account must be in the collector's group
-   (`EBPFM_GROUP`); the collector creates its folders `0750` and its files `0640`.
+   (`EBPFM_GROUP` in `/etc/default/ebpfm`); the collector creates its folders `0750` and its files
+   `0640`. `rc-dashboard init` prints the commands for this node. In order: no group set, make one
+   (`sudo groupadd --system ebpfm`, `EBPFM_GROUP=ebpfm` in `/etc/default/ebpfm`), give it what the
+   collector already wrote (`sudo chgrp -R ebpfm <folders> && sudo chmod -R g+rX <folders>`), and
+   restart both units, which read it only at start (`sudo systemctl restart ebpfm ebpfm-node`;
+   the eBPF tier flushes its live processes as `truncated`); join it (`sudo usermod -aG ebpfm
+   <you>`); then log out and in again, since a login keeps the groups it began with: `id -nG`
+   lists the group only in a new one. A config `init` wrote while the folders were unreadable
+   names other folders or none: run `rc-dashboard init --force` again.
 4. **A copy on another host** ([deploy/fleet](../deploy/fleet/README.md),
    [hpc/deploy](../hpc/deploy/README.md))? Then the folders are the copy's, and the copy may be
    what failed: see the next entry.
